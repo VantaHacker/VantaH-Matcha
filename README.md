@@ -27,6 +27,5 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/VantaHacker/VantaH-Ma
 - Optional coin collecting, with a riskier profile if you want more of them
 - Randomised press timing
 - Only presses while Roblox is focused
-
-Settings save automatically and come back on rejoin.
 --------------------------------------------------------------------------------
+Settings save automatically.
