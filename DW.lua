@@ -1,10 +1,14 @@
--- VantaH | Dandy's World
--- Made by VantaH
--- ESP, twisted and item alerts, auto skill checks and Auto Barnaby for Matcha.
--- Scans workspace.CurrentRoom.*.Monsters, .Items and .Generators.
+--// VantaH | Dandy's World
+--// Made by VantaH
+--// ESP, twisted and item alerts, auto skill checks and Auto Barnaby for Matcha.
+--// Scans workspace.CurrentRoom.*.Monsters, .Items and .Generators.
 
--- Set to true to wipe all saved config and reset every setting to defaults, then set back to false.
+--// Set to true, or set _G.RESET_TO_DEFAULT_SETTINGS = true before running, to wipe all saved config.
 local RESET_TO_DEFAULT_SETTINGS = false
+if _G.RESET_TO_DEFAULT_SETTINGS == true then
+    RESET_TO_DEFAULT_SETTINGS = true
+    _G.RESET_TO_DEFAULT_SETTINGS = nil
+end
 
 local ALLOWED_UNIVERSE = 5569032992
 if game.GameId ~= ALLOWED_UNIVERSE then
