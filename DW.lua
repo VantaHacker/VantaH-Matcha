@@ -52,6 +52,8 @@ local SETTINGS = {
     showRoom = false,
     showMachineType = true,
     showTwistedRarity = true,
+    showAbilityTimer = true,
+    showSquirmWarning = true,
     showItemRarity = true,
     showDot = true,
     showTracer = false,
@@ -61,11 +63,14 @@ local SETTINGS = {
     resolveBudget = 2,
     autoSkillCheck = true,
     skillCheckRandom = true,
+    skillCheckAim = 15,
     skillCheckLead = 35,
     treadmillTapRate = 24,
     autoBarnaby = true,
     barnabyCollectCoins = true,
     barnabyRiskyCoins = false,
+    autoSquirmEscape = true,
+    squirmTapRate = 14,
     alertTracers = true,
     alertDandy = true,
     alertDyle = true,
@@ -125,6 +130,8 @@ local SAVED_KEYS = {
     "showRoom",
     "showMachineType",
     "showTwistedRarity",
+    "showAbilityTimer",
+    "showSquirmWarning",
     "showItemRarity",
     "showDot",
     "showTracer",
@@ -133,11 +140,14 @@ local SAVED_KEYS = {
     "maxVisible",
     "autoSkillCheck",
     "skillCheckRandom",
+    "skillCheckAim",
     "skillCheckLead",
     "treadmillTapRate",
     "autoBarnaby",
     "barnabyCollectCoins",
     "barnabyRiskyCoins",
+    "autoSquirmEscape",
+    "squirmTapRate",
     "alertTracers",
     "alertDandy",
     "alertDyle",
@@ -294,6 +304,10 @@ local FOLDERS = {
     { key = "Generators", enabledKeys = { "showGenerators" } },
 }
 
+FOLDERS.BLOT_ZONE_PREFIX = "BlotHandZone_"
+FOLDERS.BLOT_ZONE_MAX = 10
+FOLDERS.BLOT_HAND_PREFIX = "BlotHand"
+
 local CATEGORY_ENABLED = {
     Monsters = "showMonsters",
     Items = "showItems",
@@ -335,6 +349,8 @@ local MONSTER_INFO = {
     AstroMonster = { name = "Twisted Astro", rarity = "Main Character" },
     BassieMonster = { name = "Twisted Bassie", rarity = "Main Character" },
     BlottMonster = { name = "Twisted Blot", rarity = "Rare" },
+    BlotHand_R = { name = "Twisted Blot Hand", rarity = "Rare" },
+    BlotHand_L = { name = "Twisted Blot Hand", rarity = "Rare" },
     BobetteMonster = { name = "Twisted Bobette", rarity = "Main Character" },
     BoxtenMonster = { name = "Twisted Boxten", rarity = "Common" },
     BrightneyMonster = { name = "Twisted Brightney", rarity = "Uncommon" },
@@ -647,7 +663,7 @@ local function rollAimFraction()
         return BAR_RANDOM_MIN + math.random() * (BAR_RANDOM_MAX - BAR_RANDOM_MIN)
     end
 
-    return 0
+    return math.clamp(SETTINGS.skillCheckAim or 15, 0, 100) / 100
 end
 
 local function rollBarAim()
@@ -1524,6 +1540,76 @@ local function doAutoBarnaby()
     return true
 end
 
+local SQUIRM = {
+    VK_LEFT = 0x41,
+    VK_RIGHT = 0x44,
+    HOLD = 0.02,
+    MIN_GAP = 0.06,
+    heldKey = nil,
+    heldUntil = 0,
+    nextPressAt = 0,
+    lastSide = nil,
+    WARN_TEXT = "Squirm is preparing to attack you.",
+    WARN_STATES = { ALERT = true, DESCENDING = true, STRIKE = true },
+    WARN_RANGE = 35,
+    WARN_POLL = 0.05,
+    WARN_FIND = 1,
+    WARN_SIZE = 28,
+    warnModel = nil,
+    warnFindAt = 0,
+    warnPollAt = 0,
+    warnOn = false,
+    warnDrawing = nil,
+    ALERT_DELAY = 1.5,
+    alertAt = 0,
+    warnState = nil,
+    warnTenths = nil,
+    warnTimerText = nil,
+    warnShown = nil,
+}
+
+local function doAutoSquirmEscape()
+    if SQUIRM.heldKey and tick() >= SQUIRM.heldUntil then
+        pcall(keyrelease, SQUIRM.heldKey)
+        SQUIRM.heldKey = nil
+    end
+
+    if not SETTINGS.autoSquirmEscape or PLACE_MODE ~= "main" then
+        return false
+    end
+
+    local character = LocalPlayer and LocalPlayer.Character
+
+    if not (character and character:GetAttribute("GrabbedBySquirm")) then
+        SQUIRM.lastSide = nil
+        return false
+    end
+
+    if type(keypress) ~= "function" or type(keyrelease) ~= "function" then
+        return true
+    end
+
+    if not robloxFocused() then
+        return true
+    end
+
+    local now = tick()
+
+    if SQUIRM.heldKey or now < SQUIRM.nextPressAt then
+        return true
+    end
+
+    local useLeft = SQUIRM.lastSide ~= "left"
+    SQUIRM.lastSide = useLeft and "left" or "right"
+    local key = useLeft and SQUIRM.VK_LEFT or SQUIRM.VK_RIGHT
+    pcall(keypress, key)
+    SQUIRM.heldKey = key
+    SQUIRM.heldUntil = now + SQUIRM.HOLD
+    SQUIRM.nextPressAt = now + math.max(1 / (SETTINGS.squirmTapRate or 14), SQUIRM.MIN_GAP)
+
+    return true
+end
+
 local function doAutoSkillCheck()
     releaseSpaceIfDue()
 
@@ -1762,6 +1848,94 @@ local function getVisualPosition(visual)
     return nil
 end
 
+local ABILITY = {
+    COOLDOWNS = {
+        GoobMonster = 12,
+        ScrapsMonster = 15,
+        GigiMonster = 12,
+        SproutMonster = 10,
+        SquirmMonster = 8,
+        VeeMonster = 10,
+        AstroMonster = 15,
+    },
+    SQUIRM_MONSTER = "SquirmMonster",
+    DEBUFF_ABILITIES = {
+        VeeMonster = { debuff = "Slow", source = "Slow_2", seen = {}, checkedAt = 0, firedAt = 0 },
+        AstroMonster = { debuff = "Tired", source = "Tired_3", seen = {}, checkedAt = 0, firedAt = 0 },
+    },
+    SPROUT_MONSTER = "SproutMonster",
+    SPROUT_TENDRIL = "SproutTendril",
+    SPROUT_DELAY = 0.5,
+    TEXT_SIZE = 20,
+    POLL_INTERVAL = 0.05,
+    READY_TEXT = "ABILITY",
+    WINDUP_SOUND = "_RangedWindupSound",
+    REARM_AFTER = 3,
+    ICONS = {
+        GoobMonster = 17268662964,
+        ScrapsMonster = 17572307852,
+        GigiMonster = 106223056157959,
+        SproutMonster = 18688072034,
+        SquirmMonster = 108443751963686,
+        VeeMonster = 17320166218,
+        AstroMonster = 17615948235,
+    },
+    THUMB_URL = "https://thumbnails.roblox.com/v1/assets?returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false&assetIds=",
+    ICON_RETRY = 10,
+    ICON_FOLDER = "DW/cacheIcons",
+    LOADED_TIMEOUT = 20,
+    MISSING_TEXT = "?",
+    MISSING_SIZE = 44,
+    downloadEnabled = false,
+    loadedNotified = false,
+    cacheStartedAt = 0,
+    prompt = nil,
+    PROMPT = {
+        WIDTH = 400,
+        HEIGHT = 160,
+        BUTTON_WIDTH = 150,
+        BUTTON_HEIGHT = 38,
+        BUTTON_GAP = 20,
+        BUTTON_BOTTOM = 22,
+        TITLE = "Would you like to cache Twisted icons?",
+        SUBTITLE = "May take some time.",
+        TITLE_SIZE = 20,
+        SUBTITLE_SIZE = 16,
+        BUTTON_SIZE = 18,
+        TITLE_Y = 26,
+        SUBTITLE_Y = 56,
+        BUTTON_TEXT_Y = 17,
+        CORNER = 6,
+    },
+    PNG_SIGNATURE = string.char(137, 80, 78, 71),
+    SCAN_INTERVAL = 0.5,
+    PANEL = {
+        WIDTH = 260,
+        HEIGHT = 72,
+        GAP = 10,
+        ICON = 58,
+        PAD = 8,
+        RIGHT = 24,
+        TOP = 0.32,
+        NAME_SIZE = 18,
+        TIMER_SIZE = 26,
+        NAME_Y = 10,
+        TIMER_Y = 34,
+    },
+    entries = {},
+    list = {},
+    seen = {},
+    seq = 0,
+    scanAt = 0,
+    dirty = false,
+    panelShown = false,
+    iconData = {},
+    iconState = {},
+    iconsReady = false,
+    precacheAt = 0,
+    PRECACHE_DELAY = 0.5,
+}
+
 local LABEL_LINES = 5
 local LABEL_LINE_HEIGHT = 13
 local LABEL_GAP = 18
@@ -1802,6 +1976,18 @@ local function createVisual(item, category, roomName)
     safeSet(tracer, "Thickness", 1)
     safeSet(tracer, "Transparency", 0.7)
 
+    local abilityCooldown = category == "Monsters" and ABILITY.COOLDOWNS[item.Name] or nil
+    local abilityDraw = nil
+
+    if abilityCooldown then
+        abilityDraw = makeDrawing("Text", color)
+        safeSet(abilityDraw, "Center", true)
+        safeSet(abilityDraw, "Outline", true)
+        safeSet(abilityDraw, "Font", Drawing.Fonts.SystemBold)
+        safeSet(abilityDraw, "Size", ABILITY.TEXT_SIZE)
+        safeSet(abilityDraw, "FontSize", ABILITY.TEXT_SIZE)
+    end
+
 
     return {
         item = item,
@@ -1824,6 +2010,10 @@ local function createVisual(item, category, roomName)
         lines = lines,
         dot = dot,
         tracer = tracer,
+        abilityCooldown = abilityCooldown,
+        abilityDrawing = abilityDraw,
+        abilityShown = nil,
+        abilityVisible = false,
     }
 end
 
@@ -1840,6 +2030,10 @@ local function removeVisual(visual)
 
     if visual.tracer then
         visual.tracer:Remove()
+    end
+
+    if visual.abilityDrawing then
+        visual.abilityDrawing:Remove()
     end
 
 end
@@ -1860,6 +2054,11 @@ local function hideVisual(visual)
 
     visual.dot.Visible = false
     visual.tracer.Visible = false
+
+    if visual.abilityDrawing and visual.abilityVisible then
+        visual.abilityVisible = false
+        visual.abilityDrawing.Visible = false
+    end
 end
 
 local function cameraWorldToScreen(worldPosition)
@@ -2292,6 +2491,19 @@ local function scanVisuals()
                 end
             end
         end
+
+        if SETTINGS.showMonsters or alertEnabledFor("Monsters", "BlottMonster") then
+            for index = 1, FOLDERS.BLOT_ZONE_MAX do
+                local zone = room:FindFirstChild(FOLDERS.BLOT_ZONE_PREFIX .. index)
+                if zone then
+                    for _, hand in ipairs(zone:GetChildren()) do
+                        if hand.ClassName == "Model" and hand.Name:sub(1, #FOLDERS.BLOT_HAND_PREFIX) == FOLDERS.BLOT_HAND_PREFIX then
+                            addCandidate(hand, "Monsters", room.Name)
+                        end
+                    end
+                end
+            end
+        end
     end
 
     for key, visual in pairs(tracked) do
@@ -2334,6 +2546,8 @@ local function refreshSettingsFromUi()
     SETTINGS.showRoom = uiValue("dw_visuals_room", SETTINGS.showRoom)
     SETTINGS.showMachineType = uiValue("dw_visuals_machine_type", SETTINGS.showMachineType)
     SETTINGS.showTwistedRarity = uiValue("dw_visuals_twisted_rarity", SETTINGS.showTwistedRarity)
+    SETTINGS.showAbilityTimer = uiValue("dw_visuals_ability_timer", SETTINGS.showAbilityTimer)
+    SETTINGS.showSquirmWarning = uiValue("dw_visuals_squirm_warning", SETTINGS.showSquirmWarning)
     SETTINGS.showItemRarity = uiValue("dw_visuals_item_rarity", SETTINGS.showItemRarity)
     SETTINGS.showDot = uiValue("dw_visuals_dot", SETTINGS.showDot)
     SETTINGS.showTracer = uiValue("dw_visuals_tracer", SETTINGS.showTracer)
@@ -2342,10 +2556,12 @@ local function refreshSettingsFromUi()
     SETTINGS.scanInterval = math.max(0.5, uiValue("dw_visuals_scan_rate", SETTINGS.scanInterval))
     SETTINGS.autoSkillCheck = uiValue("dw_skillcheck_enabled", SETTINGS.autoSkillCheck)
     SETTINGS.skillCheckRandom = uiValue("dw_skillcheck_random", SETTINGS.skillCheckRandom)
+    SETTINGS.skillCheckAim = uiValue("dw_skillcheck_aim", SETTINGS.skillCheckAim)
     SETTINGS.skillCheckLead = uiValue("dw_skillcheck_lead", SETTINGS.skillCheckLead)
     SETTINGS.treadmillTapRate = uiValue("dw_skillcheck_treadmill_rate", SETTINGS.treadmillTapRate)
     SETTINGS.autoBarnaby = uiValue("dw_barnaby_enabled", SETTINGS.autoBarnaby)
-    SETTINGS.barnabyCollectCoins = uiValue("dw_barnaby_coins", SETTINGS.barnabyCollectCoins)
+    SETTINGS.autoSquirmEscape = uiValue("dw_squirm_escape", SETTINGS.autoSquirmEscape)
+    SETTINGS.squirmTapRate = uiValue("dw_squirm_tap_rate", SETTINGS.squirmTapRate)    SETTINGS.barnabyCollectCoins = uiValue("dw_barnaby_coins", SETTINGS.barnabyCollectCoins)
     SETTINGS.barnabyRiskyCoins = uiValue("dw_barnaby_risky_coins", SETTINGS.barnabyRiskyCoins)
     SETTINGS.alertTracers = uiValue("dw_alert_tracers", SETTINGS.alertTracers)
 
@@ -2362,6 +2578,633 @@ local function refreshSettingsFromUi()
     autoSaveConfig()
 end
 
+
+function ABILITY.newSproutTendril(entry)
+    local folder = entry.model.Parent
+    local map = folder and folder.Parent
+    if not map then
+        return false
+    end
+
+    local area = map:FindFirstChild("FreeArea")
+    local tendril = (area and area:FindFirstChild(ABILITY.SPROUT_TENDRIL)) or map:FindFirstChild(ABILITY.SPROUT_TENDRIL)
+    if not tendril then
+        entry.tendrilAddress = nil
+        return false
+    end
+
+    local address = tostring(tendril.Address)
+    if entry.tendrilAddress == address then
+        return false
+    end
+
+    entry.tendrilAddress = address
+    return true
+end
+
+function ABILITY.pollDebuff(spec, now)
+    if now - spec.checkedAt < ABILITY.POLL_INTERVAL then
+        return
+    end
+
+    spec.checkedAt = now
+    local seen = spec.seen
+    local prefix = "Debuff_" .. spec.debuff .. "_"
+    local pattern = "%d+:([%d%.]+):" .. spec.source
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        local key = player.UserId
+        local character = player.Character
+
+        if character then
+            local marks = {}
+            local active = nil
+            if character:GetAttribute(prefix .. "Source") == spec.source then
+                active = "active:" .. tostring(character:GetAttribute(prefix .. "EndTime"))
+                marks[active] = true
+            end
+
+            local hadPending = false
+            local pending = character:GetAttribute(prefix .. "Pending")
+            if type(pending) == "string" then
+                for endTime in pending:gmatch(pattern) do
+                    marks["pending:" .. endTime] = true
+                    hadPending = true
+                end
+            end
+
+            local previous = seen[key]
+            if previous then
+                for mark in pairs(marks) do
+                    if not previous.marks[mark] and (mark ~= active or not previous.hadPending) then
+                        spec.firedAt = now
+                    end
+                end
+            end
+
+            seen[key] = { marks = marks, hadPending = hadPending }
+        else
+            seen[key] = nil
+        end
+    end
+end
+
+function ABILITY.poll(entry, now)
+    if now - entry.checkedAt < ABILITY.POLL_INTERVAL then
+        return
+    end
+
+    entry.checkedAt = now
+    local model = entry.model
+
+    local spec = ABILITY.DEBUFF_ABILITIES[entry.name]
+    if spec then
+        ABILITY.pollDebuff(spec, now)
+        if entry.debuffFired ~= spec.firedAt then
+            entry.debuffFired = spec.firedAt
+            if entry.readyAt - now < entry.cooldown - ABILITY.REARM_AFTER then
+                entry.readyAt = now + entry.cooldown
+            end
+        end
+
+        return
+    end
+
+    if entry.name == ABILITY.SQUIRM_MONSTER then
+        local holding = model:GetAttribute("SquirmState") == "HOLDING" or model:GetAttribute("GrabbedPlayer") ~= nil
+        if entry.active and not holding then
+            entry.readyAt = now + entry.cooldown
+        end
+
+        entry.active = holding
+        return
+    end
+
+    if entry.name == ABILITY.SPROUT_MONSTER then
+        if ABILITY.newSproutTendril(entry) then
+            entry.readyAt = now + entry.cooldown - ABILITY.SPROUT_DELAY
+        end
+
+        return
+    end
+
+    local root = model:FindFirstChild("HumanoidRootPart")
+    local active = root ~= nil and root:FindFirstChild(ABILITY.WINDUP_SOUND) ~= nil
+
+    if not active then
+        active = model:GetAttribute("UsingAbility") == true
+    end
+
+    if not active then
+        local grabbing = model:FindFirstChild("Grabbing")
+        active = grabbing ~= nil and grabbing.Value == true
+    end
+
+    if active and not entry.active and entry.readyAt - now < entry.cooldown - ABILITY.REARM_AFTER then
+        entry.readyAt = now + entry.cooldown
+    end
+
+    entry.active = active
+end
+
+function ABILITY.label(entry, now)
+    local remaining = entry.readyAt - now
+
+    if remaining <= 0 then
+        return ABILITY.READY_TEXT
+    end
+
+    local tenths = math.ceil(remaining * 10)
+
+    if entry.tenths ~= tenths then
+        entry.tenths = tenths
+        entry.text = string.format("%.1fs", tenths / 10)
+    end
+
+    return entry.text
+end
+
+local function abilityLabel(visual, now)
+    local entry = ABILITY.entries[getIdentity(visual.item)]
+    if not entry then
+        return ABILITY.READY_TEXT
+    end
+
+    return ABILITY.label(entry, now)
+end
+
+function ABILITY.iconPath(name)
+    return ABILITY.ICON_FOLDER .. "/" .. tostring(ABILITY.ICONS[name]) .. ".dat"
+end
+
+function ABILITY.loadCachedIcon(name)
+    if ABILITY.iconData[name] then
+        return true
+    end
+
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return false
+    end
+
+    local path = ABILITY.iconPath(name)
+    local okRead, cached = pcall(function()
+        return isfile(path) and readfile(path) or nil
+    end)
+
+    if okRead and type(cached) == "string" and cached:sub(1, 4) == ABILITY.PNG_SIGNATURE then
+        ABILITY.iconData[name] = cached
+        ABILITY.iconState[name] = "done"
+        return true
+    end
+
+    return false
+end
+
+function ABILITY.requestIcon(name)
+    local state = ABILITY.iconState[name]
+    if state == "loading" or state == "done" or (type(state) == "number" and tick() < state) then
+        return
+    end
+
+    local id = ABILITY.ICONS[name]
+    if not id or type(httpget) ~= "function" then
+        ABILITY.iconState[name] = "done"
+        return
+    end
+
+    if ABILITY.loadCachedIcon(name) then
+        return
+    end
+
+    local path = ABILITY.iconPath(name)
+    ABILITY.iconState[name] = "loading"
+    task.spawn(function()
+        local ok, body = pcall(httpget, ABILITY.THUMB_URL .. tostring(id))
+        local url = ok and type(body) == "string" and body:match('"state":"Completed","imageUrl":"([^"]+)"')
+
+        if url then
+            local okImage, data = pcall(httpget, url)
+            if okImage and type(data) == "string" and data:sub(1, 4) == ABILITY.PNG_SIGNATURE then
+                ABILITY.iconData[name] = data
+                ABILITY.iconState[name] = "done"
+                pcall(function()
+                    if not isfolder("DW") then
+                        makefolder("DW")
+                    end
+                    if not isfolder(ABILITY.ICON_FOLDER) then
+                        makefolder(ABILITY.ICON_FOLDER)
+                    end
+                    writefile(path, data)
+                end)
+                return
+            end
+        end
+
+        ABILITY.iconState[name] = tick() + ABILITY.ICON_RETRY
+    end)
+end
+
+function ABILITY.precacheIcons()
+    local ready = true
+    for name in pairs(ABILITY.ICONS) do
+        ABILITY.requestIcon(name)
+        if not ABILITY.iconData[name] then
+            ready = false
+        end
+    end
+
+    ABILITY.iconsReady = ready
+    ABILITY.precacheAt = tick() + 1
+end
+
+function ABILITY.notifyLoaded()
+    ABILITY.loadedNotified = true
+    if type(notify) ~= "function" then
+        return
+    end
+
+    pcall(notify, "Dandy's World", "Loaded. Made by VantaH.", 4)
+    if PLACE_MODE == "other" then
+        pcall(notify, "Dandy's World", "Unknown place " .. tostring(game.PlaceId) .. " - auto skill check and Auto Barnaby are off here.", 5)
+    end
+end
+
+function ABILITY.promptDrawing(kind, z)
+    local object = Drawing.new(kind)
+    safeSet(object, "ZIndex", z)
+    safeSet(object, "Transparency", 1)
+    table.insert(ABILITY.prompt.drawings, object)
+    return object
+end
+
+function ABILITY.promptSquare(x, y, w, h, color, filled, z)
+    local square = ABILITY.promptDrawing("Square", z)
+    safeSet(square, "Filled", filled)
+    safeSet(square, "Thickness", 1)
+    safeSet(square, "Color", color)
+    safeSet(square, "Corner", ABILITY.PROMPT.CORNER)
+    square.Position = Vector2.new(x, y)
+    square.Size = Vector2.new(w, h)
+    square.Visible = true
+    return square
+end
+
+function ABILITY.promptText(text, size, color, x, y)
+    local label = ABILITY.promptDrawing("Text", 63)
+    safeSet(label, "Font", Drawing.Fonts.SystemBold)
+    safeSet(label, "Size", size)
+    safeSet(label, "FontSize", size)
+    safeSet(label, "Center", true)
+    safeSet(label, "Color", color)
+    label.Text = text
+    label.Position = Vector2.new(x, y)
+    label.Visible = true
+    return label
+end
+
+function ABILITY.showPrompt()
+    local camera = Workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    local P = ABILITY.PROMPT
+    local viewport = camera.ViewportSize
+    local x = math.floor(viewport.X / 2 - P.WIDTH / 2)
+    local y = math.floor(viewport.Y / 2 - P.HEIGHT / 2)
+    local white = Color3.fromRGB(255, 255, 255)
+
+    ABILITY.prompt = { drawings = {}, buttons = {}, wasDown = true }
+    ABILITY.promptSquare(x, y, P.WIDTH, P.HEIGHT, Color3.fromRGB(22, 22, 26), true, 60)
+    ABILITY.promptSquare(x, y, P.WIDTH, P.HEIGHT, Color3.fromRGB(62, 62, 72), false, 61)
+    ABILITY.promptText(P.TITLE, P.TITLE_SIZE, white, x + P.WIDTH / 2, y + P.TITLE_Y)
+    ABILITY.promptText(P.SUBTITLE, P.SUBTITLE_SIZE, Color3.fromRGB(170, 170, 180), x + P.WIDTH / 2, y + P.SUBTITLE_Y)
+
+    local buttonY = y + P.HEIGHT - P.BUTTON_HEIGHT - P.BUTTON_BOTTOM
+    local specs = {
+        { label = "Yes", choice = true, x = x + P.WIDTH / 2 - P.BUTTON_WIDTH - P.BUTTON_GAP / 2, base = Color3.fromRGB(214, 92, 14), hover = Color3.fromRGB(240, 116, 36) },
+        { label = "No", choice = false, x = x + P.WIDTH / 2 + P.BUTTON_GAP / 2, base = Color3.fromRGB(48, 48, 56), hover = Color3.fromRGB(70, 70, 80) },
+    }
+
+    for _, spec in ipairs(specs) do
+        spec.y = buttonY
+        spec.square = ABILITY.promptSquare(spec.x, buttonY, P.BUTTON_WIDTH, P.BUTTON_HEIGHT, spec.base, true, 62)
+        spec.hovered = false
+        ABILITY.promptText(spec.label, P.BUTTON_SIZE, white, spec.x + P.BUTTON_WIDTH / 2, buttonY + P.BUTTON_TEXT_Y)
+        table.insert(ABILITY.prompt.buttons, spec)
+    end
+end
+
+function ABILITY.removePrompt()
+    local prompt = ABILITY.prompt
+    if not prompt then
+        return
+    end
+
+    for _, object in ipairs(prompt.drawings) do
+        pcall(function()
+            object:Remove()
+        end)
+    end
+
+    ABILITY.prompt = nil
+end
+
+function ABILITY.choosePrompt(cache)
+    ABILITY.removePrompt()
+
+    if not cache then
+        ABILITY.notifyLoaded()
+        return
+    end
+
+    if type(notify) == "function" then
+        pcall(notify, "Dandy's World", "Caching images", 3)
+    end
+
+    ABILITY.downloadEnabled = true
+    ABILITY.cacheStartedAt = tick()
+    ABILITY.precacheAt = ABILITY.cacheStartedAt + ABILITY.PRECACHE_DELAY
+end
+
+function ABILITY.updatePrompt()
+    local prompt = ABILITY.prompt
+    if not prompt.mouse and LocalPlayer then
+        prompt.mouse = LocalPlayer:GetMouse()
+    end
+
+    local mouse = prompt.mouse
+    if not mouse or type(ismouse1pressed) ~= "function" then
+        return
+    end
+
+    local P = ABILITY.PROMPT
+    local mx, my = mouse.X, mouse.Y
+    local down = ismouse1pressed() and robloxFocused()
+    local clicked = down and not prompt.wasDown
+    prompt.wasDown = down
+
+    for _, button in ipairs(prompt.buttons) do
+        local over = mx and my and mx >= button.x and mx <= button.x + P.BUTTON_WIDTH and my >= button.y and my <= button.y + P.BUTTON_HEIGHT
+        if over ~= button.hovered then
+            button.hovered = over
+            button.square.Color = over and button.hover or button.base
+        end
+
+        if over and clicked then
+            ABILITY.choosePrompt(button.choice)
+            return
+        end
+    end
+end
+
+function ABILITY.startIconCache()
+    local ready = true
+    for name in pairs(ABILITY.ICONS) do
+        if not ABILITY.loadCachedIcon(name) then
+            ready = false
+        end
+    end
+
+    ABILITY.iconsReady = ready
+    if ready then
+        ABILITY.notifyLoaded()
+    else
+        ABILITY.showPrompt()
+        if not ABILITY.prompt then
+            ABILITY.notifyLoaded()
+        end
+    end
+end
+
+function ABILITY.removeCard(entry)
+    local card = entry.card
+    if not card then
+        return
+    end
+
+    for _, key in ipairs({ "name", "timer", "icon", "missing" }) do
+        if card[key] then
+            pcall(function()
+                card[key]:Remove()
+            end)
+        end
+    end
+
+    entry.card = nil
+end
+
+function ABILITY.scan(now)
+    if now < ABILITY.scanAt then
+        return
+    end
+
+    ABILITY.scanAt = now + ABILITY.SCAN_INTERVAL
+    local seen = ABILITY.seen
+    for key in pairs(seen) do
+        seen[key] = nil
+    end
+
+    local room = Workspace:FindFirstChild("CurrentRoom")
+    if room then
+        for _, child in ipairs(room:GetChildren()) do
+            local folder = child:FindFirstChild("Monsters")
+            if folder then
+                for _, model in ipairs(folder:GetChildren()) do
+                    local cooldown = ABILITY.COOLDOWNS[model.Name]
+                    if cooldown then
+                        local key = getIdentity(model)
+                        seen[key] = true
+
+                        if not ABILITY.entries[key] then
+                            ABILITY.seq = ABILITY.seq + 1
+                            ABILITY.entries[key] = {
+                                model = model,
+                                name = model.Name,
+                                cooldown = cooldown,
+                                readyAt = 0,
+                                active = false,
+                                checkedAt = 0,
+                                order = ABILITY.seq,
+                                debuffFired = ABILITY.DEBUFF_ABILITIES[model.Name] and ABILITY.DEBUFF_ABILITIES[model.Name].firedAt,
+                            }
+                            ABILITY.dirty = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for key, entry in pairs(ABILITY.entries) do
+        if not seen[key] or not entry.model.Parent then
+            ABILITY.removeCard(entry)
+            ABILITY.entries[key] = nil
+            ABILITY.dirty = true
+        end
+    end
+
+    if ABILITY.dirty then
+        ABILITY.dirty = false
+        local list = ABILITY.list
+        for index = #list, 1, -1 do
+            list[index] = nil
+        end
+
+        for _, entry in pairs(ABILITY.entries) do
+            list[#list + 1] = entry
+        end
+
+        table.sort(list, function(a, b)
+            return a.order < b.order
+        end)
+    end
+end
+
+function ABILITY.drawCard(entry, index, viewport, now)
+    local P = ABILITY.PANEL
+    local card = entry.card
+    local white = Color3.fromRGB(255, 255, 255)
+
+    if not card then
+        card = {}
+        card.name = makeDrawing("Text", white)
+        safeSet(card.name, "Font", Drawing.Fonts.SystemBold)
+        safeSet(card.name, "Size", P.NAME_SIZE)
+        safeSet(card.name, "FontSize", P.NAME_SIZE)
+        safeSet(card.name, "Outline", true)
+        local info = MONSTER_INFO[entry.name]
+        safeSet(card.name, "Text", (info and info.name) or entry.name)
+
+        card.timer = makeDrawing("Text", white)
+        safeSet(card.timer, "Font", Drawing.Fonts.SystemBold)
+        safeSet(card.timer, "Size", P.TIMER_SIZE)
+        safeSet(card.timer, "FontSize", P.TIMER_SIZE)
+        safeSet(card.timer, "Outline", true)
+
+        entry.card = card
+    end
+
+    if not card.icon then
+        local data = ABILITY.iconData[entry.name]
+        if data then
+            card.icon = makeDrawing("Image", white)
+            safeSet(card.icon, "Data", data)
+            safeSet(card.icon, "Size", Vector2.new(P.ICON, P.ICON))
+            safeSet(card.icon, "ZIndex", 51)
+            if card.missing then
+                pcall(function()
+                    card.missing:Remove()
+                end)
+                card.missing = nil
+            end
+            card.x = nil
+            card.visible = false
+        elseif not card.missing then
+            card.missing = makeDrawing("Text", white)
+            safeSet(card.missing, "Font", Drawing.Fonts.SystemBold)
+            safeSet(card.missing, "Size", ABILITY.MISSING_SIZE)
+            safeSet(card.missing, "FontSize", ABILITY.MISSING_SIZE)
+            safeSet(card.missing, "Center", true)
+            safeSet(card.missing, "Outline", true)
+            safeSet(card.missing, "Text", ABILITY.MISSING_TEXT)
+            card.x = nil
+            card.visible = false
+        end
+    end
+
+    local text = ABILITY.label(entry, now)
+    if card.shown ~= text then
+        card.shown = text
+        card.timer.Text = text
+    end
+
+    local x = viewport.X - P.WIDTH - P.RIGHT
+    local y = viewport.Y * P.TOP + (index - 1) * (P.HEIGHT + P.GAP)
+    if card.x ~= x or card.y ~= y then
+        card.x = x
+        card.y = y
+        local textX = x + P.PAD + P.ICON + 12
+        card.name.Position = Vector2.new(textX, y + P.NAME_Y)
+        card.timer.Position = Vector2.new(textX, y + P.TIMER_Y)
+        if card.icon then
+            card.icon.Position = Vector2.new(x + P.PAD, y + (P.HEIGHT - P.ICON) / 2)
+        end
+        if card.missing then
+            card.missing.Position = Vector2.new(x + P.PAD + P.ICON / 2, y + (P.HEIGHT - ABILITY.MISSING_SIZE) / 2)
+        end
+    end
+
+    if not card.visible then
+        card.visible = true
+        card.name.Visible = true
+        card.timer.Visible = true
+        if card.icon then
+            card.icon.Visible = true
+        end
+        if card.missing then
+            card.missing.Visible = true
+        end
+    end
+end
+
+function ABILITY.hidePanel()
+    if not ABILITY.panelShown then
+        return
+    end
+
+    ABILITY.panelShown = false
+    for _, entry in pairs(ABILITY.entries) do
+        local card = entry.card
+        if card and card.visible then
+            card.visible = false
+            card.name.Visible = false
+            card.timer.Visible = false
+            if card.icon then
+                card.icon.Visible = false
+            end
+            if card.missing then
+                card.missing.Visible = false
+            end
+        end
+    end
+end
+
+function ABILITY.update()
+    local now = tick()
+
+    if ABILITY.prompt then
+        ABILITY.updatePrompt()
+    end
+
+    if ABILITY.downloadEnabled then
+        if not ABILITY.iconsReady and now >= ABILITY.precacheAt then
+            ABILITY.precacheIcons()
+        end
+
+        if not ABILITY.loadedNotified and (ABILITY.iconsReady or now - ABILITY.cacheStartedAt >= ABILITY.LOADED_TIMEOUT) then
+            ABILITY.notifyLoaded()
+        end
+    end
+
+    if not SETTINGS.showAbilityTimer then
+        ABILITY.hidePanel()
+        return
+    end
+
+    ABILITY.scan(now)
+
+    local camera = Workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize
+
+    for index, entry in ipairs(ABILITY.list) do
+        ABILITY.poll(entry, now)
+        if viewport then
+            ABILITY.drawCard(entry, index, viewport, now)
+            ABILITY.panelShown = true
+        end
+    end
+end
 
 local function drawVisual(visual, cameraPosition, tracerFrom)
     if not SETTINGS.enabled then
@@ -2460,6 +3303,11 @@ local function drawVisual(visual, cameraPosition, tracerFrom)
         end
     end
 
+    local abilityText = nil
+    if visual.abilityDrawing and SETTINGS.showAbilityTimer then
+        abilityText = abilityLabel(visual, tick())
+    end
+
     local recolor = visual.lastColor ~= color
     if recolor then
         visual.lastColor = color
@@ -2489,6 +3337,30 @@ local function drawVisual(visual, cameraPosition, tracerFrom)
         elseif line.visible then
             line.visible = false
             line.drawing.Visible = false
+        end
+    end
+
+    if visual.abilityDrawing then
+        if abilityText then
+            if recolor then
+                visual.abilityDrawing.Color = color
+            end
+
+            if visual.abilityShown ~= abilityText then
+                visual.abilityShown = abilityText
+                visual.abilityDrawing.Text = abilityText
+            end
+
+            local stackTop = bottomY - (math.max(count, 1) - 1) * LABEL_LINE_HEIGHT
+            visual.abilityDrawing.Position = Vector2.new(screenPosition.X, stackTop - ABILITY.TEXT_SIZE)
+
+            if not visual.abilityVisible then
+                visual.abilityVisible = true
+                visual.abilityDrawing.Visible = true
+            end
+        elseif visual.abilityVisible then
+            visual.abilityVisible = false
+            visual.abilityDrawing.Visible = false
         end
     end
 
@@ -2564,6 +3436,136 @@ local function drawAll(deltaTime)
     end
 end
 
+function SQUIRM.findModel()
+    local room = Workspace:FindFirstChild("CurrentRoom")
+    if not room then
+        return nil
+    end
+
+    for _, child in ipairs(room:GetChildren()) do
+        local folder = child:FindFirstChild("Monsters")
+        local model = folder and folder:FindFirstChild("SquirmMonster")
+        if model then
+            return model
+        end
+    end
+
+    return nil
+end
+
+function SQUIRM.isTargetingMe(model)
+    if not SQUIRM.WARN_STATES[model:GetAttribute("SquirmState") or ""] then
+        return false
+    end
+
+    local root = model:FindFirstChild("RootPart") or model.PrimaryPart
+    local character = LocalPlayer.Character
+    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    if not (root and myRoot) or character:GetAttribute("GrabbedBySquirm") then
+        return false
+    end
+
+    local origin = root.Position
+    local mine = myRoot.Position
+    local myDistance = Vector3.new(mine.X - origin.X, 0, mine.Z - origin.Z).Magnitude
+    if myDistance > SQUIRM.WARN_RANGE then
+        return false
+    end
+
+    local myId = LocalPlayer.UserId
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.UserId ~= myId then
+            local other = player.Character
+            local otherRoot = other and other:FindFirstChild("HumanoidRootPart")
+            if otherRoot then
+                local p = otherRoot.Position
+                if Vector3.new(p.X - origin.X, 0, p.Z - origin.Z).Magnitude < myDistance then
+                    return false
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+function SQUIRM.updateWarning()
+    local now = tick()
+    if now >= SQUIRM.warnPollAt then
+        SQUIRM.warnPollAt = now + SQUIRM.WARN_POLL
+        local on = false
+
+        if SETTINGS.showSquirmWarning then
+            if now >= SQUIRM.warnFindAt then
+                SQUIRM.warnFindAt = now + SQUIRM.WARN_FIND
+                SQUIRM.warnModel = SQUIRM.findModel()
+            end
+
+            local model = SQUIRM.warnModel
+            if model then
+                local okState, state = pcall(function()
+                    return model:GetAttribute("SquirmState")
+                end)
+                state = okState and state or nil
+
+                if state == "ALERT" and SQUIRM.warnState ~= "ALERT" then
+                    SQUIRM.alertAt = now
+                end
+                SQUIRM.warnState = state
+
+                local ok, result = pcall(SQUIRM.isTargetingMe, model)
+                on = ok and result == true
+            else
+                SQUIRM.warnState = nil
+            end
+        end
+
+        SQUIRM.warnOn = on
+    end
+
+    local drawing = SQUIRM.warnDrawing
+    if SQUIRM.warnOn then
+        local camera = Workspace.CurrentCamera
+        if not camera then
+            return
+        end
+
+        if not drawing then
+            drawing = makeDrawing("Text", Color3.fromRGB(255, 255, 255))
+            safeSet(drawing, "Center", true)
+            safeSet(drawing, "Outline", true)
+            safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
+            safeSet(drawing, "Size", SQUIRM.WARN_SIZE)
+            safeSet(drawing, "FontSize", SQUIRM.WARN_SIZE)
+            safeSet(drawing, "Text", SQUIRM.WARN_TEXT)
+            SQUIRM.warnShown = SQUIRM.WARN_TEXT
+            SQUIRM.warnDrawing = drawing
+        end
+
+        local text = SQUIRM.WARN_TEXT
+        local remaining = SQUIRM.alertAt + SQUIRM.ALERT_DELAY - now
+        if SQUIRM.warnState == "ALERT" and remaining > 0 then
+            local tenths = math.ceil(remaining * 10)
+            if SQUIRM.warnTenths ~= tenths then
+                SQUIRM.warnTenths = tenths
+                SQUIRM.warnTimerText = SQUIRM.WARN_TEXT .. " " .. string.format("%.1fs", tenths / 10)
+            end
+            text = SQUIRM.warnTimerText
+        end
+
+        if SQUIRM.warnShown ~= text then
+            SQUIRM.warnShown = text
+            drawing.Text = text
+        end
+
+        local viewport = camera.ViewportSize
+        drawing.Position = Vector2.new(viewport.X * 0.5, viewport.Y * 0.3)
+        drawing.Visible = true
+    elseif drawing then
+        drawing.Visible = false
+    end
+end
+
 if UI then
     if UI.RemoveTab then
         pcall(function()
@@ -2581,6 +3583,8 @@ if UI then
         visuals:Toggle("dw_visuals_room", "Room", SETTINGS.showRoom)
         visuals:Toggle("dw_visuals_machine_type", "Machine Type", SETTINGS.showMachineType)
         visuals:Toggle("dw_visuals_twisted_rarity", "Twisted Rarity", SETTINGS.showTwistedRarity)
+        visuals:Toggle("dw_visuals_ability_timer", "Twisted Ability Timer", SETTINGS.showAbilityTimer)
+        visuals:Toggle("dw_visuals_squirm_warning", "Squirm Attack Warning", SETTINGS.showSquirmWarning)
         visuals:Toggle("dw_visuals_item_rarity", "Item Rarity", SETTINGS.showItemRarity)
         visuals:Toggle("dw_visuals_dot", "Dot", SETTINGS.showDot)
         visuals:Toggle("dw_visuals_tracer", "Tracer", SETTINGS.showTracer)
@@ -2630,12 +3634,14 @@ if UI then
         local automation = tab:Section("Automation", "Right")
         automation:Toggle("dw_skillcheck_enabled", "Auto Skill Check", SETTINGS.autoSkillCheck)
         automation:Toggle("dw_skillcheck_random", "Randomize Press", SETTINGS.skillCheckRandom)
+        automation:SliderInt("dw_skillcheck_aim", "Aim Point (%)", 0, 100, SETTINGS.skillCheckAim)
         automation:SliderInt("dw_skillcheck_lead", "Press Lead (ms)", 0, 120, SETTINGS.skillCheckLead)
         automation:SliderInt("dw_skillcheck_treadmill_rate", "Treadmill Tap Rate", 1, 30, SETTINGS.treadmillTapRate)
         automation:Toggle("dw_barnaby_enabled", "Auto Barnaby", SETTINGS.autoBarnaby)
         automation:Toggle("dw_barnaby_coins", "Collect Barnaby Coins", SETTINGS.barnabyCollectCoins)
         automation:Toggle("dw_barnaby_risky_coins", "Risk for more coins (Not recommended)", SETTINGS.barnabyRiskyCoins)
-        local itemAlerts = tab:Section("Item Alerts", "Right")
+        automation:Toggle("dw_squirm_escape", "Auto Squirm Escape", SETTINGS.autoSquirmEscape)
+        automation:SliderInt("dw_squirm_tap_rate", "Squirm Tap Rate", 1, 16, SETTINGS.squirmTapRate)        local itemAlerts = tab:Section("Item Alerts", "Right")
         itemAlerts:Toggle("dw_item_alert_tracers", "Use additional tracers", SETTINGS.itemAlertTracers)
         itemAlerts:ColorPicker("dw_item_alert_color", COLORS.ItemAlert.R, COLORS.ItemAlert.G, COLORS.ItemAlert.B, 1, function(color)
             COLORS.ItemAlert = color
@@ -2649,15 +3655,10 @@ if UI then
     end)
 end
 
-if type(notify) == "function" then
-    pcall(notify, "Dandy's World", "Loaded. Made by VantaH.", 4)
-    if PLACE_MODE == "other" then
-        pcall(notify, "Dandy's World", "Unknown place " .. tostring(game.PlaceId) .. " - auto skill check and Auto Barnaby are off here.", 5)
-    end
-end
-
 local UI_REFRESH_INTERVAL = 0.1
 local lastUiRefresh = 0
+
+ABILITY.startIconCache()
 
 local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     lastUiRefresh = lastUiRefresh + deltaTime
@@ -2672,8 +3673,13 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
         scanVisuals()
     end
 
-    doAutoSkillCheck()
+    if not doAutoSquirmEscape() then
+        doAutoSkillCheck()
+    end
+
     drawAll(deltaTime)
+    ABILITY.update()
+    SQUIRM.updateWarning()
 end)
 
 _G.DW_CLEANUP = function()
@@ -2681,6 +3687,25 @@ _G.DW_CLEANUP = function()
         spaceHeldUntil = 0
         pcall(keyrelease, VK_SPACE)
     end
+
+    if SQUIRM.heldKey then
+        pcall(keyrelease, SQUIRM.heldKey)
+        SQUIRM.heldKey = nil
+    end
+
+    if SQUIRM.warnDrawing then
+        pcall(function()
+            SQUIRM.warnDrawing:Remove()
+        end)
+        SQUIRM.warnDrawing = nil
+    end
+
+    for key, entry in pairs(ABILITY.entries) do
+        ABILITY.removeCard(entry)
+        ABILITY.entries[key] = nil
+    end
+
+    ABILITY.removePrompt()
 
     if renderConnection then
         pcall(function()
