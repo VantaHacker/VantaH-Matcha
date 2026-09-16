@@ -55,6 +55,24 @@ local SETTINGS = {
     showAbilityTimer = true,
     showSquirmWarning = true,
     showItemRarity = true,
+    showPlayerHealth = true,
+    aggressiveAutoFarm = false,
+    allowFarmWithPlayers = false,
+    tweenWalkSpeed = 50,
+    floorLimit = 15,
+    unlimitedFloors = false,
+    farmWarningAccepted = false,
+    farmAutoResume = true,
+    farmHealItems = true,
+    farmExtractionItems = true,
+    farmCapsules = true,
+    farmResearchTwisteds = true,
+    farmSkipResearched = true,
+    farmIgnoreTwistedsTravel = false,
+    resumeAutoFarm = false,
+    resumeAutoFarmAt = 0,
+    showPlayerStamina = true,
+    lowStaminaThreshold = 50,
     showDot = true,
     showTracer = false,
     scanInterval = 0.5,
@@ -133,6 +151,23 @@ local SAVED_KEYS = {
     "showAbilityTimer",
     "showSquirmWarning",
     "showItemRarity",
+    "showPlayerHealth",
+    "allowFarmWithPlayers",
+    "tweenWalkSpeed",
+    "floorLimit",
+    "unlimitedFloors",
+    "farmWarningAccepted",
+    "farmAutoResume",
+    "farmHealItems",
+    "farmExtractionItems",
+    "farmCapsules",
+    "farmResearchTwisteds",
+    "farmSkipResearched",
+    "farmIgnoreTwistedsTravel",
+    "resumeAutoFarm",
+    "resumeAutoFarmAt",
+    "showPlayerStamina",
+    "lowStaminaThreshold",
     "showDot",
     "showTracer",
     "scanInterval",
@@ -2189,10 +2224,71 @@ local function getVisualColor(visual)
     return COLORS[visual.category]
 end
 
+local STRINGS = {
+    OFFSET = 0xB8,
+    memoryReads = nil,
+}
+
+function STRINGS.clean(text)
+    if type(text) ~= "string" then
+        return nil
+    end
+    text = text:match("^%s*(.-)%s*$")
+    if #text > 0 and #text < 64 and text:match("^[%w%s'%-%.]+$") then
+        return text
+    end
+    return nil
+end
+
+function STRINGS.read(instance)
+    if not instance then
+        return ""
+    end
+
+    if STRINGS.memoryReads ~= false and type(memory_read) ~= "function" then
+        STRINGS.memoryReads = false
+    end
+
+    if STRINGS.memoryReads ~= false then
+        local okAddress, address = pcall(function()
+            return tonumber(instance.Address)
+        end)
+
+        if not okAddress or not address or address <= 4096 then
+            STRINGS.memoryReads = false
+        else
+            local okDirect, direct = pcall(memory_read, "string", address + STRINGS.OFFSET)
+            if not okDirect or type(direct) ~= "string" then
+                STRINGS.memoryReads = false
+            else
+                STRINGS.memoryReads = true
+                local text = STRINGS.clean(direct)
+                if text then
+                    return text
+                end
+
+                local okPointer, pointer = pcall(memory_read, "uintptr_t", address + STRINGS.OFFSET)
+                if okPointer and type(pointer) == "number" and pointer > 4096 then
+                    local okDeref, deref = pcall(memory_read, "string", pointer)
+                    text = okDeref and STRINGS.clean(deref)
+                    if text then
+                        return text
+                    end
+                end
+            end
+        end
+    end
+
+    local ok, value = pcall(function()
+        return instance.Value
+    end)
+    return (ok and type(value) == "string") and value or ""
+end
+
 local function researchCapsuleMonster(item)
     local prompt = item:FindFirstChild("Prompt")
     local holder = prompt and prompt:FindFirstChild("Monster")
-    local value = holder and holder.Value
+    local value = holder and STRINGS.read(holder)
 
     if type(value) ~= "string" then
         return nil
@@ -2549,6 +2645,21 @@ local function refreshSettingsFromUi()
     SETTINGS.showAbilityTimer = uiValue("dw_visuals_ability_timer", SETTINGS.showAbilityTimer)
     SETTINGS.showSquirmWarning = uiValue("dw_visuals_squirm_warning", SETTINGS.showSquirmWarning)
     SETTINGS.showItemRarity = uiValue("dw_visuals_item_rarity", SETTINGS.showItemRarity)
+    SETTINGS.showPlayerHealth = uiValue("dw_players_health", SETTINGS.showPlayerHealth)
+    SETTINGS.aggressiveAutoFarm = uiValue("dw_farm_aggressive", SETTINGS.aggressiveAutoFarm)
+    SETTINGS.allowFarmWithPlayers = uiValue("dw_farm_with_players", SETTINGS.allowFarmWithPlayers)
+    SETTINGS.tweenWalkSpeed = uiValue("dw_farm_speed", SETTINGS.tweenWalkSpeed)
+    SETTINGS.floorLimit = uiValue("dw_farm_floor_limit", SETTINGS.floorLimit)
+    SETTINGS.unlimitedFloors = uiValue("dw_farm_unlimited", SETTINGS.unlimitedFloors)
+    SETTINGS.farmAutoResume = uiValue("dw_farm_auto_resume", SETTINGS.farmAutoResume)
+    SETTINGS.farmHealItems = uiValue("dw_farm_heal_items", SETTINGS.farmHealItems)
+    SETTINGS.farmExtractionItems = uiValue("dw_farm_extraction_items", SETTINGS.farmExtractionItems)
+    SETTINGS.farmCapsules = uiValue("dw_farm_capsules", SETTINGS.farmCapsules)
+    SETTINGS.farmResearchTwisteds = uiValue("dw_farm_research_twisteds", SETTINGS.farmResearchTwisteds)
+    SETTINGS.farmSkipResearched = uiValue("dw_farm_skip_researched", SETTINGS.farmSkipResearched)
+    SETTINGS.farmIgnoreTwistedsTravel = uiValue("dw_farm_ignore_twisteds_travel", SETTINGS.farmIgnoreTwistedsTravel)
+    SETTINGS.showPlayerStamina = uiValue("dw_players_stamina", SETTINGS.showPlayerStamina)
+    SETTINGS.lowStaminaThreshold = uiValue("dw_players_low_stamina", SETTINGS.lowStaminaThreshold)
     SETTINGS.showDot = uiValue("dw_visuals_dot", SETTINGS.showDot)
     SETTINGS.showTracer = uiValue("dw_visuals_tracer", SETTINGS.showTracer)
     SETTINGS.maxVisible = uiValue("dw_visuals_max_visible", SETTINGS.maxVisible)
@@ -2876,7 +2987,6 @@ function ABILITY.showPrompt()
 
     ABILITY.prompt = { drawings = {}, buttons = {}, wasDown = true }
     ABILITY.promptSquare(x, y, P.WIDTH, P.HEIGHT, Color3.fromRGB(22, 22, 26), true, 60)
-    ABILITY.promptSquare(x, y, P.WIDTH, P.HEIGHT, Color3.fromRGB(62, 62, 72), false, 61)
     ABILITY.promptText(P.TITLE, P.TITLE_SIZE, white, x + P.WIDTH / 2, y + P.TITLE_Y)
     ABILITY.promptText(P.SUBTITLE, P.SUBTITLE_SIZE, Color3.fromRGB(170, 170, 180), x + P.WIDTH / 2, y + P.SUBTITLE_Y)
 
@@ -3204,6 +3314,3867 @@ function ABILITY.update()
             ABILITY.panelShown = true
         end
     end
+end
+
+local PLAYERS = {
+    entries = {},
+    seen = {},
+    TEXT_SIZE = 13,
+    FOOT_DROP = 3.2,
+    LABEL_GAP = 6,
+    LOW_HEALTH = 1,
+    PRUNE_INTERVAL = 2,
+    WHITE = Color3.fromRGB(255, 255, 255),
+    LOW = Color3.fromRGB(255, 120, 120),
+    pruneAt = 0,
+}
+
+function PLAYERS.makeLine()
+    local drawing = makeDrawing("Text", PLAYERS.WHITE)
+    safeSet(drawing, "Center", true)
+    safeSet(drawing, "Outline", true)
+    safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
+    safeSet(drawing, "Size", PLAYERS.TEXT_SIZE)
+    safeSet(drawing, "FontSize", PLAYERS.TEXT_SIZE)
+    return { drawing = drawing, text = nil, low = nil, visible = false }
+end
+
+function PLAYERS.entryFor(userId)
+    local entry = PLAYERS.entries[userId]
+
+    if not entry then
+        entry = { health = PLAYERS.makeLine(), stamina = PLAYERS.makeLine() }
+        PLAYERS.entries[userId] = entry
+    end
+
+    return entry
+end
+
+function PLAYERS.showLine(line, text, low, x, y)
+    if line.text ~= text then
+        line.text = text
+        line.drawing.Text = text
+    end
+
+    if line.low ~= low then
+        line.low = low
+        line.drawing.Color = low and PLAYERS.LOW or PLAYERS.WHITE
+    end
+
+    line.drawing.Position = Vector2.new(x, y)
+
+    if not line.visible then
+        line.visible = true
+        line.drawing.Visible = true
+    end
+end
+
+function PLAYERS.hideLine(line)
+    if line.visible then
+        line.visible = false
+        line.drawing.Visible = false
+    end
+end
+
+function PLAYERS.hide(entry)
+    PLAYERS.hideLine(entry.health)
+    PLAYERS.hideLine(entry.stamina)
+end
+
+function PLAYERS.removeEntry(entry)
+    pcall(function()
+        entry.health.drawing:Remove()
+    end)
+
+    pcall(function()
+        entry.stamina.drawing:Remove()
+    end)
+end
+
+function PLAYERS.drawOne(player, cameraPosition)
+    local entry = PLAYERS.entryFor(player.UserId)
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    local stats = character and character:FindFirstChild("Stats")
+    local current = stats and stats:FindFirstChild("CurrentStamina")
+    local maximum = stats and stats:FindFirstChild("Stamina")
+
+    if not (root and humanoid and current and maximum) then
+        PLAYERS.hide(entry)
+        return
+    end
+
+    local health = humanoid.Health or 0
+    if health <= 0 then
+        PLAYERS.hide(entry)
+        return
+    end
+
+    local position = root.Position
+    if (position - cameraPosition).Magnitude > SETTINGS.maxDistance then
+        PLAYERS.hide(entry)
+        return
+    end
+
+    local screenPosition, onScreen = cameraWorldToScreen(position - Vector3.new(0, PLAYERS.FOOT_DROP, 0))
+    if not (screenPosition and onScreen) then
+        PLAYERS.hide(entry)
+        return
+    end
+
+    local top = screenPosition.Y + PLAYERS.LABEL_GAP
+
+    if SETTINGS.showPlayerHealth then
+        local hearts = math.max(0, math.floor(health + 0.5))
+        local maxHearts = math.max(1, math.floor((humanoid.MaxHealth or 3) + 0.5))
+        PLAYERS.showLine(entry.health, hearts .. "/" .. maxHearts .. " HP", hearts <= PLAYERS.LOW_HEALTH, screenPosition.X, top)
+        top = top + PLAYERS.TEXT_SIZE
+    else
+        PLAYERS.hideLine(entry.health)
+    end
+
+    if SETTINGS.showPlayerStamina then
+        local stamina = current.Value or 0
+        local text = math.floor(stamina + 0.5) .. "/" .. math.floor((maximum.Value or 0) + 0.5) .. " SP"
+        PLAYERS.showLine(entry.stamina, text, stamina < SETTINGS.lowStaminaThreshold, screenPosition.X, top)
+    else
+        PLAYERS.hideLine(entry.stamina)
+    end
+end
+
+function PLAYERS.update(now)
+    if not (SETTINGS.enabled and (SETTINGS.showPlayerHealth or SETTINGS.showPlayerStamina)) then
+        for _, entry in pairs(PLAYERS.entries) do
+            PLAYERS.hide(entry)
+        end
+
+        return
+    end
+
+    local camera = Workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    local cameraPosition = camera.CFrame.Position
+    local localId = LocalPlayer.UserId
+    local prune = now >= PLAYERS.pruneAt
+
+    if prune then
+        PLAYERS.pruneAt = now + PLAYERS.PRUNE_INTERVAL
+
+        for userId in pairs(PLAYERS.seen) do
+            PLAYERS.seen[userId] = nil
+        end
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        local userId = player.UserId
+
+        if userId ~= localId then
+            if prune then
+                PLAYERS.seen[userId] = true
+            end
+
+            pcall(PLAYERS.drawOne, player, cameraPosition)
+        end
+    end
+
+    if prune then
+        for userId, entry in pairs(PLAYERS.entries) do
+            if not PLAYERS.seen[userId] then
+                PLAYERS.removeEntry(entry)
+                PLAYERS.entries[userId] = nil
+            end
+        end
+    end
+end
+
+function PLAYERS.cleanup()
+    for userId, entry in pairs(PLAYERS.entries) do
+        PLAYERS.removeEntry(entry)
+        PLAYERS.entries[userId] = nil
+    end
+end
+
+local FARM = {
+    entries = {},
+    prompt = nil,
+    banner = nil,
+    acknowledged = false,
+    active = false,
+    PAUSE_KEY = 0x50,
+    paused = false,
+    pauseWanted = false,
+    pauseDown = false,
+    pausedAt = 0,
+    TOGGLE_ID = "dw_farm_aggressive",
+    BANNER = {
+        TITLE_SIZE = 40,
+        BODY_SIZE = 30,
+        STATUS_SIZE = 40,
+        LINE_GAP = 8,
+        STATUS_GAP = 18,
+        LIMIT = 0.10,
+        HOLD = 30,
+        STARTUP = 15,
+    },
+    status = nil,
+    armedAt = 0,
+    forceOffUntil = 0,
+    RESUME_MAX_AGE = 300,
+    resumeWritten = false,
+    resumePending = false,
+    FORCE_OFF_WINDOW = 3,
+    RUN = {
+        PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
+        ARRIVE = 3,
+        ELEV_ARRIVE = 6,
+        LOST = 14,
+        STAND_Y = 3,
+        E_KEY = 0x45,
+        REPRESS = 3,
+        DANGER = 55,
+        DIVE_BUFFER = 8,
+        CLOSE_RADIUS = 12,
+        CLEAR_TIME = 0.4,
+        clearSince = nil,
+        SURFACE_BUFFER = 10,
+        RAY_RECHECK = 5,
+        RAY_DOWN = 50,
+        RAY_HOPS = 6,
+        rayWorks = false,
+        rayCheckAt = 0,
+        CHASER_DEFAULTS = { InstantRadius = 30, VisionRadius = 70, LineOfSight = 0.4 },
+        DEPTH = 12,
+        DIVE_SPEED = 50,
+        HIDE_MAX = 30,
+        GAIN = 5.5,
+        MAX_STEP = 40,
+        TOL = 6,
+        AIM_MAX = 2.5,
+        SACRIFICE_TOUCH = 5,
+        WANT_ITEMS = { Bandage = "farmHealItems", HealthKit = "farmHealItems", JumperCable = "farmExtractionItems" },
+        HEAL_ORDER = { "HealthKit", "Bandage" },
+        HEAL_AT = 1,
+        KEEP_ITEMS = { bandage = true, healthkit = true, jumpercable = true, valve = true, tape = true },
+        STAMINA_ITEMS = { pop = true, popbottle = true },
+        STAMINA_RAZZLE_RANGE = 60,
+        staminaSprint = false,
+        sprinting = false,
+        SPRINT_OFF_EVERY = 0.8,
+        SHIFT_HOLD = 0.1,
+        sprintOffAt = 0,
+        shiftReleaseAt = nil,
+        CABLE_MAX_FILL = 0.67,
+        USE_COOLDOWN = 1.5,
+        KEY_HOLD = 0.12,
+        itemKey = nil,
+        itemKeyUp = 0,
+        COLLECT_ARRIVE = 2,
+        COLLECT_Y = 2.3,
+        COLLECT_RETRY = 1.5,
+        COLLECT_TRIES = 3,
+        RESEARCH_NEAR = { WaxwellMonster = 5, ConnieMonster = 8, GlistenMonster = 8 },
+        RESEARCH_GRAB_ARRIVE = 6,
+        RESEARCH_GRAB_WAIT = 10,
+        RESEARCH_BLOT_ARRIVE = 3,
+        RESEARCH_SEEN_SCALE = 0.5,
+        RESEARCH_TRAVEL_MAX = 30,
+        RESEARCH_BLOT_ZONES = 10,
+        RODGER_LINK = 10,
+        RESEARCH_FACE_MAX = 50,
+        RESEARCH_FACE_MIN = 10,
+        RESEARCH_FACE_GAP = 3,
+        RESEARCH_FACE_ARRIVE = 4,
+        RESEARCH_FACE_REFRESH = 0.25,
+        RESEARCH_RAZZLE_ARRIVE = 15,
+        RESEARCH_RAZZLE_WAIT = 8,
+        BLOT_HAND_RANGE = 12,
+        BLOT_HAND_RECHECK = 0.25,
+        FLOOR_UP = 8,
+        FLOOR_DOWN = 40,
+        HIP_DEFAULT = 3,
+        SURFACE_TOLERANCE = 6,
+        FACE_FLOOR_TOLERANCE = 4,
+        AT_MACHINE = 6,
+        hipOffset = 3,
+        PASSIVE_RANGE = { RodgerMonster = 40 },
+        IGNORE_BODY = { BlottMonster = true },
+        researched = {},
+        researchMap = nil,
+        research = nil,
+        BUY_ORDER = { "Valve", "HealthKit", "Bandage", "JumperCable" },
+        BUY_SETTING = { Valve = "farmExtractionItems", HealthKit = "farmHealItems", Bandage = "farmHealItems", JumperCable = "farmExtractionItems" },
+        PRICES = { Valve = 150, HealthKit = 100, Bandage = 60, JumperCable = 65 },
+        BUY_ARRIVE = 4,
+        bought = {},
+        buyTapes = 0,
+        BUY_RANGE = 45,
+        roomUntil = 0,
+        targetKind = "machine",
+        collect = nil,
+        collectTries = 0,
+        useAt = 0,
+        skip = {},
+        skipMap = nil,
+        dead = false,
+        skipped = false,
+        sacrificeY = 0,
+        phase = "idle",
+        at = 0,
+        current = nil,
+        goalPos = nil,
+        goalY = 0,
+        startY = 0,
+        travelStart = nil,
+        hideY = 0,
+        surfaceY = 0,
+        hideUntil = 0,
+        rmbDown = false,
+        wDown = false,
+        W_KEY = 0x57,
+        noCollide = false,
+        deathStage = 0,
+        readyStage = 0,
+        readyClicked = false,
+        readyWidth = 0,
+        readySteady = 0,
+        READY_STEADY = 0.8,
+        CARD_STEADY = 0.8,
+        HIDE_RETARGET = 1,
+        hideGoal = nil,
+        hideGoalAt = 0,
+        hideGoalRadius = 0,
+        hideGoalLabel = "",
+        elevatorHold = "armed",
+        voteStage = 0,
+        voteAt = 0,
+        voteClicked = false,
+        voteSignature = 0,
+        voteSteady = 0,
+        startLabel = nil,
+    },
+    LOBBY = {
+        THRESHOLD = 0.38,
+        ARRIVE = 5,
+        STALL_SAMPLE = 1.2,
+        STALL_DIST = 2,
+        TIMEOUT = 5,
+        RESET_WAIT = 7,
+        ENTER_TIMEOUT = 10,
+        CLICK_HOLD = 0.32,
+        POLL = 1,
+        VK = { W = 0x57, A = 0x41, S = 0x53, D = 0x44, ESC = 0x1B, R = 0x52, ENTER = 0x0D },
+        SHIFT = 0xA0,
+        SPRINT_PROBE = 0.6,
+        SPRINT_RETAP = 2,
+        sprintMode = nil,
+        sprintStage = 0,
+        sprintAt = 0,
+        sprintNextAt = 0,
+        shiftDown = false,
+        RING = { "Hub", "NE", "Right", "SE", "Center", "SW", "Left", "NW" },
+        GATES = { "Right", "Left", "Center" },
+        GATE_OF = { Right = "RightGate", Left = "LeftGate", Center = "CenterGate" },
+        NODES = {
+            Hub = Vector3.new(14.6, 23.5, -44.2),
+            NE = Vector3.new(53.9, 23.5, -57.7),
+            Right = Vector3.new(71.3, 23.5, -91.2),
+            SE = Vector3.new(56.1, 23.5, -131.5),
+            Center = Vector3.new(16.5, 23.5, -149.3),
+            SW = Vector3.new(-27.3, 23.5, -131.9),
+            Left = Vector3.new(-43.1, 23.5, -88.9),
+            NW = Vector3.new(-24.6, 23.5, -57.0),
+        },
+        edges = nil,
+        held = {},
+        phase = "idle",
+        atNode = "Hub",
+        target = nil,
+        path = nil,
+        legIndex = 1,
+        at = 0,
+        resetStage = 1,
+        lastPos = nil,
+        lastCheck = 0,
+        stallUntil = 0,
+        stallFrom = nil,
+        stallTick = -1,
+        pollAt = 0,
+    },
+    PROMPT = {
+        WIDTH = 620,
+        HEIGHT = 354,
+        TITLE = "WARNING",
+        TITLE_SIZE = 30,
+        TITLE_Y = 26,
+        BODY_SIZE = 16,
+        BODY_TOP = 78,
+        BODY_STEP = 24,
+        BODY = {
+            "Auto-farm is still in early access, so it may not be 100% ideal.",
+            "This was stress-tested on my alt for 3 days and didn't cause any harm.",
+            "DEVS CAN BE UNPREDICTABLE WITH THEIR UPDATES, SO STAY CAREFUL!",
+            "Tested on version ALPHA 0.27.2.",
+            "",
+            "Unsafe LuaU and Raycast (at least 1500 ms) are recommended for the best results.",
+        },
+        CHECK_LABEL = "I understand everything written above. Remember my choice.",
+        CHECK_SIZE = 16,
+        CHECK_BOX = 22,
+        CHECK_GAP = 10,
+        CHECK_LABEL_WIDTH = 392,
+        CHECK_TEXT_Y = 3,
+        CHECK_OFF = Color3.fromRGB(10, 10, 12),
+        CHECK_ON = Color3.fromRGB(214, 92, 14),
+        CHECK_Y = 238,
+        BUTTON_WIDTH = 150,
+        BUTTON_HEIGHT = 38,
+        BUTTON_GAP = 20,
+        BUTTON_BOTTOM = 26,
+        BUTTON_SIZE = 18,
+        BUTTON_TEXT_Y = 17,
+        CORNER = 6,
+    },
+}
+
+function FARM.promptDrawing(kind, z)
+    local object = Drawing.new(kind)
+    safeSet(object, "ZIndex", z)
+    safeSet(object, "Transparency", 1)
+    table.insert(FARM.prompt.drawings, object)
+    return object
+end
+
+function FARM.promptSquare(x, y, w, h, color, filled, z)
+    local square = FARM.promptDrawing("Square", z)
+    safeSet(square, "Filled", filled)
+    safeSet(square, "Thickness", 1)
+    safeSet(square, "Color", color)
+    safeSet(square, "Corner", FARM.PROMPT.CORNER)
+    square.Position = Vector2.new(x, y)
+    square.Size = Vector2.new(w, h)
+    square.Visible = true
+    return square
+end
+
+function FARM.promptText(text, size, color, x, y, centered)
+    local label = FARM.promptDrawing("Text", 74)
+    safeSet(label, "Font", Drawing.Fonts.SystemBold)
+    safeSet(label, "Size", size)
+    safeSet(label, "FontSize", size)
+    safeSet(label, "Center", centered ~= false)
+    safeSet(label, "Color", color)
+    label.Text = text
+    label.Position = Vector2.new(x, y)
+    label.Visible = true
+    return label
+end
+
+function FARM.showPrompt()
+    local camera = Workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    local P = FARM.PROMPT
+    local viewport = camera.ViewportSize
+    local x = math.floor(viewport.X / 2 - P.WIDTH / 2)
+    local y = math.floor(viewport.Y / 2 - P.HEIGHT / 2)
+    local white = Color3.fromRGB(255, 255, 255)
+
+    FARM.prompt = { drawings = {}, buttons = {}, wasDown = true, checked = false }
+    FARM.promptSquare(x, y, P.WIDTH, P.HEIGHT, Color3.fromRGB(22, 22, 26), true, 70)
+    FARM.promptText(P.TITLE, P.TITLE_SIZE, Color3.fromRGB(255, 120, 60), x + P.WIDTH / 2, y + P.TITLE_Y)
+
+    for index, line in ipairs(P.BODY) do
+        FARM.promptText(line, P.BODY_SIZE, white, x + P.WIDTH / 2, y + P.BODY_TOP + (index - 1) * P.BODY_STEP)
+    end
+
+    local rowWidth = P.CHECK_BOX + P.CHECK_GAP + P.CHECK_LABEL_WIDTH
+    local rowLeft = x + (P.WIDTH - rowWidth) / 2
+    local checkY = y + P.CHECK_Y
+
+    FARM.prompt.check = {
+        x = rowLeft,
+        y = checkY,
+        size = P.CHECK_BOX,
+        box = FARM.promptSquare(rowLeft, checkY, P.CHECK_BOX, P.CHECK_BOX, P.CHECK_OFF, true, 72),
+    }
+
+    FARM.promptText(P.CHECK_LABEL, P.CHECK_SIZE, white, rowLeft + P.CHECK_BOX + P.CHECK_GAP, checkY + P.CHECK_TEXT_Y, false)
+
+    local buttonY = y + P.HEIGHT - P.BUTTON_HEIGHT - P.BUTTON_BOTTOM
+    local specs = {
+        { label = "Continue", choice = true, x = x + P.WIDTH / 2 - P.BUTTON_WIDTH - P.BUTTON_GAP / 2, base = Color3.fromRGB(214, 92, 14), hover = Color3.fromRGB(240, 116, 36), off = Color3.fromRGB(40, 40, 46), needsCheck = true },
+        { label = "No", choice = false, x = x + P.WIDTH / 2 + P.BUTTON_GAP / 2, base = Color3.fromRGB(48, 48, 56), hover = Color3.fromRGB(70, 70, 80) },
+    }
+
+    for _, spec in ipairs(specs) do
+        spec.y = buttonY
+        spec.square = FARM.promptSquare(spec.x, buttonY, P.BUTTON_WIDTH, P.BUTTON_HEIGHT, spec.needsCheck and spec.off or spec.base, true, 72)
+        spec.hovered = false
+        spec.text = FARM.promptText(spec.label, P.BUTTON_SIZE, spec.needsCheck and Color3.fromRGB(120, 120, 130) or Color3.fromRGB(255, 255, 255), spec.x + P.BUTTON_WIDTH / 2, buttonY + P.BUTTON_TEXT_Y)
+        table.insert(FARM.prompt.buttons, spec)
+    end
+end
+
+function FARM.removePrompt()
+    local prompt = FARM.prompt
+    if not prompt then
+        return
+    end
+
+    for _, object in ipairs(prompt.drawings) do
+        pcall(function()
+            object:Remove()
+        end)
+    end
+
+    FARM.prompt = nil
+end
+
+function FARM.choosePrompt(accept)
+    FARM.removePrompt()
+
+    if accept then
+        FARM.acknowledged = true
+        FARM.active = true
+        SETTINGS.farmWarningAccepted = true
+        FARM.resetBanner(tick())
+
+        if type(notify) == "function" then
+            pcall(notify, "Dandy's World", "Auto-farm armed", 3)
+        end
+
+        return
+    end
+
+    FARM.acknowledged = false
+    FARM.active = false
+    SETTINGS.aggressiveAutoFarm = false
+
+    if UI then
+        pcall(UI.SetValue, FARM.TOGGLE_ID, false)
+    end
+end
+
+function FARM.updatePrompt()
+    local prompt = FARM.prompt
+    if not prompt.mouse and LocalPlayer then
+        prompt.mouse = LocalPlayer:GetMouse()
+    end
+
+    local mouse = prompt.mouse
+    if not mouse or type(ismouse1pressed) ~= "function" then
+        return
+    end
+
+    local P = FARM.PROMPT
+    local mx, my = mouse.X, mouse.Y
+    local down = ismouse1pressed() and robloxFocused()
+    local clicked = down and not prompt.wasDown
+    prompt.wasDown = down
+
+    if not (mx and my) then
+        return
+    end
+
+    local check = prompt.check
+    if clicked and mx >= check.x and mx <= check.x + check.size and my >= check.y and my <= check.y + check.size then
+        prompt.checked = not prompt.checked
+        check.box.Color = prompt.checked and P.CHECK_ON or P.CHECK_OFF
+    end
+
+    for _, button in ipairs(prompt.buttons) do
+        local usable = (not button.needsCheck) or prompt.checked
+        local over = usable and mx >= button.x and mx <= button.x + P.BUTTON_WIDTH and my >= button.y and my <= button.y + P.BUTTON_HEIGHT
+
+        if button.needsCheck then
+            button.square.Color = usable and (over and button.hover or button.base) or button.off
+            button.text.Color = usable and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(120, 120, 130)
+        elseif over ~= button.hovered then
+            button.square.Color = over and button.hover or button.base
+        end
+
+        button.hovered = over
+
+        if over and clicked then
+            FARM.choosePrompt(button.choice)
+            return
+        end
+    end
+end
+
+function FARM.makeBanner()
+    local B = FARM.BANNER
+    local specs = {
+        { text = "Auto-farm is active", size = B.TITLE_SIZE },
+        { text = "Press [P] to pause it.", size = B.BODY_SIZE },
+        { text = "Made by VantaH", size = B.BODY_SIZE },
+        { text = "", size = B.STATUS_SIZE, gap = B.STATUS_GAP },
+    }
+
+    local banner = { lines = {}, height = 0, x = 0.5, y = 0.5, moveAt = 0, keyText = nil, statusText = nil }
+
+    for index, spec in ipairs(specs) do
+        local drawing = makeDrawing("Text", Color3.fromRGB(255, 255, 255))
+        safeSet(drawing, "Center", true)
+        safeSet(drawing, "Outline", true)
+        safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
+        safeSet(drawing, "Size", spec.size)
+        safeSet(drawing, "FontSize", spec.size)
+        safeSet(drawing, "ZIndex", 68)
+        drawing.Text = spec.text
+        banner.lines[index] = { drawing = drawing, size = spec.size, gap = spec.gap or B.LINE_GAP }
+        banner.height = banner.height + spec.size + (index < #specs and banner.lines[index].gap or 0)
+    end
+
+    banner.titleText = specs[1].text
+    banner.keyText = specs[2].text
+    FARM.banner = banner
+    return banner
+end
+
+function FARM.bannerText()
+    if FARM.paused then
+        return "Auto-farm is paused", "Press [P] to unpause it."
+    end
+    return "Auto-farm is active", "Press [P] to pause it."
+end
+
+function FARM.pollPause()
+    if type(iskeypressed) ~= "function" then
+        return
+    end
+    local ok, pressed = pcall(iskeypressed, FARM.PAUSE_KEY)
+    local down = ok and pressed == true and robloxFocused()
+    if down and not FARM.pauseDown then
+        FARM.pauseWanted = not FARM.pauseWanted
+    end
+    FARM.pauseDown = down
+end
+
+function FARM.underground()
+    local phase = FARM.RUN.phase
+    return PLACE_MODE == "main" and (phase == "dive" or phase == "hide" or phase == "surface")
+end
+
+function FARM.statusText(now)
+    if FARM.paused then
+        return "Paused"
+    end
+    if FARM.pauseWanted then
+        return "Pausing after surfacing"
+    end
+
+    local elapsed = now - FARM.armedAt
+    if elapsed < FARM.BANNER.STARTUP then
+        return "Starts in " .. math.ceil(FARM.BANNER.STARTUP - elapsed) .. "s"
+    end
+
+    return FARM.status or "Working"
+end
+
+function FARM.setStatus(text)
+    FARM.status = text
+end
+
+function FARM.resetBanner(now)
+    FARM.status = nil
+    FARM.armedAt = now
+    FARM.paused = false
+    FARM.pauseWanted = false
+
+    local banner = FARM.banner
+    if banner then
+        banner.x = 0.5
+        banner.y = 0.5
+        banner.moveAt = now + FARM.BANNER.HOLD
+    end
+end
+
+function FARM.hideBanner()
+    local banner = FARM.banner
+    if not banner then
+        return
+    end
+
+    for _, line in ipairs(banner.lines) do
+        line.drawing.Visible = false
+    end
+end
+
+function FARM.updateBanner(now)
+    local camera = Workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    local banner = FARM.banner
+    if not banner then
+        banner = FARM.makeBanner()
+        banner.moveAt = now + FARM.BANNER.HOLD
+    end
+
+    local B = FARM.BANNER
+    local titleText, keyText = FARM.bannerText()
+
+    if banner.titleText ~= titleText then
+        banner.titleText = titleText
+        banner.lines[1].drawing.Text = titleText
+    end
+
+    if banner.keyText ~= keyText then
+        banner.keyText = keyText
+        banner.lines[2].drawing.Text = keyText
+    end
+
+    local statusText = FARM.statusText(now)
+    if banner.statusText ~= statusText then
+        banner.statusText = statusText
+        banner.lines[4].drawing.Text = statusText
+    end
+
+    if now >= banner.moveAt then
+        banner.moveAt = now + B.HOLD
+        banner.x = 0.5 + (math.random() * 2 - 1) * B.LIMIT
+        banner.y = 0.5 + (math.random() * 2 - 1) * B.LIMIT
+    end
+
+    local viewport = camera.ViewportSize
+    local px = viewport.X * banner.x
+    local py = viewport.Y * banner.y - banner.height / 2
+
+    for _, line in ipairs(banner.lines) do
+        line.drawing.Position = Vector2.new(px, py)
+        line.drawing.Visible = true
+        py = py + line.size + line.gap
+    end
+end
+
+function FARM.resumeClock()
+    local ok, value = pcall(os.time)
+    if ok and type(value) == "number" then
+        return value
+    end
+    return tick()
+end
+
+function FARM.writeResume()
+    if FARM.resumeWritten or not SETTINGS.farmAutoResume then
+        return
+    end
+
+    SETTINGS.resumeAutoFarm = true
+    SETTINGS.resumeAutoFarmAt = FARM.resumeClock()
+    saveConfig()
+    FARM.resumeWritten = true
+end
+
+function FARM.clearResume()
+    if not FARM.resumeWritten and not SETTINGS.resumeAutoFarm then
+        return
+    end
+
+    FARM.resumeWritten = false
+    SETTINGS.resumeAutoFarm = false
+    SETTINGS.resumeAutoFarmAt = 0
+    saveConfig()
+end
+
+function FARM.consumeResume()
+    local armed = SETTINGS.resumeAutoFarm == true
+    local age = FARM.resumeClock() - (SETTINGS.resumeAutoFarmAt or 0)
+
+    if armed then
+        SETTINGS.resumeAutoFarm = false
+        SETTINGS.resumeAutoFarmAt = 0
+        saveConfig()
+    end
+
+    return armed and age >= 0 and age <= FARM.RESUME_MAX_AGE
+end
+
+function FARM.update(now)
+    if now >= FARM.forceOffUntil and FARM.resumePending then
+        FARM.resumePending = false
+
+        if SETTINGS.farmAutoResume and SETTINGS.farmWarningAccepted and PLACE_MODE ~= "other" then
+            SETTINGS.aggressiveAutoFarm = true
+            if UI then
+                pcall(UI.SetValue, FARM.TOGGLE_ID, true)
+            end
+            if type(notify) == "function" then
+                pcall(notify, "Dandy's World", "Auto-farm resumed after teleport", 3)
+            end
+        end
+    end
+
+    if now < FARM.forceOffUntil then
+        if SETTINGS.aggressiveAutoFarm then
+            SETTINGS.aggressiveAutoFarm = false
+
+            if UI then
+                pcall(UI.SetValue, FARM.TOGGLE_ID, false)
+            end
+        end
+
+        FARM.acknowledged = false
+        FARM.active = false
+        return
+    end
+
+    if SETTINGS.aggressiveAutoFarm then
+        if not (FARM.active or FARM.prompt or FARM.acknowledged) then
+            if SETTINGS.farmWarningAccepted then
+                FARM.acknowledged = true
+                FARM.active = true
+                FARM.resetBanner(now)
+            else
+                FARM.showPrompt()
+            end
+        end
+    else
+        if FARM.prompt then
+            FARM.removePrompt()
+        end
+
+        FARM.clearResume()
+        FARM.acknowledged = false
+        FARM.active = false
+        FARM.paused = false
+        FARM.pauseWanted = false
+    end
+
+    if FARM.prompt then
+        FARM.updatePrompt()
+    end
+
+    if FARM.active then
+        FARM.pollPause()
+
+        if FARM.pauseWanted and not FARM.paused and not FARM.underground() then
+            FARM.paused = true
+            FARM.pausedAt = now
+            FARM.status = nil
+            FARM.lobbyStop()
+            FARM.runStop()
+        elseif not FARM.pauseWanted and FARM.paused then
+            FARM.paused = false
+            if FARM.pausedAt - FARM.armedAt < FARM.BANNER.STARTUP then
+                FARM.armedAt = FARM.armedAt + (now - FARM.pausedAt)
+            end
+        end
+
+        FARM.updateBanner(now)
+
+        if not FARM.paused and now - FARM.armedAt >= FARM.BANNER.STARTUP then
+            if PLACE_MODE == "lobby" then
+                FARM.lobbyUpdate(now)
+            elseif PLACE_MODE == "main" then
+                FARM.runUpdate(now)
+            end
+        end
+    else
+        FARM.hideBanner()
+        FARM.lobbyStop()
+        FARM.runStop()
+    end
+end
+
+function FARM.cleanup()
+    FARM.removePrompt()
+    FARM.lobbyStop()
+    FARM.runStop()
+
+    local banner = FARM.banner
+    if banner then
+        for _, line in ipairs(banner.lines) do
+            pcall(function()
+                line.drawing:Remove()
+            end)
+        end
+
+        FARM.banner = nil
+    end
+
+    FARM.active = false
+    FARM.acknowledged = false
+end
+
+function FARM.lobbyEdges()
+    local L = FARM.LOBBY
+    if L.edges then
+        return L.edges
+    end
+
+    local edges = {}
+    for index = 1, #L.RING do
+        local a = L.RING[index]
+        local b = L.RING[(index % #L.RING) + 1]
+        local d = (L.NODES[a] - L.NODES[b]).Magnitude
+        edges[a] = edges[a] or {}
+        edges[b] = edges[b] or {}
+        edges[a][b] = d
+        edges[b][a] = d
+    end
+
+    L.edges = edges
+    return edges
+end
+
+function FARM.shortest(from, to)
+    local edges = FARM.lobbyEdges()
+    local dist, prev, done = {}, {}, {}
+
+    for node in pairs(edges) do
+        dist[node] = math.huge
+    end
+    dist[from] = 0
+
+    while true do
+        local cur, best = nil, math.huge
+        for node, d in pairs(dist) do
+            if not done[node] and d < best then
+                cur, best = node, d
+            end
+        end
+
+        if not cur or cur == to then
+            break
+        end
+
+        done[cur] = true
+        for nb, w in pairs(edges[cur]) do
+            if dist[cur] + w < dist[nb] then
+                dist[nb] = dist[cur] + w
+                prev[nb] = cur
+            end
+        end
+    end
+
+    local path, node = {}, to
+    while node do
+        table.insert(path, 1, node)
+        node = prev[node]
+    end
+
+    if path[1] ~= from then
+        return { from, to }, 9999
+    end
+
+    return path, dist[to]
+end
+
+function FARM.gateLabel(gateName, which)
+    local folder = Workspace:FindFirstChild("Elevators")
+    local gate = folder and folder:FindFirstChild(gateName)
+    local billboard = gate and gate:FindFirstChild("billboardPart")
+    local gui = billboard and billboard:FindFirstChild("billboardGui")
+    local frame = gui and gui:FindFirstChild("Frame")
+    local label = frame and frame:FindFirstChild(which)
+    if not label then
+        return nil
+    end
+
+    local ok, text = pcall(function()
+        return label.Text
+    end)
+
+    return ok and text or nil
+end
+
+function FARM.gateCount(gateName)
+    local text = FARM.gateLabel(gateName, "players")
+    if not text then
+        return -1
+    end
+
+    return tonumber(string.match(text, "^(%d+)")) or -1
+end
+
+function FARM.gateOpen(gateName)
+    local folder = Workspace:FindFirstChild("Elevators")
+    local gate = folder and folder:FindFirstChild(gateName)
+    local elevator = gate and gate:FindFirstChild("Elevator")
+    local opened = elevator and elevator:FindFirstChild("Opened")
+    return (opened and opened.Value) or false
+end
+
+function FARM.gateInside(gateName)
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local folder = Workspace:FindFirstChild("Elevators")
+    local gate = folder and folder:FindFirstChild(gateName)
+    local elevator = gate and gate:FindFirstChild("Elevator")
+    local base = elevator and elevator:FindFirstChild("Base")
+    if not (root and base) then
+        return false
+    end
+
+    local d = root.Position - base.Position
+    return math.abs(d.X) <= 20 and math.abs(d.Z) <= 20
+end
+
+function FARM.pickGate(from)
+    local L = FARM.LOBBY
+    local best, bestCost
+
+    for _, node in ipairs(L.GATES) do
+        local gateName = L.GATE_OF[node]
+        if FARM.gateOpen(gateName) and FARM.gateCount(gateName) == 0 then
+            local _, cost = FARM.shortest(from, node)
+            if not bestCost or cost < bestCost then
+                best, bestCost = node, cost
+            end
+        end
+    end
+
+    return best
+end
+
+function FARM.setKey(code, want)
+    local held = FARM.LOBBY.held
+    if want and not held[code] then
+        held[code] = true
+        pcall(keypress, code)
+    elseif not want and held[code] then
+        held[code] = nil
+        pcall(keyrelease, code)
+    end
+end
+
+function FARM.releaseKeys()
+    local held = FARM.LOBBY.held
+    for code in pairs(held) do
+        held[code] = nil
+        pcall(keyrelease, code)
+    end
+end
+
+function FARM.tapKey(code)
+    pcall(keypress, code)
+    pcall(keyrelease, code)
+end
+
+function FARM.steer(root, camera, targetPosition)
+    local L = FARM.LOBBY
+    local position = root.Position
+    local flat = Vector3.new(targetPosition.X - position.X, 0, targetPosition.Z - position.Z)
+    local distance = flat.Magnitude
+    if distance < 0.01 then
+        return 0
+    end
+
+    local direction = flat.Unit
+    local look = camera.CFrame.LookVector
+    local lookFlat = Vector3.new(look.X, 0, look.Z)
+    if lookFlat.Magnitude < 0.001 then
+        return distance
+    end
+
+    lookFlat = lookFlat.Unit
+    local right = Vector3.new(-lookFlat.Z, 0, lookFlat.X)
+    local forward = direction.X * lookFlat.X + direction.Z * lookFlat.Z
+    local side = direction.X * right.X + direction.Z * right.Z
+
+    FARM.setKey(L.VK.W, forward > L.THRESHOLD)
+    FARM.setKey(L.VK.S, forward < -L.THRESHOLD)
+    FARM.setKey(L.VK.D, side > L.THRESHOLD)
+    FARM.setKey(L.VK.A, side < -L.THRESHOLD)
+    return distance
+end
+
+function FARM.lobbyPlan(dest, from)
+    local L = FARM.LOBBY
+    L.target = dest
+    L.path = FARM.shortest(from, dest)
+    L.legIndex = 1
+    L.lastPos = nil
+end
+
+function FARM.lobbyGoHub()
+    local L = FARM.LOBBY
+    if L.atNode == "Hub" then
+        L.phase = "waitHub"
+        L.at = 0
+        return
+    end
+
+    FARM.lobbyPlan("Hub", L.atNode)
+    L.phase = "walk"
+end
+
+function FARM.setShift(down)
+    local L = FARM.LOBBY
+    if down == L.shiftDown then
+        return
+    end
+
+    L.shiftDown = down
+    if down then
+        pcall(keypress, L.SHIFT)
+    else
+        pcall(keyrelease, L.SHIFT)
+    end
+end
+
+function FARM.isSprinting()
+    local character = LocalPlayer.Character
+    local stats = character and character:FindFirstChild("Stats")
+    if not stats then
+        return false
+    end
+
+    local flag = stats:FindFirstChild("HoldingSprint") or stats:FindFirstChild("Sprinting")
+    if not flag then
+        return false
+    end
+
+    local ok, value = pcall(function()
+        return flag.Value
+    end)
+
+    return ok and value == true
+end
+
+function FARM.sprintSetting()
+    local ok, value = pcall(function()
+        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].SprintToggle.Value
+    end)
+    if ok and type(value) == "boolean" then
+        return value and "toggle" or "hold"
+    end
+    return nil
+end
+
+function FARM.sprintUpdate(now, want)
+    local L = FARM.LOBBY
+    if L.sprintMode == nil then
+        L.sprintMode = FARM.sprintSetting()
+    end
+
+    if not want then
+        if L.sprintMode == "hold" then
+            FARM.setShift(false)
+        end
+        return
+    end
+
+    if L.sprintMode == nil then
+        if L.sprintStage == 0 then
+            if FARM.isSprinting() then
+                return
+            end
+
+            FARM.setShift(true)
+            L.sprintStage = 1
+            L.sprintAt = now + L.SPRINT_PROBE
+        elseif L.sprintStage == 1 and now >= L.sprintAt then
+            FARM.setShift(false)
+            L.sprintStage = 2
+            L.sprintAt = now + L.SPRINT_PROBE
+        elseif L.sprintStage == 2 and now >= L.sprintAt then
+            L.sprintMode = FARM.isSprinting() and "toggle" or "hold"
+            L.sprintStage = 3
+        end
+
+        return
+    end
+
+    if L.sprintMode == "hold" then
+        FARM.setShift(true)
+        return
+    end
+
+    if not FARM.isSprinting() and now >= L.sprintNextAt then
+        L.sprintNextAt = now + L.SPRINT_RETAP
+        FARM.tapKey(L.SHIFT)
+    end
+end
+
+function FARM.lobbyNext()
+    local L = FARM.LOBBY
+    local best = FARM.pickGate(L.atNode)
+
+    if not best then
+        FARM.setStatus("All elevators busy")
+        FARM.lobbyGoHub()
+        return
+    end
+
+    if best == L.atNode then
+        L.target = best
+        L.phase = "enter"
+        L.at = tick() + L.ENTER_TIMEOUT
+        FARM.setStatus("Entering " .. best)
+        return
+    end
+
+    FARM.lobbyPlan(best, L.atNode)
+    L.phase = "walk"
+end
+
+function FARM.lobbyReset(reason)
+    local L = FARM.LOBBY
+    FARM.releaseKeys()
+    L.phase = "reset"
+    L.resetStage = 1
+    L.lastPos = nil
+    L.stallFrom = nil
+    FARM.setStatus("Resetting")
+end
+
+function FARM.moveGuard(root, now, restore)
+    local L = FARM.LOBBY
+
+    if not L.lastPos then
+        L.lastPos = root.Position
+        L.lastCheck = now
+        return false
+    end
+
+    local moved = (root.Position - L.lastPos).Magnitude
+
+    if L.stallFrom then
+        if moved >= L.STALL_DIST then
+            L.stallFrom = nil
+            L.stallTick = -1
+            L.lastPos = root.Position
+            L.lastCheck = now
+            FARM.setStatus(restore)
+            return false
+        end
+
+        local left = math.ceil(L.stallUntil - now)
+        if left ~= L.stallTick then
+            L.stallTick = left
+            FARM.setStatus("Timeout " .. math.max(left, 0) .. "s")
+        end
+
+        if now >= L.stallUntil then
+            L.stallFrom = nil
+            L.stallTick = -1
+            FARM.lobbyReset("stall")
+            return true
+        end
+
+        return false
+    end
+
+    if now - L.lastCheck >= L.STALL_SAMPLE then
+        if moved < L.STALL_DIST then
+            L.stallFrom = restore
+            L.stallUntil = now + L.TIMEOUT
+            L.stallTick = -1
+        else
+            L.lastPos = root.Position
+            L.lastCheck = now
+        end
+    end
+
+    return false
+end
+
+function FARM.lobbyClickLeave()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local main = gui and gui:FindFirstChild("MainGui")
+    local button = main and main:FindFirstChild("leaveButton")
+    if not button then
+        return false
+    end
+
+    local p, s = button.AbsolutePosition, button.AbsoluteSize
+    pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
+    pcall(mousemoverel, 3, 3)
+    pcall(mousemoverel, -3, -3)
+    return true
+end
+
+function FARM.lobbyUpdate(now)
+    local L = FARM.LOBBY
+
+    if not Workspace:FindFirstChild("Elevators") then
+        FARM.releaseKeys()
+        FARM.setStatus("Not in the lobby")
+        return
+    end
+
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local camera = Workspace.CurrentCamera
+
+    if L.phase == "idle" then
+        L.phase = "reset"
+        L.resetStage = 1
+        L.atNode = "Hub"
+        L.lastPos = nil
+        L.stallFrom = nil
+    end
+
+    if L.phase == "reset" then
+        FARM.releaseKeys()
+        if L.resetStage == 1 then
+            FARM.setStatus("Resetting")
+            FARM.tapKey(L.VK.ESC)
+            L.resetStage = 2
+            L.at = now + 0.4
+        elseif L.resetStage == 2 and now >= L.at then
+            FARM.tapKey(L.VK.R)
+            L.resetStage = 3
+            L.at = now + 0.4
+        elseif L.resetStage == 3 and now >= L.at then
+            FARM.tapKey(L.VK.ENTER)
+            L.phase = "spawnLeg"
+            L.at = now + L.RESET_WAIT
+            L.atNode = "Hub"
+            L.lastPos = nil
+            FARM.setStatus("Respawning")
+        end
+        return
+    end
+
+    if not (root and camera) then
+        FARM.releaseKeys()
+        return
+    end
+
+    local moving = L.phase == "walk" or L.phase == "enter" or (L.phase == "spawnLeg" and now >= L.at)
+    FARM.sprintUpdate(now, moving)
+
+    if L.phase == "spawnLeg" then
+        if now < L.at then
+            FARM.releaseKeys()
+            L.lastPos = root.Position
+            L.lastCheck = now
+            return
+        end
+
+        FARM.setStatus(L.stallFrom and FARM.status or "Moving to Hub")
+        local d = FARM.steer(root, camera, L.NODES.Hub)
+        if d <= L.ARRIVE then
+            FARM.releaseKeys()
+            L.atNode = "Hub"
+            L.phase = "waitHub"
+            L.at = 0
+            L.lastPos = nil
+            L.stallFrom = nil
+        else
+            FARM.moveGuard(root, now, "Moving to Hub")
+        end
+        return
+    end
+
+    if L.phase == "waitHub" then
+        FARM.releaseKeys()
+        if now < L.at then
+            return
+        end
+
+        L.at = now + L.POLL
+        local best = FARM.pickGate(L.atNode)
+        if best then
+            FARM.lobbyPlan(best, L.atNode)
+            L.phase = "walk"
+        else
+            FARM.setStatus("All elevators busy")
+        end
+        return
+    end
+
+    if L.phase == "walk" then
+        local nextNode = L.path[L.legIndex + 1]
+        if not nextNode then
+            FARM.lobbyGoHub()
+            return
+        end
+
+        local label = "Moving to " .. (nextNode == L.target and nextNode or (L.target .. " via " .. nextNode))
+        if not L.stallFrom then
+            FARM.setStatus(label)
+        end
+
+        local d = FARM.steer(root, camera, L.NODES[nextNode])
+
+        if d <= L.ARRIVE then
+            FARM.releaseKeys()
+            L.atNode = nextNode
+            L.legIndex = L.legIndex + 1
+            L.lastPos = nil
+            L.stallFrom = nil
+
+            if L.atNode == L.target then
+                if L.target == "Hub" then
+                    L.phase = "waitHub"
+                    L.at = 0
+                else
+                    local gateName = L.GATE_OF[L.target]
+                    if FARM.gateCount(gateName) ~= 0 or not FARM.gateOpen(gateName) then
+                        FARM.lobbyNext()
+                    else
+                        L.phase = "enter"
+                        L.at = now + L.ENTER_TIMEOUT
+                        FARM.setStatus("Entering " .. L.target)
+                    end
+                end
+            elseif L.target ~= "Hub" then
+                local best = FARM.pickGate(L.atNode)
+                if best and best ~= L.target then
+                    FARM.lobbyPlan(best, L.atNode)
+                end
+            end
+            return
+        end
+
+        FARM.moveGuard(root, now, label)
+        return
+    end
+
+    if L.phase == "enter" then
+        local gateName = L.GATE_OF[L.target]
+        if FARM.gateInside(gateName) or FARM.gateCount(gateName) >= 1 then
+            FARM.releaseKeys()
+            L.phase = "inside"
+            FARM.setStatus("Waiting")
+            return
+        end
+
+        local folder = Workspace:FindFirstChild("Elevators")
+        local gate = folder and folder:FindFirstChild(gateName)
+        local spawnPart = gate and gate:FindFirstChild("spawn")
+        if spawnPart then
+            FARM.steer(root, camera, spawnPart.Position)
+        end
+
+        if now >= L.at then
+            FARM.releaseKeys()
+            FARM.lobbyNext()
+        end
+        return
+    end
+
+    FARM.releaseKeys()
+
+    if L.phase == "inside" then
+        local gateName = L.GATE_OF[L.target]
+        local count = FARM.gateCount(gateName)
+
+        if count == 1 and not FARM.resumeWritten then
+            local seconds = tonumber(FARM.gateLabel(gateName, "time") or "")
+            if not FARM.gateOpen(gateName) or (seconds and seconds <= 5) then
+                FARM.writeResume()
+            end
+        end
+
+        if count > 1 then
+            FARM.clearResume()
+            L.phase = "leaveAim"
+            L.at = now
+            FARM.setStatus("Leaving, someone joined")
+        elseif count == 0 and not FARM.gateInside(gateName) then
+            FARM.lobbyNext()
+        end
+        return
+    end
+
+    if L.phase == "leaveAim" and now >= L.at then
+        if FARM.lobbyClickLeave() then
+            L.phase = "leaveDown"
+            L.at = now + 0.1
+        else
+            FARM.lobbyGoHub()
+        end
+    elseif L.phase == "leaveDown" and now >= L.at then
+        pcall(mouse1press)
+        L.phase = "leaveUp"
+        L.at = now + L.CLICK_HOLD
+    elseif L.phase == "leaveUp" and now >= L.at then
+        pcall(mouse1release)
+        L.phase = "leaveCheck"
+        L.at = now + 1.2
+    elseif L.phase == "leaveCheck" and now >= L.at then
+        local gateName = L.GATE_OF[L.target]
+        if FARM.gateCount(gateName) == 0 or not FARM.gateInside(gateName) then
+            L.atNode = L.target
+            FARM.lobbyNext()
+        else
+            L.phase = "leaveAim"
+            L.at = now + 0.3
+        end
+    end
+end
+
+function FARM.lobbyStop()
+    local L = FARM.LOBBY
+    FARM.setShift(false)
+    FARM.releaseKeys()
+    L.phase = "idle"
+    L.stallFrom = nil
+    L.lastPos = nil
+    L.sprintStage = 0
+end
+
+function FARM.runRmb(down)
+    local R = FARM.RUN
+    if down == R.rmbDown then
+        return
+    end
+
+    R.rmbDown = down
+    if down then
+        pcall(mouse2press)
+    else
+        pcall(mouse2release)
+    end
+end
+
+function FARM.runHoldW(down)
+    local R = FARM.RUN
+    if down and R.wDown and type(iskeypressed) == "function" then
+        local ok, pressed = pcall(iskeypressed, R.W_KEY)
+        local now = tick()
+        if ok and pressed == false and now >= (R.wRepressAt or 0) then
+            R.wRepressAt = now + 0.2
+            pcall(keypress, R.W_KEY)
+        end
+        return
+    end
+
+    if down == R.wDown then
+        return
+    end
+
+    R.wDown = down
+    if down then
+        pcall(keypress, R.W_KEY)
+    else
+        pcall(keyrelease, R.W_KEY)
+    end
+end
+
+function FARM.runCollide(on)
+    local R = FARM.RUN
+    local character = LocalPlayer.Character
+    if not character then
+        return
+    end
+
+    R.noCollide = not on
+    for _, name in ipairs({ "HumanoidRootPart", "Torso" }) do
+        local part = character:FindFirstChild(name)
+        if part then
+            pcall(function()
+                part.CanCollide = on
+            end)
+        end
+    end
+end
+
+function FARM.runFreeze(root)
+    pcall(function()
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end)
+end
+
+function FARM.runYawError(camera, root, goal)
+    local look = camera.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.001 then
+        return 0
+    end
+
+    flat = flat.Unit
+    local to = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
+    if to.Magnitude < 0.001 then
+        return 0
+    end
+
+    to = to.Unit
+    local angle = math.deg(math.acos(math.clamp(flat.X * to.X + flat.Z * to.Z, -1, 1)))
+    if flat.X * to.Z - flat.Z * to.X < 0 then
+        angle = -angle
+    end
+
+    return angle
+end
+
+function FARM.runFace(camera, root, goal)
+    local R = FARM.RUN
+    local err = FARM.runYawError(camera, root, goal)
+
+    if math.abs(err) <= R.TOL then
+        FARM.runRmb(false)
+        return true, err
+    end
+
+    FARM.runRmb(true)
+    pcall(mousemoverel, math.floor(math.clamp(err * R.GAIN, -R.MAX_STEP, R.MAX_STEP)), 0)
+    return false, err
+end
+
+function FARM.currentFloor()
+    local info = Workspace:FindFirstChild("Info")
+    local value = info and info:FindFirstChild("Floor")
+    local ok, floor = pcall(function()
+        return value.Value
+    end)
+
+    return (ok and floor) or 0
+end
+
+function FARM.floorLimitHit()
+    if SETTINGS.unlimitedFloors then
+        return false
+    end
+
+    local floor = FARM.currentFloor()
+    return floor > 0 and floor >= SETTINGS.floorLimit
+end
+
+function FARM.runMap()
+    local room = Workspace:FindFirstChild("CurrentRoom")
+    return room and room:GetChildren()[1]
+end
+
+function FARM.runMachines()
+    local map = FARM.runMap()
+    local gens = map and map:FindFirstChild("Generators")
+    local out = {}
+    if not gens then
+        return out
+    end
+
+    for _, model in ipairs(gens:GetChildren()) do
+        local prompt = model:FindFirstChild("Prompt")
+        local stats = model:FindFirstChild("Stats")
+        local folder = model:FindFirstChild("TeleportPositions")
+        local stand = folder and folder:FindFirstChild("TeleportPosition")
+
+        if prompt and stats then
+            out[#out + 1] = {
+                prompt = prompt,
+                stand = stand or prompt,
+                cur = stats:FindFirstChild("CurrentAmount"),
+                req = stats:FindFirstChild("RequiredAmount"),
+                done = stats:FindFirstChild("Completed"),
+                active = stats:FindFirstChild("ActivePlayer"),
+                connie = stats:FindFirstChild("Connie"),
+            }
+        end
+    end
+
+    return out
+end
+
+function FARM.runFill(machine)
+    local okCur, cur = pcall(function()
+        return machine.cur.Value
+    end)
+    local okReq, req = pcall(function()
+        return machine.req.Value
+    end)
+    return (okCur and cur) or 0, (okReq and req) or 1
+end
+
+function FARM.runConnie(machine)
+    local ok, value = pcall(function()
+        return machine.connie.Value
+    end)
+    return ok and value == true
+end
+
+function FARM.runDone(machine)
+    local ok, value = pcall(function()
+        return machine.done.Value
+    end)
+    if ok and type(value) == "boolean" then
+        return value
+    end
+
+    local cur, req = FARM.runFill(machine)
+    return cur >= req
+end
+
+function FARM.runEngagedBy(machine)
+    if not machine.active then
+        return "none"
+    end
+
+    local ok, value = pcall(function()
+        return machine.active.Value
+    end)
+
+    if not ok or not value or tostring(value.ClassName) ~= "Model" then
+        return "none"
+    end
+
+    return tostring(value.Name)
+end
+
+function FARM.runItemKey(value)
+    return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
+end
+
+function FARM.runStringValue(instance)
+    return STRINGS.read(instance)
+end
+
+function FARM.runInventory(character)
+    local folder = character:FindFirstChild("Inventory")
+    local slots = {}
+    if not folder then
+        return slots
+    end
+
+    for _, child in ipairs(folder:GetChildren()) do
+        local index = tonumber(string.match(child.Name, "^Slot(%d+)$"))
+        if index then
+            slots[#slots + 1] = { index = index, item = FARM.runStringValue(child) }
+        end
+    end
+
+    return slots
+end
+
+function FARM.runPressItem(now, slot)
+    local R = FARM.RUN
+    if R.itemKey or not slot then
+        return
+    end
+
+    R.itemKey = 0x30 + slot
+    R.itemKeyUp = now + R.KEY_HOLD
+    pcall(keypress, R.itemKey)
+end
+
+function FARM.runReleaseItemKey(now, force)
+    local R = FARM.RUN
+    if R.itemKey and (force or now >= R.itemKeyUp) then
+        pcall(keyrelease, R.itemKey)
+        R.itemKey = nil
+    end
+end
+
+function FARM.runSlotOf(character, name)
+    local want = FARM.runItemKey(name)
+    for _, slot in ipairs(FARM.runInventory(character)) do
+        if FARM.runItemKey(slot.item) == want then
+            return slot.index
+        end
+    end
+    return nil
+end
+
+function FARM.runHasFreeSlot(character)
+    for _, slot in ipairs(FARM.runInventory(character)) do
+        local key = FARM.runItemKey(slot.item)
+        if key == "" or key == "none" then
+            return true
+        end
+    end
+    return false
+end
+
+function FARM.runSpotKey(position)
+    return string.format("%d,%d,%d", math.floor(position.X), math.floor(position.Y), math.floor(position.Z))
+end
+
+function FARM.runTapes()
+    local info = Workspace:FindFirstChild("Info")
+    local stats = info and info:FindFirstChild("PlayerStats")
+    local mine = stats and stats:FindFirstChild(LocalPlayer.Name)
+    local points = mine and mine:FindFirstChild("SurvivalPoints")
+    local ok, value = pcall(function()
+        return points.Value
+    end)
+    return (ok and type(value) == "number") and value or 0
+end
+
+function FARM.runStoreDiscount()
+    local info = Workspace:FindFirstChild("Info")
+    local modifiers = info and info:FindFirstChild("CardModifiers")
+    local card = modifiers and modifiers:FindFirstChild("DandyDiscount")
+    local ok, value = pcall(function()
+        return card.Value
+    end)
+    if ok and type(value) == "number" and value > 0 and value < 1 then
+        return value
+    end
+    return 1
+end
+
+function FARM.runStoreTarget(root, character)
+    local R = FARM.RUN
+    local info = Workspace:FindFirstChild("Info")
+    local open = info and info:FindFirstChild("DandyStoreOpen")
+    local okOpen, isOpen = pcall(function()
+        return open.Value
+    end)
+
+    if not okOpen or isOpen ~= true then
+        R.bought = {}
+        return nil
+    end
+
+    if not FARM.runHasFreeSlot(character) then
+        return nil
+    end
+
+    local folder = Workspace:FindFirstChild("Elevators")
+    local elevator = folder and folder:FindFirstChild("Elevator")
+    local store = elevator and elevator:FindFirstChild("DandyStore")
+    if not store then
+        return nil
+    end
+
+    local offers = {}
+    for _, slot in ipairs(store:GetChildren()) do
+        if string.match(slot.Name, "^Slot%d+$") then
+            for _, model in ipairs(slot:GetChildren()) do
+                local prompt = model:FindFirstChild("Prompt")
+                local ok, position = pcall(function()
+                    return prompt.Position
+                end)
+                if ok and position and not R.skip[FARM.runSpotKey(position)] and (position - root.Position).Magnitude <= R.BUY_RANGE then
+                    offers[model.Name] = { model = model, prompt = prompt, kind = "buy", name = model.Name, spot = FARM.runSpotKey(position) }
+                end
+            end
+        end
+    end
+
+    local tapes = FARM.runTapes()
+    local discount = FARM.runStoreDiscount()
+
+    for _, name in ipairs(R.BUY_ORDER) do
+        local offer = offers[name]
+        if offer and not R.bought[name] and SETTINGS[R.BUY_SETTING[name]] then
+            local price = math.ceil(R.PRICES[name] * discount - 0.001)
+            if tapes >= price then
+                offer.price = price
+                return offer
+            end
+        end
+    end
+
+    return nil
+end
+
+function FARM.runMapItems()
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local folder = map and map:FindFirstChild("Items")
+    local found = {}
+    if not folder then
+        return found
+    end
+
+    for _, model in ipairs(folder:GetChildren()) do
+        if R.WANT_ITEMS[model.Name] then
+            local prompt = model:FindFirstChild("Prompt")
+            local ok, position = pcall(function()
+                return prompt.Position
+            end)
+            if ok and position and not R.skip[FARM.runSpotKey(position)] then
+                found[model.Name] = true
+            end
+        end
+    end
+
+    return found
+end
+
+function FARM.runMakeRoom(now, character)
+    local R = FARM.RUN
+    if not SETTINGS.farmHealItems or now < R.useAt or FARM.runHasFreeSlot(character) then
+        return false
+    end
+
+    local humanoid = character:FindFirstChild("Humanoid")
+    local ok, health, maxHealth = pcall(function()
+        return humanoid.Health, humanoid.MaxHealth
+    end)
+
+    if not ok or type(health) ~= "number" or type(maxHealth) ~= "number" or health <= 0 or health >= maxHealth then
+        return false
+    end
+
+    local onMap = FARM.runMapItems()
+    local burn = nil
+    if (onMap.Bandage or onMap.HealthKit) and FARM.runSlotOf(character, "Bandage") then
+        burn = "Bandage"
+    elseif onMap.HealthKit and FARM.runSlotOf(character, "HealthKit") then
+        burn = "HealthKit"
+    end
+
+    if not burn then
+        return false
+    end
+
+    FARM.runPressItem(now, FARM.runSlotOf(character, burn))
+    R.useAt = now + R.USE_COOLDOWN
+    R.roomUntil = now + R.USE_COOLDOWN
+    FARM.setStatus("Using " .. burn .. " to make room")
+    return true
+end
+
+function FARM.runCollectTarget(root, character, itemsOnly)
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local folder = map and map:FindFirstChild("Items")
+    if not folder then
+        return nil
+    end
+
+    if R.skipMap ~= map.Name then
+        R.skipMap = map.Name
+        R.skip = {}
+    end
+
+    local canCarry = FARM.runHasFreeSlot(character)
+    local bestItem, itemDistance, bestCapsule, capsuleDistance
+
+    for _, model in ipairs(folder:GetChildren()) do
+        local kind = nil
+        local setting = R.WANT_ITEMS[model.Name]
+        if canCarry and setting and SETTINGS[setting] then
+            kind = "item"
+        elseif model.Name == "ResearchCapsule" and SETTINGS.farmCapsules and not itemsOnly then
+            kind = "capsule"
+        end
+
+        if kind then
+            local prompt = model:FindFirstChild("Prompt")
+            local ok, position = pcall(function()
+                return prompt.Position
+            end)
+
+            if ok and position and not R.skip[FARM.runSpotKey(position)] then
+                local d = (position - root.Position).Magnitude
+                local entry = { model = model, prompt = prompt, kind = kind, name = model.Name, spot = FARM.runSpotKey(position) }
+                if kind == "item" then
+                    if not itemDistance or d < itemDistance then
+                        bestItem, itemDistance = entry, d
+                    end
+                elseif not capsuleDistance or d < capsuleDistance then
+                    bestCapsule, capsuleDistance = entry, d
+                end
+            end
+        end
+    end
+
+    return bestItem or bestCapsule
+end
+
+function FARM.runUseItems(now, character)
+    local R = FARM.RUN
+    if now < R.useAt then
+        return
+    end
+
+    local humanoid = character:FindFirstChild("Humanoid")
+    local okHealth, health = pcall(function()
+        return humanoid.Health
+    end)
+
+    if SETTINGS.farmHealItems and okHealth and type(health) == "number" and health > 0 and health <= R.HEAL_AT then
+        for _, name in ipairs(R.HEAL_ORDER) do
+            local slot = FARM.runSlotOf(character, name)
+            if slot then
+                FARM.runPressItem(now, slot)
+                R.useAt = now + R.USE_COOLDOWN
+                FARM.setStatus("Using " .. name)
+                return
+            end
+        end
+    end
+
+    if SETTINGS.farmExtractionItems and R.phase == "working" and R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
+        local cur, req = FARM.runFill(R.current)
+        local valve = FARM.runSlotOf(character, "Valve")
+        if valve and req > 0 and cur < req then
+            FARM.runPressItem(now, valve)
+            R.useAt = now + R.USE_COOLDOWN
+            FARM.setStatus("Using Valve")
+            return
+        end
+
+        if req > 0 and cur / req <= R.CABLE_MAX_FILL then
+            local slot = FARM.runSlotOf(character, "JumperCable")
+            if slot then
+                FARM.runPressItem(now, slot)
+                R.useAt = now + R.USE_COOLDOWN
+                FARM.setStatus("Using JumperCable")
+                return
+            end
+        end
+    end
+
+    R.staminaSprint = false
+    for _, slot in ipairs(FARM.runInventory(character)) do
+        local key = FARM.runItemKey(slot.item)
+        if key ~= "" and key ~= "none" and not R.KEEP_ITEMS[key] then
+            if R.STAMINA_ITEMS[key] and FARM.runStaminaFull(character) then
+                R.staminaSprint = true
+            else
+                FARM.runPressItem(now, slot.index)
+                R.useAt = now + R.USE_COOLDOWN
+                FARM.setStatus("Using " .. slot.item)
+                return
+            end
+        end
+    end
+end
+
+function FARM.runStaminaFull(character)
+    local ok, current, maximum = pcall(function()
+        local stats = character.Stats
+        return stats.CurrentStamina.Value, stats.Stamina.Value
+    end)
+    return ok and type(current) == "number" and type(maximum) == "number" and current >= maximum
+end
+
+function FARM.runNearRazzle(root)
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local monsters = map and map:FindFirstChild("Monsters")
+    local razzle = monsters and monsters:FindFirstChild("RazzleDazzleMonster")
+    if not razzle then
+        return false
+    end
+    local part = razzle:FindFirstChild("RootPart") or razzle.PrimaryPart
+    local ok, position = pcall(function()
+        return part.Position
+    end)
+    return not ok or not position or Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Magnitude <= R.STAMINA_RAZZLE_RANGE
+end
+
+function FARM.runStaminaSprint(now, root)
+    local R = FARM.RUN
+    local L = FARM.LOBBY
+    if R.shiftReleaseAt and now >= R.shiftReleaseAt then
+        R.shiftReleaseAt = nil
+        pcall(keyrelease, L.SHIFT)
+    end
+
+    local moving = R.phase == "tween" or R.phase == "toElevator" or (R.phase == "research" and R.research and R.research.kind ~= "razzle" and not R.researchArrived)
+    if R.phase == "research" and R.research and R.research.kind == "razzle" then
+        R.sprinting = false
+        return
+    end
+
+    if R.staminaSprint and moving and not FARM.runNearRazzle(root) then
+        R.sprinting = true
+        FARM.sprintUpdate(now, true)
+        return
+    end
+
+    R.sprinting = false
+    if L.shiftDown then
+        FARM.setShift(false)
+        return
+    end
+
+    if L.sprintMode == nil then
+        L.sprintMode = FARM.sprintSetting()
+    end
+
+    if L.sprintMode == "toggle" and not R.shiftReleaseAt and now >= R.sprintOffAt and FARM.isSprinting() then
+        R.sprintOffAt = now + R.SPRINT_OFF_EVERY
+        pcall(keypress, L.SHIFT)
+        R.shiftReleaseAt = now + R.SHIFT_HOLD
+    end
+end
+
+function FARM.runElevatorBase()
+    local folder = Workspace:FindFirstChild("Elevators")
+    local elevator = folder and folder:FindFirstChild("Elevator")
+    if not elevator then
+        return nil
+    end
+
+    for _, child in ipairs(elevator:GetChildren()) do
+        if child.Name == "Base" and (child.ClassName == "Part" or child.ClassName == "MeshPart") then
+            return child
+        end
+    end
+
+    return elevator:FindFirstChild("SpawnZones")
+end
+
+function FARM.runElevatorState(character, root)
+    local folder = Workspace:FindFirstChild("Elevators")
+    local elevator = folder and folder:FindFirstChild("Elevator")
+    local opened = elevator and elevator:FindFirstChild("Opened")
+    local okOpen, isOpen = pcall(function()
+        return opened.Value
+    end)
+    if not okOpen or type(isOpen) ~= "boolean" then
+        isOpen = nil
+    end
+
+    local stats = character:FindFirstChild("Stats")
+    local flag = stats and stats:FindFirstChild("InElevator")
+    local okFlag, flagged = pcall(function()
+        return flag.Value
+    end)
+
+    if okFlag and flagged == true then
+        return true, isOpen
+    end
+
+    local base = FARM.runElevatorBase()
+    local okBase, position = pcall(function()
+        return base.Position
+    end)
+
+    if not okBase or not position then
+        return false, isOpen
+    end
+
+    local d = root.Position - position
+    return math.abs(d.X) <= 20 and math.abs(d.Z) <= 20, isOpen
+end
+
+function FARM.runPassive(monster)
+    if FARM.RUN.PASSIVE[monster.Name] then
+        return true
+    end
+    return monster.Name == "GlistenMonster" and monster:GetAttribute("GlistenActivated") ~= true
+end
+
+function FARM.runThreat(root, ignore)
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local monsters = map and map:FindFirstChild("Monsters")
+    if not monsters then
+        return 9999, false
+    end
+    FARM.runResearchMap(map)
+
+    local nearest, chasing, panic, seen = 9999, false, false, false
+    local underground = R.phase == "dive" or R.phase == "hide" or R.phase == "surface"
+    local eye = underground and R.surfaceY and Vector3.new(root.Position.X, R.surfaceY, root.Position.Z) or root.Position
+    local walls = FARM.runRayWorks(root, underground)
+    local generators = map:FindFirstChild("Generators")
+
+    for _, monster in ipairs(monsters:GetChildren()) do
+        local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+        local ok, position = pcall(function()
+            return part.Position
+        end)
+
+        if ok and position and R.IGNORE_BODY[monster.Name] then
+            ok = false
+        end
+
+        if ok and position and FARM.runSawYou(monster) then
+            local key = FARM.runKey(monster)
+            if key and not (R.phase == "research" and key == ignore) then
+                R.researched[key] = true
+            end
+        end
+
+        if ok and position and ignore and FARM.runKey(monster) == ignore and not R.researched[ignore] then
+            ok = false
+        end
+
+        if ok and position and R.PASSIVE_RANGE[monster.Name] and (position - root.Position).Magnitude > R.PASSIVE_RANGE[monster.Name] then
+            ok = false
+        end
+
+        if ok and position then
+            local distance = (position - root.Position).Magnitude
+            local passive = FARM.runPassive(monster)
+
+            if not passive then
+                local instant, vision, sight = FARM.runChaser(monster)
+                local flat = Vector3.new(root.Position.X - position.X, 0, root.Position.Z - position.Z)
+                local reach = flat.Magnitude
+
+                local blocked = walls and reach >= R.CLOSE_RADIUS and reach < vision + R.SURFACE_BUFFER and FARM.runWallBetween(monster, part, eye, generators)
+
+                if not blocked and reach < instant + R.DIVE_BUFFER then
+                    panic = true
+                end
+
+                if blocked then
+                elseif reach < instant + R.SURFACE_BUFFER then
+                    seen = true
+                elseif reach < vision + R.SURFACE_BUFFER then
+                    local okLook, look = pcall(function()
+                        return part.CFrame.LookVector
+                    end)
+                    if not okLook or not look then
+                        seen = true
+                    else
+                        local facing = Vector3.new(look.X, 0, look.Z)
+                        if facing.Magnitude < 0.01 or reach < 0.01 or facing.Unit:Dot(flat.Unit) >= sight then
+                            seen = true
+                        end
+                    end
+                end
+            end
+
+            local holder = monster:FindFirstChild("ChasingValue")
+            local okTarget, target = pcall(function()
+                return holder.Value
+            end)
+
+            if okTarget and target and tostring(target.ClassName) == "Model" and tostring(target.Name) == LocalPlayer.Name then
+                chasing = true
+            end
+
+            if passive then
+                local okAwake, awake = pcall(function()
+                    return monster:GetAttribute("Attacking")
+                end)
+                if okAwake and awake == true then
+                    chasing = true
+                end
+            elseif distance < R.DANGER then
+                local okState, state = pcall(function()
+                    return monster:GetAttribute("ChaseState")
+                end)
+                if okState and (state == "run" or state == "attack") then
+                    chasing = true
+                end
+
+                local okAttack, attacking = pcall(function()
+                    return monster:GetAttribute("Attacking")
+                end)
+                if okAttack and attacking == true then
+                    chasing = true
+                end
+
+                local okChase, hunting = pcall(function()
+                    return monster:GetAttribute("Chasing")
+                end)
+                if okChase and hunting == true then
+                    chasing = true
+                end
+            end
+
+            if distance < nearest and not passive then
+                nearest = distance
+            end
+        end
+    end
+
+    return nearest, chasing, panic, seen
+end
+
+function FARM.runRayWorks(root, underground)
+    local R = FARM.RUN
+    local now = tick()
+    if underground or now < R.rayCheckAt then
+        return R.rayWorks
+    end
+    R.rayCheckAt = now + R.RAY_RECHECK
+
+    local ok, hit = pcall(function()
+        return workspace:Raycast(root.Position, Vector3.new(0, -R.RAY_DOWN, 0))
+    end)
+    R.rayWorks = ok and hit ~= nil
+    return R.rayWorks
+end
+
+function FARM.runIsInside(instance, folder)
+    if not folder then
+        return false
+    end
+    local ok, result = pcall(function()
+        local target = folder.Address
+        local current = instance
+        for _ = 1, 10 do
+            if not current then
+                return false
+            end
+            if current.Address == target then
+                return true
+            end
+            current = current.Parent
+        end
+        return false
+    end)
+    return ok and result == true
+end
+
+function FARM.runWallBetween(monster, part, eye, generators)
+    local R = FARM.RUN
+    local origin = monster:FindFirstChild("HumanoidRootPart") or part
+    local ok, blocked = pcall(function()
+        local from = origin.Position
+        for _ = 1, R.RAY_HOPS do
+            local offset = eye - from
+            if offset.Magnitude < 1 then
+                return false
+            end
+            local hit = workspace:Raycast(from, offset)
+            if not hit or not hit.Instance then
+                return false
+            end
+            if not FARM.runIsInside(hit.Instance, generators) then
+                return (hit.Position - from).Magnitude < offset.Magnitude - 1
+            end
+            from = hit.Position + offset.Unit * 0.05
+        end
+        return false
+    end)
+    return ok and blocked == true
+end
+
+function FARM.runKey(instance)
+    local ok, address = pcall(function()
+        return tostring(instance.Address)
+    end)
+    return ok and address or nil
+end
+
+function FARM.runResearchCount()
+    local ok, value = pcall(function()
+        return Workspace.Info.PlayerStats[LocalPlayer.Name].Monsters.Value
+    end)
+    return (ok and type(value) == "number") and value or nil
+end
+
+function FARM.runHandWall(zone, from, eye, generators)
+    local R = FARM.RUN
+    local ok, blocked = pcall(function()
+        local start = from + Vector3.new(0, 2, 0)
+        for _ = 1, R.RAY_HOPS do
+            local offset = eye - start
+            if offset.Magnitude < 1 then
+                return false
+            end
+            local hit = workspace:Raycast(start, offset)
+            if not hit or not hit.Instance then
+                return false
+            end
+            if not (FARM.runIsInside(hit.Instance, zone) or FARM.runIsInside(hit.Instance, generators) or FARM.runIsInside(hit.Instance, LocalPlayer.Character)) then
+                return (hit.Position - start).Magnitude < offset.Magnitude - 1
+            end
+            start = hit.Position + offset.Unit * 0.05
+        end
+        return false
+    end)
+    return ok and blocked == true
+end
+
+function FARM.runBlotHandNear(point, root)
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    if not map then
+        return false
+    end
+    local generators = map:FindFirstChild("Generators")
+    local walls = FARM.runRayWorks(root, R.phase == "dive" or R.phase == "hide" or R.phase == "surface")
+    for index = 1, R.RESEARCH_BLOT_ZONES do
+        local zone = map:FindFirstChild("BlotHandZone_" .. index)
+        if zone then
+            local hand = false
+            for _, child in ipairs(zone:GetChildren()) do
+                if child.ClassName == "Model" and child.Name:sub(1, 8) == "BlotHand" then
+                    hand = true
+                end
+            end
+            local ok, position = pcall(function()
+                return zone.Position
+            end)
+            if hand and ok and position then
+                local reach = Vector3.new(point.X - position.X, 0, point.Z - position.Z).Magnitude
+                if reach <= R.BLOT_HAND_RANGE and not (walls and FARM.runHandWall(zone, position, point, generators)) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function FARM.runBlotMachine(machine, root, now)
+    local R = FARM.RUN
+    if machine.blotAt and now < machine.blotAt then
+        return machine.blotNear
+    end
+    machine.blotAt = now + R.BLOT_HAND_RECHECK
+    local ok, stand = pcall(function()
+        return machine.stand.Position
+    end)
+    machine.blotNear = (ok and stand and FARM.runBlotHandNear(stand + Vector3.new(0, R.STAND_Y, 0), root)) or false
+    return machine.blotNear
+end
+
+function FARM.runResearchName(name)
+    local info = MONSTER_INFO[name]
+    return (info and info.name) or name
+end
+
+function FARM.runResearchMap(map)
+    local R = FARM.RUN
+    if R.researchMap ~= map.Name then
+        R.researchMap = map.Name
+        R.researched = {}
+    end
+end
+
+function FARM.runFloorY(x, y, z)
+    local R = FARM.RUN
+    local ok, hit = pcall(function()
+        return workspace:Raycast(Vector3.new(x, y + R.FLOOR_UP, z), Vector3.new(0, -R.FLOOR_DOWN, 0))
+    end)
+    if not ok or not hit then
+        return nil
+    end
+    local okY, hitY = pcall(function()
+        return hit.Position.Y
+    end)
+    return okY and hitY or nil
+end
+
+function FARM.runLowestFloorY(x, y, z)
+    local R = FARM.RUN
+    local lowest
+    pcall(function()
+        local from = Vector3.new(x, y + R.FLOOR_UP, z)
+        local bottom = y + R.FLOOR_UP - R.FLOOR_DOWN
+        for _ = 1, 6 do
+            local length = from.Y - bottom
+            if length <= 0.5 then
+                return
+            end
+            local hit = workspace:Raycast(from, Vector3.new(0, -length, 0))
+            if not hit then
+                return
+            end
+            lowest = hit.Position.Y
+            from = Vector3.new(x, hit.Position.Y - 0.05, z)
+        end
+    end)
+    return lowest
+end
+
+function FARM.runFacePoint(target)
+    local R = FARM.RUN
+    local ok, origin, look = pcall(function()
+        local head = target.model:FindFirstChild("HumanoidRootPart") or target.part
+        return head.Position, head.CFrame.LookVector
+    end)
+    if not ok or not origin or not look then
+        return nil
+    end
+
+    local facing = Vector3.new(look.X, 0, look.Z)
+    if facing.Magnitude < 0.01 then
+        return nil
+    end
+    facing = facing.Unit
+
+    local _, vision = FARM.runChaser(target.model)
+    local reach = math.min(R.RESEARCH_FACE_MAX, math.max(vision - 5, 0))
+    if reach < R.RESEARCH_FACE_MIN then
+        return nil
+    end
+
+    local map = FARM.runMap()
+    local generators = map and map:FindFirstChild("Generators")
+    local free = reach
+    local okRay = pcall(function()
+        local from = origin
+        local finish = origin + facing * reach
+        for _ = 1, R.RAY_HOPS do
+            local offset = finish - from
+            if offset.Magnitude < 0.5 then
+                return
+            end
+            local hit = workspace:Raycast(from, offset)
+            if not hit or not hit.Instance then
+                return
+            end
+            if not FARM.runIsInside(hit.Instance, generators) then
+                free = (hit.Position - origin).Magnitude
+                return
+            end
+            from = hit.Position + offset.Unit * 0.05
+        end
+    end)
+    if not okRay then
+        return nil
+    end
+
+    local stand = math.min(free - R.RESEARCH_FACE_GAP, reach)
+    if stand < R.RESEARCH_FACE_MIN then
+        return nil
+    end
+
+    local point = origin + facing * stand
+    local floor = FARM.runFloorY(point.X, origin.Y, point.Z)
+    local under = FARM.runFloorY(origin.X, origin.Y, origin.Z)
+    if not floor or not under or math.abs(floor - under) > R.FACE_FLOOR_TOLERANCE then
+        return nil
+    end
+    return Vector3.new(point.X, floor + R.hipOffset, point.Z)
+end
+
+function FARM.runRodgerAt(monsters, position)
+    local R = FARM.RUN
+    for _, monster in ipairs(monsters:GetChildren()) do
+        if monster.Name == "RodgerMonster" then
+            local part = monster:FindFirstChild("HumanoidRootPart") or monster:FindFirstChild("RootPart")
+            local ok, spot = pcall(function()
+                return part.Position
+            end)
+            if ok and spot and Vector3.new(spot.X - position.X, 0, spot.Z - position.Z).Magnitude <= R.RODGER_LINK then
+                return monster
+            end
+        end
+    end
+    return nil
+end
+
+function FARM.runFullyResearched(name)
+    if not SETTINGS.farmSkipResearched then
+        return false
+    end
+    local ok, value = pcall(function()
+        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Research[name].Value
+    end)
+    return ok and type(value) == "number" and value >= 100
+end
+
+function FARM.runResearchTarget(root)
+    local R = FARM.RUN
+    if not SETTINGS.farmResearchTwisteds then
+        return nil
+    end
+
+    local map = FARM.runMap()
+    local monsters = map and map:FindFirstChild("Monsters")
+    if not monsters then
+        return nil
+    end
+
+    FARM.runResearchMap(map)
+
+    local best, bestDistance
+    local function consider(entry, position)
+        local d = Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Magnitude
+        if not bestDistance or d < bestDistance then
+            best, bestDistance = entry, d
+        end
+    end
+
+    for _, monster in ipairs(monsters:GetChildren()) do
+        local key = FARM.runKey(monster)
+        if key and monster.Name == "RodgerMonster" and FARM.runSawYou(monster) then
+            R.researched[key] = true
+        end
+        if key and not R.researched[key] and monster.Name ~= "RodgerMonster" and not FARM.runFullyResearched(monster.Name) then
+            if monster.Name == "BlottMonster" then
+                for index = 1, R.RESEARCH_BLOT_ZONES do
+                    local zone = map:FindFirstChild("BlotHandZone_" .. index)
+                    local ok, position = pcall(function()
+                        return zone.Position
+                    end)
+                    if ok and position then
+                        consider({ kind = "blot", key = key, model = monster, part = zone, name = monster.Name }, position)
+                    end
+                end
+            else
+                local enraged = monster.Name == "GlistenMonster" and monster:GetAttribute("GlistenActivated") == true
+                local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+                local ok, position = pcall(function()
+                    return part.Position
+                end)
+                if ok and position and not enraged then
+                    local kind = R.RESEARCH_NEAR[monster.Name] and "near" or (monster.Name == "SquirmMonster" and "grab") or (monster.Name == "RazzleDazzleMonster" and "razzle") or "seen"
+                    consider({ kind = kind, key = key, model = monster, part = part, name = monster.Name }, position)
+                end
+            end
+        end
+    end
+
+    local items = map:FindFirstChild("Items")
+    if items then
+        for _, model in ipairs(items:GetChildren()) do
+            if model.Name == "FakeCapsule" and not FARM.runFullyResearched("RodgerMonster") then
+                local prompt = model:FindFirstChild("Prompt")
+                local ok, position = pcall(function()
+                    return prompt.Position
+                end)
+                local rodger = ok and position and FARM.runRodgerAt(monsters, position)
+                local rodgerKey = rodger and FARM.runKey(rodger)
+                local done = (rodgerKey and R.researched[rodgerKey]) or (rodger and FARM.runSawYou(rodger))
+                if ok and position and not done and not R.skip[FARM.runSpotKey(position)] then
+                    consider({ kind = "rodger", model = model, prompt = prompt, name = "Twisted Rodger", spot = FARM.runSpotKey(position), key = rodgerKey }, position)
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+function FARM.runSawYou(monster)
+    local holder = monster:FindFirstChild("ChasingValue")
+    local okTarget, target = pcall(function()
+        return holder.Value
+    end)
+    if okTarget and target and tostring(target.ClassName) == "Model" and tostring(target.Name) == LocalPlayer.Name then
+        return true
+    end
+
+    local ok, state, chasing, attacking = pcall(function()
+        return monster:GetAttribute("ChaseState"), monster:GetAttribute("Chasing"), monster:GetAttribute("Attacking")
+    end)
+    return ok and (state == "run" or state == "attack" or chasing == true or attacking == true)
+end
+
+function FARM.runSprintOff()
+    local L = FARM.LOBBY
+    if L.shiftDown then
+        FARM.setShift(false)
+    end
+end
+
+function FARM.runDive(root, now, status)
+    local R = FARM.RUN
+    local floor = FARM.runFloorY(root.Position.X, root.Position.Y, root.Position.Z)
+    if floor then
+        R.hipOffset = math.clamp(root.Position.Y - floor, 2, 5)
+    end
+    R.surfaceY = root.Position.Y
+    R.hideY = root.Position.Y - R.DEPTH
+    local ground = FARM.runLowestFloorY(root.Position.X, root.Position.Y, root.Position.Z)
+    if ground then
+        R.hideY = math.min(R.hideY, ground + R.hipOffset - R.DEPTH)
+    end
+    R.hideUntil = now + R.HIDE_MAX
+    R.clearSince = nil
+    R.hideGoal = nil
+    R.hideGoalY = nil
+    R.hideGoalAt = 0
+    R.phase = "dive"
+    R.at = now
+    FARM.setStatus(status)
+end
+
+function FARM.runChaser(monster)
+    local D = FARM.RUN.CHASER_DEFAULTS
+    local chaser = monster:FindFirstChild("Chaser")
+    local function read(name)
+        local value = chaser and chaser:FindFirstChild(name)
+        local ok, number = pcall(function()
+            return value.Value
+        end)
+        if ok and type(number) == "number" then
+            return number
+        end
+        return D[name]
+    end
+    return read("InstantRadius"), read("VisionRadius"), read("LineOfSight")
+end
+
+function FARM.runNearestTwisted(root)
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local monsters = map and map:FindFirstChild("Monsters")
+    if not monsters then
+        return nil, nil
+    end
+
+    local bestMonster, bestPart, bestDistance
+    for _, monster in ipairs(monsters:GetChildren()) do
+        if not FARM.runPassive(monster) then
+            local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+            local ok, position = pcall(function()
+                return part.Position
+            end)
+
+            if ok and position then
+                local distance = (position - root.Position).Magnitude
+                if not bestDistance or distance < bestDistance then
+                    bestMonster, bestPart, bestDistance = monster, part, distance
+                end
+            end
+        end
+    end
+
+    return bestMonster, bestPart
+end
+
+function FARM.runOtherPlayers()
+    local count = 0
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+function FARM.runHideGoal(root, character)
+    local R = FARM.RUN
+    local p = root.Position
+
+    if R.current and R.current.stand and not FARM.runDone(R.current) then
+        local ok, stand = pcall(function()
+            return R.current.stand.Position
+        end)
+        if ok and stand and Vector3.new(stand.X - p.X, 0, stand.Z - p.Z).Magnitude <= R.LOST then
+            return nil, 0, ""
+        end
+    end
+
+    local grab = FARM.runCollectTarget(root, character)
+    if grab then
+        local ok, position = pcall(function()
+            return grab.prompt.Position
+        end)
+        if ok and position then
+            return position, R.COLLECT_ARRIVE, (grab.kind == "capsule" and "Research Capsule" or grab.name), nil, position.Y + R.COLLECT_Y
+        end
+    end
+
+    local study = FARM.runResearchTarget(root)
+    if study then
+        local point = study.kind == "seen" and FARM.runFacePoint(study)
+        local ok, position = pcall(function()
+            return (study.prompt or study.part).Position
+        end)
+        position = point or (ok and position)
+        if position then
+            local y = point and point.Y
+            if not y then
+                local floor = FARM.runFloorY(position.X, position.Y, position.Z)
+                y = floor and (floor + R.hipOffset) or nil
+            end
+            return position, R.RESEARCH_FACE_ARRIVE, FARM.runResearchName(study.name), study.key, y
+        end
+    end
+
+    if FARM.floorLimitHit() then
+        return nil, 0, ""
+    end
+
+    local best, bestDistance
+    for _, machine in ipairs(FARM.runMachines()) do
+        if not FARM.runDone(machine) and not FARM.runConnie(machine) and not FARM.runBlotMachine(machine, root, tick()) then
+            local ok, stand = pcall(function()
+                return machine.stand.Position
+            end)
+            if ok and stand then
+                local d = Vector3.new(stand.X - p.X, 0, stand.Z - p.Z).Magnitude
+                if not bestDistance or d < bestDistance then
+                    best, bestDistance = stand, d
+                end
+            end
+        end
+    end
+
+    if best then
+        return best, R.ARRIVE, "machine", nil, best.Y + R.STAND_Y
+    end
+
+    return nil, 0, ""
+end
+
+function FARM.runTravelTo(root, position, y)
+    local R = FARM.RUN
+    R.goalPos = position
+    R.goalY = y
+    R.startY = root.Position.Y
+    R.travelStart = root.Position
+end
+
+function FARM.runClick(button)
+    local p, s = button.AbsolutePosition, button.AbsoluteSize
+    pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
+    pcall(mousemoverel, 3, 3)
+    pcall(mousemoverel, -3, -3)
+end
+
+function FARM.runSized(button)
+    if not button then
+        return false
+    end
+
+    local ok, size = pcall(function()
+        return button.AbsoluteSize
+    end)
+
+    return ok and size ~= nil and size.X > 0
+end
+
+function FARM.runIsDead(character, root)
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local death = gui and gui:FindFirstChild("DeathGui")
+    local screen = death and death:FindFirstChild("DeathScreen")
+    local okScreen, position = pcall(function()
+        return screen.AbsolutePosition
+    end)
+
+    if okScreen and position and position.Y > -100 then
+        return true
+    end
+
+    if not character or not root then
+        return false
+    end
+
+    local stats = character:FindFirstChild("Stats")
+    local hearts = stats and stats:FindFirstChild("Health")
+    local okHearts, count = pcall(function()
+        return hearts.Value
+    end)
+
+    if okHearts and type(count) == "number" and count <= 0 then
+        return true
+    end
+
+    local humanoid = character:FindFirstChild("Humanoid")
+    local ok, health = pcall(function()
+        return humanoid.Health
+    end)
+
+    return ok and type(health) == "number" and health <= 0
+end
+
+function FARM.runDeathClick(now, button, status, settle)
+    local R = FARM.RUN
+
+    if R.deathStage == 0 then
+        FARM.setStatus(status)
+        FARM.runClick(button)
+        R.deathStage = 1
+        R.at = now + 0.3
+    elseif R.deathStage == 1 and now >= R.at then
+        pcall(mouse1press)
+        R.deathStage = 2
+        R.at = now + 0.32
+    elseif R.deathStage == 2 and now >= R.at then
+        pcall(mouse1release)
+        R.deathStage = 3
+        R.at = now + settle
+    elseif R.deathStage == 3 and now >= R.at then
+        R.deathStage = 0
+        return true
+    end
+
+    return false
+end
+
+function FARM.runDeath(now)
+    local R = FARM.RUN
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local spectator = gui and gui:FindFirstChild("SpectatorGui")
+    local bottom = spectator and spectator:FindFirstChild("BottomFrame")
+    local leave = bottom and bottom:FindFirstChild("LeaveLobby")
+
+    if FARM.runSized(leave) then
+        if R.deathStage == 0 then
+            FARM.writeResume()
+        end
+        FARM.runDeathClick(now, leave, "Leaving to lobby", 3)
+        return
+    end
+
+    local death = gui and gui:FindFirstChild("DeathGui")
+    local skip = death and death:FindFirstChild("SkipButton")
+    local spectate = death and death:FindFirstChild("SpectateButton")
+
+    if not R.skipped and FARM.runSized(skip) then
+        if FARM.runDeathClick(now, skip, "Dead, skipping results", 1.5) then
+            R.skipped = true
+        end
+        return
+    end
+
+    if spectate then
+        FARM.runDeathClick(now, spectate, "Dead, opening spectate", 2.5)
+        return
+    end
+
+    FARM.setStatus("Dead, waiting for results")
+end
+
+function FARM.readyButton()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local screen = gui and gui:FindFirstChild("ScreenGui")
+    local selection = screen and screen:FindFirstChild("SelectionFrame")
+    local margin = selection and selection:FindFirstChild("Margin")
+    local bottom = margin and margin:FindFirstChild("BottomFrame")
+    local status = bottom and bottom:FindFirstChild("ReadyStatus")
+    local button = status and status:FindFirstChild("ReadyUp")
+    if not button then
+        return nil, 0
+    end
+
+    local ok, size = pcall(function()
+        return button.AbsoluteSize
+    end)
+
+    if not ok or not size then
+        return nil, 0
+    end
+
+    return button, size.X
+end
+
+function FARM.roundCountdown()
+    local R = FARM.RUN
+    local label = R.startLabel
+
+    if not (label and label.Parent) then
+        local gui = LocalPlayer:FindFirstChild("PlayerGui")
+        local screen = gui and gui:FindFirstChild("ScreenGui")
+        local selection = screen and screen:FindFirstChild("SelectionFrame")
+        if not selection then
+            return nil
+        end
+
+        for _, descendant in ipairs(selection:GetDescendants()) do
+            if descendant.Name == "GameStarting" then
+                label = descendant
+                R.startLabel = descendant
+                break
+            end
+        end
+    end
+
+    if not label then
+        return nil
+    end
+
+    local ok, text = pcall(function()
+        return label.Text
+    end)
+
+    if not ok or type(text) ~= "string" then
+        return nil
+    end
+
+    return tonumber(string.match(text, "(%d+)"))
+end
+
+function FARM.runCards()
+    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local screen = gui and gui:FindFirstChild("ScreenGui")
+    local frame = screen and screen:FindFirstChild("VoteFrame")
+    local cards = {}
+    if not frame then
+        return cards
+    end
+
+    for _, child in ipairs(frame:GetChildren()) do
+        if child.ClassName == "TextButton" and child.Name ~= "Template" and child.Name ~= "FancyTemplate" then
+            local object = child:FindFirstChild("Object")
+            local module = object and FARM.runStringValue(object) or ""
+            local lowered = string.lower(tostring(module))
+            if lowered == "" or lowered == "none" then
+                module = child.Name
+            end
+            local okModule = type(module) == "string" and module ~= ""
+            local holder = child:FindFirstChild("Holder")
+            local label = holder and holder:FindFirstChild("ItemName")
+            local okTitle, title = pcall(function()
+                return label.Text
+            end)
+            local okRect, size, position = pcall(function()
+                return child.AbsoluteSize, child.AbsolutePosition
+            end)
+
+            if okModule and type(module) == "string" and module ~= "" and okRect and size and position and size.X > 0 then
+                cards[#cards + 1] = {
+                    button = child,
+                    module = module,
+                    title = (okTitle and type(title) == "string") and title or "",
+                    signature = size.X + size.Y + position.X + position.Y,
+                }
+            end
+        end
+    end
+
+    return cards
+end
+
+function FARM.runCardScore(card)
+    local module = string.lower(card.module)
+    local title = string.lower(card.title)
+
+    if module == "machine" or title == "tech savvy" then
+        return 4
+    end
+    if string.find(module, "^itemrarity") or title == "avaricious" or title == "covetous" then
+        return 3
+    end
+    if module == "pipingtape" or title == "piping tape" then
+        return 2
+    end
+    return 1
+end
+
+function FARM.runVote(now)
+    local R = FARM.RUN
+    local info = Workspace:FindFirstChild("Info")
+    local voting = info and info:FindFirstChild("CardVoting")
+    local okVoting, active = pcall(function()
+        return voting.Value
+    end)
+
+    local cards = (okVoting and active == true) and FARM.runCards() or {}
+
+    if #cards == 0 then
+        if R.voteStage == 2 then
+            pcall(mouse1release)
+        end
+        R.voteStage = 0
+        R.voteClicked = false
+        R.voteSignature = 0
+        R.voteSteady = 0
+        return false
+    end
+
+    if R.voteClicked then
+        return false
+    end
+
+    local best
+    local signature = 0
+    for _, card in ipairs(cards) do
+        signature = signature + card.signature
+        if not best or FARM.runCardScore(card) > FARM.runCardScore(best) then
+            best = card
+        end
+    end
+
+    local label = best.title ~= "" and best.title or best.module
+
+    if R.voteStage == 0 then
+        if math.abs(signature - R.voteSignature) > 1 then
+            R.voteSignature = signature
+            R.voteSteady = now
+            FARM.setStatus("Waiting for cards")
+            return true
+        end
+
+        if now - R.voteSteady < R.CARD_STEADY then
+            FARM.setStatus("Waiting for cards")
+            return true
+        end
+
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+        FARM.setStatus("Voting " .. label)
+        FARM.runClick(best.button)
+        R.voteStage = 1
+        R.voteAt = now + 0.3
+    elseif R.voteStage == 1 and now >= R.voteAt then
+        pcall(mouse1press)
+        R.voteStage = 2
+        R.voteAt = now + 0.32
+    elseif R.voteStage == 2 and now >= R.voteAt then
+        pcall(mouse1release)
+        R.voteStage = 3
+        R.voteAt = now + 0.5
+    elseif R.voteStage == 3 and now >= R.voteAt then
+        R.voteStage = 0
+        R.voteClicked = true
+        FARM.setStatus("Voted " .. label)
+    end
+
+    return true
+end
+
+function FARM.runReady(now)
+    local R = FARM.RUN
+    local info = Workspace:FindFirstChild("Info")
+    local started = info and info:FindFirstChild("GameStarted")
+    local okStarted, hasStarted = pcall(function()
+        return started.Value
+    end)
+
+    local seconds = (not (okStarted and hasStarted == true)) and FARM.roundCountdown() or nil
+
+    if not seconds or seconds <= 0 then
+        R.readyClicked = false
+        R.readyStage = 0
+        R.readyWidth = 0
+        R.readySteady = 0
+        return false
+    end
+
+    local button, width = FARM.readyButton()
+
+    if not button or width <= 0 then
+        R.readyClicked = false
+        R.readyStage = 0
+        R.readyWidth = 0
+        R.readySteady = 0
+        return false
+    end
+
+    if R.readyClicked then
+        FARM.setStatus("Waiting for the round")
+        return true
+    end
+
+    if math.abs(width - R.readyWidth) > 1 then
+        R.readyWidth = width
+        R.readySteady = now
+        FARM.setStatus("Waiting for Ready Up")
+        return true
+    end
+
+    if now - R.readySteady < R.READY_STEADY then
+        FARM.setStatus("Waiting for Ready Up")
+        return true
+    end
+
+    if R.readyStage == 0 then
+        FARM.setStatus("Pressing Ready Up")
+        FARM.runClick(button)
+        R.readyStage = 1
+        R.at = now + 0.3
+    elseif R.readyStage == 1 and now >= R.at then
+        pcall(mouse1press)
+        R.readyStage = 2
+        R.at = now + 0.32
+    elseif R.readyStage == 2 and now >= R.at then
+        pcall(mouse1release)
+        R.readyStage = 3
+        R.at = now + 1.5
+    elseif R.readyStage == 3 and now >= R.at then
+        R.readyClicked = true
+        R.readyStage = 0
+    end
+
+    return true
+end
+
+function FARM.runUpdate(now)
+    local R = FARM.RUN
+    FARM.runReleaseItemKey(now)
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local camera = Workspace.CurrentCamera
+
+    if R.dead or FARM.runIsDead(character, root) then
+        R.dead = true
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+        R.phase = "idle"
+        R.current = nil
+        FARM.runDeath(now)
+        return
+    end
+
+    if not (root and camera) then
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+        R.phase = "idle"
+        return
+    end
+
+    R.deathStage = 0
+
+    local underground = R.phase == "dive" or R.phase == "hide" or R.phase == "surface"
+    if not SETTINGS.allowFarmWithPlayers and not underground then
+        local others = FARM.runOtherPlayers()
+        if others > 0 then
+            FARM.runRmb(false)
+            FARM.runHoldW(false)
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            R.phase = "idle"
+            R.current = nil
+            FARM.setStatus(string.format("%d other player%s here, waiting", others, others == 1 and "" or "s"))
+            return
+        end
+    end
+
+    if not underground and FARM.runVote(now) then
+        FARM.runHoldW(false)
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        return
+    end
+
+    if FARM.runReady(now) then
+        FARM.runRmb(false)
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        R.phase = "idle"
+        R.current = nil
+        return
+    end
+
+    FARM.runUseItems(now, character)
+    FARM.runStaminaSprint(now, root)
+
+    local buying = R.targetKind == "buy" and (R.phase == "tween" or R.phase == "collect")
+    if not underground and not buying and R.phase ~= "sacrifice" and R.phase ~= "working" then
+        local deal = FARM.runStoreTarget(root, character)
+        if deal then
+            FARM.runRmb(false)
+            R.current = nil
+            R.collect = deal
+            R.targetKind = "buy"
+            FARM.runTravelTo(root, deal.prompt.Position, root.Position.Y)
+            R.phase = "tween"
+            buying = true
+            FARM.setStatus(string.format("Buying %s for %d tapes", deal.name, deal.price))
+        end
+    end
+
+    if not underground and not buying and R.elevatorHold ~= "none" then
+        local inside, isOpen = FARM.runElevatorState(character, root)
+
+        if not inside then
+            R.elevatorHold = "none"
+        elseif isOpen == false then
+            R.elevatorHold = "closed"
+            FARM.runRmb(false)
+            FARM.runHoldW(false)
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            R.phase = "waitFloor"
+            R.current = nil
+            FARM.setStatus("Waiting for elevator doors")
+            return
+        elseif isOpen == true and R.elevatorHold == "closed" then
+            R.elevatorHold = "none"
+        end
+    end
+
+    if R.phase == "idle" then
+        R.phase = "pick"
+    end
+
+    local researching = R.phase == "research" and R.research
+    local hidingFor = (R.phase == "dive" or R.phase == "hide" or R.phase == "surface") and R.hideIgnore
+    local nearest, chasing, panic, seen = FARM.runThreat(root, (researching and R.research.key) or hidingFor or nil)
+    local hiding = R.phase == "dive" or R.phase == "hide" or R.phase == "surface"
+
+    local travelIgnore = SETTINGS.farmIgnoreTwistedsTravel and (R.phase == "tween" or R.phase == "collect")
+    if (chasing or panic) and not hiding and not travelIgnore and R.phase ~= "toElevator" and R.phase ~= "sacrifice" then
+        FARM.runRmb(false)
+        if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
+            FARM.tapKey(R.E_KEY)
+        end
+
+        R.research = nil
+        R.hideIgnore = nil
+        FARM.runSprintOff()
+        FARM.runDive(root, now, "Twisted near, diving")
+        return
+    end
+
+    if R.phase == "dive" then
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        FARM.runHoldW(false)
+        local p = root.Position
+        root.Position = Vector3.new(p.X, R.hideY, p.Z)
+        R.phase = "hide"
+        FARM.setStatus("Hiding")
+        return
+    end
+
+    if R.phase == "hide" then
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        local p = root.Position
+
+        if chasing or seen or FARM.runBlotHandNear(Vector3.new(p.X, R.surfaceY, p.Z), root) then
+            R.clearSince = nil
+        elseif not R.clearSince then
+            R.clearSince = now
+        end
+
+        if (R.clearSince and now - R.clearSince >= R.CLEAR_TIME) or now >= R.hideUntil then
+            R.clearSince = nil
+            FARM.runHoldW(false)
+            FARM.runRmb(false)
+            root.Position = Vector3.new(p.X, R.hideY, p.Z)
+            local goal = R.hideGoal
+            local atGoal = goal and R.hideGoalY and Vector3.new(goal.X - p.X, 0, goal.Z - p.Z).Magnitude <= (R.hideGoalRadius or 0) + 1
+            if atGoal then
+                R.surfaceY = R.hideGoalY
+            else
+                local floor = FARM.runFloorY(p.X, R.surfaceY, p.Z)
+                if floor and math.abs(floor + R.hipOffset - R.surfaceY) <= R.SURFACE_TOLERANCE then
+                    R.surfaceY = floor + R.hipOffset
+                end
+            end
+            R.hideIgnore = nil
+            R.phase = "surface"
+            FARM.setStatus("Surfacing")
+            return
+        end
+
+        if now >= R.hideGoalAt then
+            R.hideGoalAt = now + R.HIDE_RETARGET
+            R.hideGoal, R.hideGoalRadius, R.hideGoalLabel, R.hideIgnore, R.hideGoalY = FARM.runHideGoal(root, character)
+        end
+
+        local goal = R.hideGoal
+        local flat = goal and Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
+
+        if flat and flat.Magnitude > R.hideGoalRadius then
+            FARM.runHoldW(true)
+            FARM.runFace(camera, root, goal)
+            local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, flat.Magnitude)
+            local direction = flat.Unit
+            root.Position = Vector3.new(p.X + direction.X * step, R.hideY, p.Z + direction.Z * step)
+            FARM.setStatus("Hiding, moving to " .. R.hideGoalLabel)
+        else
+            FARM.runHoldW(false)
+            FARM.runRmb(false)
+            root.Position = Vector3.new(p.X, R.hideY, p.Z)
+            FARM.setStatus("Hiding")
+        end
+        return
+    end
+
+    if R.phase == "surface" then
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        FARM.runHoldW(false)
+        local p = root.Position
+        local y = math.min(p.Y + math.max(SETTINGS.tweenWalkSpeed, R.DIVE_SPEED) * 0.016, R.surfaceY)
+        root.Position = Vector3.new(p.X, y, p.Z)
+
+        if y >= R.surfaceY - 0.5 then
+            FARM.runCollide(true)
+            R.phase = "pick"
+        end
+        return
+    end
+
+    if R.current and (R.phase == "aim" or R.phase == "working") then
+        local ok, stand = pcall(function()
+            return R.current.stand.Position
+        end)
+        if ok and stand and (root.Position - (stand + Vector3.new(0, R.STAND_Y, 0))).Magnitude > R.AT_MACHINE then
+            FARM.runRmb(false)
+            FARM.runHoldW(false)
+            R.current = nil
+            R.phase = "pick"
+            FARM.setStatus("Not at the machine, going back")
+            return
+        end
+    end
+
+    if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runConnie(R.current) then
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+        if R.phase == "working" then
+            FARM.tapKey(R.E_KEY)
+        end
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        R.current = nil
+        R.phase = "pick"
+        FARM.setStatus("Connie got into the machine, leaving")
+        return
+    end
+
+    if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runBlotMachine(R.current, root, now) then
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+        if R.phase == "working" then
+            FARM.tapKey(R.E_KEY)
+        end
+        if R.noCollide then
+            FARM.runCollide(true)
+        end
+        R.current = nil
+        R.phase = "pick"
+        FARM.setStatus("Blot hand next to the machine, leaving")
+        return
+    end
+
+    if R.phase == "pick" then
+        FARM.runCollide(true)
+        FARM.runRmb(false)
+        FARM.runHoldW(false)
+
+        if FARM.floorLimitHit() then
+            R.current = nil
+            R.sacrificeY = root.Position.Y
+            R.phase = "sacrifice"
+            FARM.setStatus("Floor limit reached (" .. FARM.currentFloor() .. ")")
+            return
+        end
+
+        if now < R.roomUntil then
+            FARM.setStatus("Making room for an item")
+            return
+        end
+
+        if FARM.runMakeRoom(now, character) then
+            return
+        end
+
+        local grab = FARM.runCollectTarget(root, character)
+        if grab then
+            R.current = nil
+            R.collect = grab
+            R.targetKind = grab.kind
+            FARM.runTravelTo(root, grab.prompt.Position, grab.prompt.Position.Y + R.COLLECT_Y)
+            R.phase = "tween"
+            FARM.setStatus("Moving to " .. (grab.kind == "capsule" and "Research Capsule" or grab.name))
+            return
+        end
+
+        local study = FARM.runResearchTarget(root)
+        if study and study.kind == "rodger" then
+            R.current = nil
+            R.collect = study
+            R.targetKind = "rodger"
+            FARM.runTravelTo(root, study.prompt.Position, study.prompt.Position.Y + R.COLLECT_Y)
+            R.phase = "tween"
+            FARM.setStatus("Moving to Twisted Rodger")
+            return
+        elseif study then
+            R.current = nil
+            R.collect = nil
+            R.research = study
+            R.researchY = root.Position.Y
+            R.researchStart = now
+            R.researchArrived = nil
+            R.facePoint = nil
+            R.faceAt = 0
+            R.researchGrabbed = nil
+            R.researchCount = FARM.runResearchCount()
+            R.phase = "research"
+            FARM.setStatus("Moving to " .. FARM.runResearchName(study.name) .. " for research")
+            return
+        end
+
+        R.targetKind = "machine"
+        R.collect = nil
+
+        local best, bestDistance
+        local blocked = false
+        local blotBlocked = false
+        for _, machine in ipairs(FARM.runMachines()) do
+            if not FARM.runDone(machine) then
+                if FARM.runConnie(machine) then
+                    blocked = true
+                elseif FARM.runBlotMachine(machine, root, now) then
+                    blotBlocked = true
+                else
+                    local d = (machine.stand.Position - root.Position).Magnitude
+                    if not bestDistance or d < bestDistance then
+                        best, bestDistance = machine, d
+                    end
+                end
+            end
+        end
+
+        if not best and blocked then
+            R.current = nil
+            FARM.setStatus("Connie is inside the last machine, waiting")
+            return
+        end
+
+        if not best and blotBlocked then
+            R.current = nil
+            if FARM.runBlotHandNear(root.Position, root) then
+                FARM.runDive(root, now, "Blot hand next to the machine, diving")
+            else
+                FARM.setStatus("Blot hand next to the last machine, waiting")
+            end
+            return
+        end
+
+        if not best then
+            local base = FARM.runElevatorBase()
+            if not base then
+                FARM.setStatus("No elevator found")
+                return
+            end
+
+            R.current = nil
+            FARM.runTravelTo(root, base.Position, base.Position.Y + 3)
+            R.phase = "toElevator"
+            FARM.setStatus("Moving to elevator")
+            return
+        end
+
+        R.current = best
+        FARM.runTravelTo(root, best.stand.Position, best.stand.Position.Y + R.STAND_Y)
+        R.phase = "tween"
+        FARM.setStatus("Moving to machine")
+        return
+    end
+
+    if R.phase == "tween" or R.phase == "toElevator" then
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        FARM.runHoldW(true)
+        FARM.runFace(camera, root, R.goalPos)
+
+        local p = root.Position
+        local flat = Vector3.new(R.goalPos.X - p.X, 0, R.goalPos.Z - p.Z)
+        local distance = flat.Magnitude
+        local total = Vector3.new(R.goalPos.X - R.travelStart.X, 0, R.goalPos.Z - R.travelStart.Z).Magnitude
+        local collecting = R.phase == "tween" and R.targetKind ~= "machine" and R.collect ~= nil
+        local radius = (R.phase == "toElevator") and R.ELEV_ARRIVE or (collecting and (R.targetKind == "buy" and R.BUY_ARRIVE or R.COLLECT_ARRIVE)) or R.ARRIVE
+
+        if distance <= radius then
+            FARM.runCollide(true)
+            FARM.runHoldW(false)
+            if R.phase == "toElevator" then
+                FARM.runRmb(false)
+                R.elevatorHold = "armed"
+                R.phase = "waitFloor"
+                FARM.setStatus("In elevator")
+                return
+            end
+
+            if collecting then
+                FARM.runRmb(false)
+                FARM.runFreeze(root)
+                R.buyTapes = FARM.runTapes()
+                R.phase = "collect"
+                R.collectTries = 0
+                R.at = now + 0.3
+                return
+            end
+
+            R.phase = "aim"
+            R.at = now + R.AIM_MAX
+            return
+        end
+
+        local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, distance)
+        local direction = flat.Unit
+        local t = total > 0 and math.clamp(1 - distance / total, 0, 1) or 1
+        root.Position = Vector3.new(p.X + direction.X * step, R.startY + (R.goalY - R.startY) * t, p.Z + direction.Z * step)
+        return
+    end
+
+    if R.phase == "research" then
+        local target = R.research
+        local label = target and FARM.runResearchName(target.name) or ""
+        local okPosition, goal = pcall(function()
+            return target.part.Position
+        end)
+
+        local function finish(status, retry)
+            if target and not retry then
+                R.researched[target.key] = true
+            end
+            FARM.runSprintOff()
+            R.facePoint = nil
+            R.faceAt = 0
+            R.research = nil
+            FARM.runHoldW(false)
+            FARM.runRmb(false)
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            if status then
+                FARM.setStatus(status)
+            end
+            R.phase = "pick"
+        end
+
+        if not target or target.model.Parent == nil or not okPosition or not goal then
+            finish()
+            return
+        end
+
+        if target.kind == "blot" and R.researchArrived then
+            finish()
+            FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+            return
+        end
+
+        if target.kind == "grab" then
+            local okHold, holding = pcall(function()
+                return target.model:GetAttribute("SquirmState") == "HOLDING" or target.model:GetAttribute("GrabbedPlayer") ~= nil
+            end)
+            if okHold and holding then
+                R.researchGrabbed = true
+                FARM.setStatus("Grabbed by " .. label)
+                return
+            elseif R.researchGrabbed then
+                R.researchGrabbed = nil
+                finish()
+                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+                return
+            end
+        end
+
+        local count = FARM.runResearchCount()
+        local counted = target.kind == "near" and count and R.researchCount and count > R.researchCount
+        local sawYou = (target.kind == "seen" or target.kind == "razzle") and FARM.runSawYou(target.model)
+        if sawYou then
+            FARM.sprintUpdate(now, false)
+        end
+        if counted or sawYou then
+            if target.kind == "near" then
+                finish("Got research from " .. label)
+            else
+                finish()
+                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+            end
+            return
+        end
+
+        local radius
+        local standY
+        if target.kind == "blot" then
+            radius = R.RESEARCH_BLOT_ARRIVE
+        elseif target.kind == "grab" then
+            radius = R.RESEARCH_GRAB_ARRIVE
+        elseif target.kind == "near" then
+            radius = R.RESEARCH_NEAR[target.name]
+        elseif target.kind == "razzle" then
+            radius = R.RESEARCH_RAZZLE_ARRIVE
+        else
+            local instant = FARM.runChaser(target.model)
+            radius = math.max(instant * R.RESEARCH_SEEN_SCALE, 4)
+            if not R.researchArrived then
+                if now >= (R.faceAt or 0) then
+                    R.faceAt = now + R.RESEARCH_FACE_REFRESH
+                    R.facePoint = FARM.runFacePoint(target)
+                end
+                if R.facePoint then
+                    goal = R.facePoint
+                    standY = R.facePoint.Y
+                    radius = R.RESEARCH_FACE_ARRIVE
+                end
+            end
+        end
+
+        if not standY then
+            local floor = FARM.runFloorY(goal.X, root.Position.Y, goal.Z)
+            standY = floor and (floor + R.hipOffset) or R.researchY
+        end
+
+        local p = root.Position
+        local flat = Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
+        local distance = flat.Magnitude
+        local wait = (target.kind == "grab" and R.RESEARCH_GRAB_WAIT) or (target.kind == "razzle" and R.RESEARCH_RAZZLE_WAIT) or R.COLLECT_TRIES * R.COLLECT_RETRY
+
+        if R.researchArrived and now - R.researchArrived >= wait then
+            finish("No research from " .. label .. ", skipping")
+            return
+        end
+
+        if not R.researchArrived and now - R.researchStart >= R.RESEARCH_TRAVEL_MAX then
+            finish("Could not reach " .. label .. ", skipping")
+            return
+        end
+
+        if (distance <= radius and math.abs(p.Y - standY) <= 1.5) or R.researchArrived then
+            R.researchArrived = R.researchArrived or now
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            if target.kind == "razzle" then
+                FARM.runFace(camera, root, goal)
+                FARM.runHoldW(true)
+                FARM.sprintUpdate(now, true)
+                FARM.setStatus(string.format("Sprinting to wake %s (%.1fs)", label, math.max(wait - (now - R.researchArrived), 0)))
+                return
+            end
+            FARM.runHoldW(false)
+            if target.kind == "seen" then
+                FARM.runFace(camera, root, goal)
+            else
+                FARM.runRmb(false)
+            end
+            FARM.setStatus(string.format("Letting %s see you (%.1fs)", label, math.max(wait - (now - R.researchArrived), 0)))
+            return
+        end
+
+        FARM.setStatus(string.format("Moving to %s for research (%d)", label, math.floor(distance)))
+        FARM.runFace(camera, root, goal)
+        FARM.runHoldW(true)
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        local speed = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+        local step = math.min(speed, distance)
+        local direction = distance > 0.01 and flat.Unit or Vector3.new(0, 0, 0)
+        local y = p.Y + math.clamp(standY - p.Y, -speed, speed)
+        root.Position = Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step)
+        return
+    end
+
+    if R.phase == "sacrifice" then
+        local monster, part = FARM.runNearestTwisted(root)
+        if not part then
+            FARM.runRmb(false)
+            FARM.runHoldW(false)
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            FARM.setStatus("Floor limit reached, no twisted found")
+            return
+        end
+
+        local p = root.Position
+        local target = part.Position
+        local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z)
+        local distance = flat.Magnitude
+
+        FARM.setStatus(string.format("Floor limit reached, walking into %s (%d)", monster.Name, math.floor(distance)))
+        FARM.runFace(camera, root, target)
+        FARM.runHoldW(true)
+
+        if distance <= R.SACRIFICE_TOUCH then
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            return
+        end
+
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, distance)
+        local direction = flat.Unit
+        root.Position = Vector3.new(p.X + direction.X * step, R.sacrificeY, p.Z + direction.Z * step)
+        return
+    end
+
+    FARM.runCollide(true)
+
+    if R.phase == "waitFloor" then
+        FARM.runRmb(false)
+        for _, machine in ipairs(FARM.runMachines()) do
+            if not FARM.runDone(machine) then
+                R.phase = "pick"
+                return
+            end
+        end
+        return
+    end
+
+    if R.phase == "collect" then
+        FARM.runRmb(false)
+        local target = R.collect
+
+        if target and target.kind == "buy" and FARM.runTapes() < R.buyTapes then
+            R.bought[target.name] = true
+            R.skip[target.spot] = true
+            R.collect = nil
+            R.phase = "pick"
+            return
+        end
+
+        if not target or target.model.Parent == nil or not target.model:FindFirstChild("Prompt") then
+            if target and target.kind == "buy" then
+                R.bought[target.name] = true
+            end
+            R.collect = nil
+            R.phase = "pick"
+            return
+        end
+
+        local okPos, position = pcall(function()
+            return target.prompt.Position
+        end)
+        local flat = okPos and position and Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Magnitude or 0
+        if flat > R.LOST then
+            R.phase = "pick"
+            return
+        end
+
+        if now >= R.at then
+            if R.collectTries >= R.COLLECT_TRIES then
+                R.skip[target.spot] = true
+                R.collect = nil
+                R.phase = "pick"
+                return
+            end
+
+            FARM.tapKey(R.E_KEY)
+            if target.kind == "rodger" then
+                R.skip[target.spot] = true
+                if target.key then
+                    R.researched[target.key] = true
+                end
+            end
+            R.collectTries = R.collectTries + 1
+            R.at = now + R.COLLECT_RETRY
+            FARM.setStatus((target.kind == "buy" and "Buying " or "Collecting ") .. (target.kind == "capsule" and "Research Capsule" or target.name))
+        end
+        return
+    end
+
+    if R.phase == "aim" then
+        local aligned = FARM.runFace(camera, root, R.current.prompt.Position)
+        if aligned or now >= R.at then
+            FARM.runRmb(false)
+            FARM.tapKey(R.E_KEY)
+            R.phase = "working"
+            R.at = now + R.REPRESS
+        end
+        return
+    end
+
+    if R.phase == "working" then
+        FARM.runRmb(false)
+        local cur, req = FARM.runFill(R.current)
+        FARM.setStatus(string.format("Working %d/%d", math.floor(cur), math.floor(req)))
+
+        if FARM.runDone(R.current) then
+            R.phase = "pick"
+            return
+        end
+
+        local distance = (R.current.stand.Position - root.Position).Magnitude
+        if distance > R.LOST then
+            R.current = nil
+            R.phase = "pick"
+            FARM.setStatus("Knocked away")
+            return
+        end
+
+        if FARM.runEngagedBy(R.current) ~= LocalPlayer.Name and now >= R.at then
+            R.at = now + R.REPRESS
+            R.phase = "aim"
+        end
+        return
+    end
+end
+
+function FARM.runStop()
+    local R = FARM.RUN
+    FARM.runRmb(false)
+    FARM.runHoldW(false)
+    FARM.setShift(false)
+    if FARM.RUN.shiftReleaseAt then
+        FARM.RUN.shiftReleaseAt = nil
+        pcall(keyrelease, FARM.LOBBY.SHIFT)
+    end
+    if R.noCollide then
+        FARM.runCollide(true)
+    end
+    pcall(keyrelease, R.E_KEY)
+    FARM.runReleaseItemKey(0, true)
+    R.phase = "idle"
+    R.current = nil
+    R.deathStage = 0
 end
 
 local function drawVisual(visual, cameraPosition, tracerFrom)
@@ -3586,11 +7557,28 @@ if UI then
         visuals:Toggle("dw_visuals_ability_timer", "Twisted Ability Timer", SETTINGS.showAbilityTimer)
         visuals:Toggle("dw_visuals_squirm_warning", "Squirm Attack Warning", SETTINGS.showSquirmWarning)
         visuals:Toggle("dw_visuals_item_rarity", "Item Rarity", SETTINGS.showItemRarity)
+        visuals:Toggle("dw_players_health", "Player Health", SETTINGS.showPlayerHealth)
+        visuals:Toggle("dw_players_stamina", "Player Stamina", SETTINGS.showPlayerStamina)
+        visuals:SliderInt("dw_players_low_stamina", "Low Stamina Warning", 0, 100, SETTINGS.lowStaminaThreshold)
         visuals:Toggle("dw_visuals_dot", "Dot", SETTINGS.showDot)
         visuals:Toggle("dw_visuals_tracer", "Tracer", SETTINGS.showTracer)
         visuals:SliderInt("dw_visuals_max_visible", "Max Visible", 0, 1000, SETTINGS.maxVisible)
         visuals:SliderFloat("dw_visuals_update_rate", "Update Delay", 0.005, 0.2, SETTINGS.updateInterval, "%.3f")
         visuals:SliderFloat("dw_visuals_scan_rate", "Scan Delay", 0.5, 5.0, SETTINGS.scanInterval, "%.1f")
+
+        local farm = tab:Section("Autofarm", "Left")
+        farm:Toggle("dw_farm_aggressive", "Aggressive Auto-farm", false)
+        farm:SliderInt("dw_farm_speed", "Tween Walk Speed", 20, 200, SETTINGS.tweenWalkSpeed)
+        farm:SliderInt("dw_farm_floor_limit", "Floor Limit", 5, 50, SETTINGS.floorLimit)
+        farm:Toggle("dw_farm_unlimited", "Unlimited Floors", SETTINGS.unlimitedFloors)
+        farm:Toggle("dw_farm_with_players", "Allow auto-farming with the other people", SETTINGS.allowFarmWithPlayers)
+        farm:Toggle("dw_farm_auto_resume", "Resume after teleport", SETTINGS.farmAutoResume)
+        farm:Toggle("dw_farm_heal_items", "Collect & Use healing items", SETTINGS.farmHealItems)
+        farm:Toggle("dw_farm_extraction_items", "Collect & Use extraction items", SETTINGS.farmExtractionItems)
+        farm:Toggle("dw_farm_capsules", "Collect Research Capsules", SETTINGS.farmCapsules)
+        farm:Toggle("dw_farm_research_twisteds", "Let Twisteds see you first [For Research]", SETTINGS.farmResearchTwisteds)
+        farm:Toggle("dw_farm_skip_researched", "Skip Twisteds with 100% Research", SETTINGS.farmSkipResearched)
+        farm:Toggle("dw_farm_ignore_twisteds_travel", "Ignore Twisteds while traveling", SETTINGS.farmIgnoreTwistedsTravel)
 
         local alerts = tab:Section("Alert System", "Left")
         alerts:Toggle("dw_alert_tracers", "Use additional tracers", SETTINGS.alertTracers)
@@ -3653,6 +7641,14 @@ if UI then
             itemAlerts:Toggle(entry.id, label, SETTINGS[entry.key])
         end
     end)
+
+    SETTINGS.aggressiveAutoFarm = false
+    FARM.forceOffUntil = tick() + FARM.FORCE_OFF_WINDOW
+    FARM.resumePending = FARM.consumeResume()
+
+    if UI then
+        pcall(UI.SetValue, FARM.TOGGLE_ID, false)
+    end
 end
 
 local UI_REFRESH_INTERVAL = 0.1
@@ -3680,6 +7676,8 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     drawAll(deltaTime)
     ABILITY.update()
     SQUIRM.updateWarning()
+    PLAYERS.update(tick())
+    FARM.update(tick())
 end)
 
 _G.DW_CLEANUP = function()
@@ -3706,6 +7704,8 @@ _G.DW_CLEANUP = function()
     end
 
     ABILITY.removePrompt()
+    PLAYERS.cleanup()
+    FARM.cleanup()
 
     if renderConnection then
         pcall(function()
