@@ -3593,6 +3593,13 @@ local FARM = {
         RESEARCH_RAZZLE_WAIT = 8,
         BLOT_HAND_RANGE = 12,
         BLOT_HAND_RECHECK = 0.25,
+        SPROUT_RANGE = 18,
+        RODGER_ACTIVE_RANGE = 34,
+        RODGER_RISE = 3,
+        SPROUT_FLEE_MARGIN = 4,
+        SPROUT_RECHECK = 0.2,
+        sproutAt = 0,
+        sprouts = {},
         FLOOR_UP = 8,
         FLOOR_DOWN = 40,
         HIP_DEFAULT = 3,
@@ -5694,6 +5701,79 @@ function FARM.runBlotHandNear(point, root)
     return false
 end
 
+function FARM.runHazards(now)
+    local R = FARM.RUN
+    if now < R.sproutAt then
+        return R.sprouts
+    end
+    R.sproutAt = now + R.SPROUT_RECHECK
+    local list = {}
+    local map = FARM.runMap()
+    if map then
+        local area = map:FindFirstChild("FreeArea")
+        for _, folder in ipairs(area and { area, map } or { map }) do
+            for _, child in ipairs(folder:GetChildren()) do
+                if child.Name == "SproutTendril" then
+                    local part = child:FindFirstChild("Puddle") or child:FindFirstChild("HumanoidRootPart")
+                    local ok, position = pcall(function()
+                        return part.Position
+                    end)
+                    if ok and position then
+                        list[#list + 1] = { position = position, range = R.SPROUT_RANGE }
+                    end
+                end
+            end
+        end
+        local capsules = {}
+        local items = map:FindFirstChild("Items")
+        for _, model in ipairs(items and items:GetChildren() or {}) do
+            if model.Name == "FakeCapsule" then
+                local prompt = model:FindFirstChild("Prompt")
+                local ok, position = pcall(function()
+                    return prompt.Position
+                end)
+                if ok and position then
+                    capsules[#capsules + 1] = position
+                end
+            end
+        end
+        local monsters = map:FindFirstChild("Monsters")
+        for _, monster in ipairs(monsters and monsters:GetChildren() or {}) do
+            if monster.Name == "RodgerMonster" then
+                local part = monster:FindFirstChild("HumanoidRootPart") or monster:FindFirstChild("RootPart")
+                local ok, position = pcall(function()
+                    return part.Position
+                end)
+                if ok and position then
+                    local active = monster:GetAttribute("Attacking") == true
+                    for _, capsule in ipairs(capsules) do
+                        if Vector3.new(capsule.X - position.X, 0, capsule.Z - position.Z).Magnitude <= R.RODGER_LINK and position.Y >= capsule.Y - R.RODGER_RISE then
+                            active = true
+                        end
+                    end
+                    if active then
+                        list[#list + 1] = { position = position, range = R.RODGER_ACTIVE_RANGE }
+                    end
+                end
+            end
+        end
+    end
+    R.sprouts = list
+    return list
+end
+
+function FARM.runHazardNear(point, now, extra)
+    local best, bestDistance
+    for _, hazard in ipairs(FARM.runHazards(now)) do
+        local position = hazard.position
+        local d = Vector3.new(point.X - position.X, 0, point.Z - position.Z).Magnitude
+        if d <= hazard.range + (extra or 0) and (not bestDistance or d < bestDistance) then
+            best, bestDistance = position, d
+        end
+    end
+    return best
+end
+
 function FARM.runBlotMachine(machine, root, now)
     local R = FARM.RUN
     if machine.blotAt and now < machine.blotAt then
@@ -5703,7 +5783,7 @@ function FARM.runBlotMachine(machine, root, now)
     local ok, stand = pcall(function()
         return machine.stand.Position
     end)
-    machine.blotNear = (ok and stand and FARM.runBlotHandNear(stand + Vector3.new(0, R.STAND_Y, 0), root)) or false
+    machine.blotNear = (ok and stand and (FARM.runHazardNear(stand, now) ~= nil or FARM.runBlotHandNear(stand + Vector3.new(0, R.STAND_Y, 0), root))) or false
     return machine.blotNear
 end
 
@@ -6582,6 +6662,47 @@ function FARM.runUpdate(now)
         return
     end
 
+    if not hiding and R.phase ~= "flee" and R.phase ~= "toElevator" and R.phase ~= "sacrifice" then
+        local tendril = FARM.runHazardNear(root.Position, now)
+        if tendril then
+            FARM.runRmb(false)
+            if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
+                FARM.tapKey(R.E_KEY)
+            end
+            R.current = nil
+            R.collect = nil
+            R.research = nil
+            R.fleeY = root.Position.Y
+            R.phase = "flee"
+            FARM.setStatus("Sprout tendril or active Rodger near, moving away")
+            return
+        end
+    end
+
+    if R.phase == "flee" then
+        local p = root.Position
+        local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
+        if not tendril then
+            FARM.runHoldW(false)
+            FARM.runCollide(true)
+            R.phase = "pick"
+            return
+        end
+        FARM.runCollide(false)
+        FARM.runFreeze(root)
+        FARM.runHoldW(true)
+        local away = Vector3.new(p.X - tendril.X, 0, p.Z - tendril.Z)
+        local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
+        FARM.runFace(camera, root, p + direction * 10)
+        local step = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+        local x, z = p.X + direction.X * step, p.Z + direction.Z * step
+        local floor = FARM.runFloorY(x, R.fleeY, z)
+        local y = floor and (floor + R.hipOffset) or R.fleeY
+        R.fleeY = y
+        root.Position = Vector3.new(x, y, z)
+        return
+    end
+
     if R.phase == "dive" then
         FARM.runCollide(false)
         FARM.runFreeze(root)
@@ -6598,7 +6719,20 @@ function FARM.runUpdate(now)
         FARM.runFreeze(root)
         local p = root.Position
 
-        if chasing or seen or FARM.runBlotHandNear(Vector3.new(p.X, R.surfaceY, p.Z), root) then
+        local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
+        if tendril then
+            R.clearSince = nil
+            FARM.runHoldW(true)
+            local away = Vector3.new(p.X - tendril.X, 0, p.Z - tendril.Z)
+            local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
+            FARM.runFace(camera, root, p + direction * 10)
+            local step = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+            root.Position = Vector3.new(p.X + direction.X * step, R.hideY, p.Z + direction.Z * step)
+            FARM.setStatus("Sprout tendril or active Rodger near, moving away")
+            return
+        end
+
+        if chasing or seen or FARM.runHazardNear(p, now) or FARM.runBlotHandNear(Vector3.new(p.X, R.surfaceY, p.Z), root) then
             R.clearSince = nil
         elseif not R.clearSince then
             R.clearSince = now
@@ -6704,7 +6838,7 @@ function FARM.runUpdate(now)
         end
         R.current = nil
         R.phase = "pick"
-        FARM.setStatus("Blot hand next to the machine, leaving")
+        FARM.setStatus("Blot hand, Sprout tendril or active Rodger next to the machine, leaving")
         return
     end
 
@@ -6731,6 +6865,9 @@ function FARM.runUpdate(now)
         end
 
         local grab = FARM.runCollectTarget(root, character)
+        if grab and FARM.runHazardNear(grab.prompt.Position, now) then
+            grab = nil
+        end
         if grab then
             R.current = nil
             R.collect = grab
@@ -6798,7 +6935,7 @@ function FARM.runUpdate(now)
             if FARM.runBlotHandNear(root.Position, root) then
                 FARM.runDive(root, now, "Blot hand next to the machine, diving")
             else
-                FARM.setStatus("Blot hand next to the last machine, waiting")
+                FARM.setStatus("Blot hand, Sprout tendril or active Rodger next to the last machine, waiting")
             end
             return
         end
