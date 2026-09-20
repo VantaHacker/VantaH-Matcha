@@ -2060,13 +2060,40 @@ local function bindingStep()
 	end
 end
 
+Library.ChatCursor = 0x0CF8
+
+function Library.GameTyping()
+	local now = tick()
+	if now < (Library.ChatAt or 0) then return Library.ChatTyping == true end
+	Library.ChatAt = now + 0.05
+	Library.ChatTyping = false
+	if type(memory_read) ~= "function" then return false end
+	local Box = Library.ChatBox
+	local ok, alive = pcall(function() return Box and Box.Parent ~= nil end)
+	if not (ok and alive) then
+		Box = nil
+		local Chat = game:GetService("CoreGui"):FindFirstChild("ExperienceChat")
+		for _, Item in ipairs(Chat and Chat:GetDescendants() or {}) do
+			if Item.ClassName == "TextBox" then Box = Item end
+		end
+		Library.ChatBox = Box
+	end
+	if not Box then return false end
+	local okAddress, address = pcall(function() return tonumber(Box.Address) end)
+	if not (okAddress and address) then return false end
+	local cursor = memory_read("int", address + Library.ChatCursor)
+	Library.ChatTyping = type(cursor) == "number" and cursor >= 0
+	return Library.ChatTyping
+end
+
 local function keybindStep()
+	local blocked = Library.Typing ~= nil or Library.GameTyping()
 	for _, Element in ipairs(Library.Keybinds) do
 		if Element.Key then
 			local down = keyDown(Element.Key)
 			if down ~= (Element.Held == true) then
 				Element.Held = down
-				if not (Library.Typing and down) then Element:Pressed(down) end
+				if not (blocked and down) then Element:Pressed(down) end
 			end
 		end
 	end
@@ -2329,7 +2356,7 @@ local function step()
 		else
 			for _, W in ipairs(Library.Windows) do
 				local menuDown = W.MenuKey ~= nil and keyDown(W.MenuKey)
-				if menuDown and not W.MenuHeld then
+				if menuDown and not W.MenuHeld and not Library.GameTyping() then
 					W:SetVisible(not W.Visible)
 					if not W.Visible then W:HideChildren() end
 				end
