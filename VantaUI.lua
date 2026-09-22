@@ -244,6 +244,11 @@ local function newElement(Section, config, kind, height)
 	function Element:Get()
 		return self.Value
 	end
+	function Element:SetHidden(value)
+		if self.Hidden == (value == true) then return end
+		self.Hidden = value == true
+		Library.Dirty = true
+	end
 	if config.Id then Library.Options[config.Id] = Element end
 	Section.Elements[#Section.Elements + 1] = Element
 	Library.Dirty = true
@@ -1134,8 +1139,10 @@ function Window:Refresh()
 			local sectionWidth = S.Side == "Full" and fullWidth or columnWidth
 			local sectionHeight = 32
 			for _, Element in ipairs(S.Elements) do
-				if Element.Measure then Element:Measure(sectionWidth) end
-				sectionHeight += Element.Height
+				if not Element.Hidden then
+					if Element.Measure then Element:Measure(sectionWidth) end
+					sectionHeight += Element.Height
+				end
 			end
 			S.Height = sectionHeight + 6
 			S.Width = sectionWidth
@@ -1195,11 +1202,11 @@ function Window:Refresh()
 			local ey = sy + 32
 			for _, Element in ipairs(S.Elements) do
 				Element.X, Element.Y, Element.Width = sx, ey, sectionWidth
-				Element.Shown = active and ey >= contentY and ey + Element.Height <= contentBottom
+				Element.Shown = active and not Element.Hidden and ey >= contentY and ey + Element.Height <= contentBottom
 				setVisible(Element.Draws, Element.Shown)
 				if Element.Shown then Element:Place(sx, ey, sectionWidth) end
 				if Element.ShowLines then Element:ShowLines(Element.Shown) end
-				ey += Element.Height
+				if not Element.Hidden then ey += Element.Height end
 			end
 		end
 	end
@@ -2062,12 +2069,26 @@ end
 
 Library.ChatCursor = 0x0CF8
 
+function Library.MemoryAccess(recheck)
+	if Library.MemoryAllowed ~= nil and not recheck then return Library.MemoryAllowed end
+	local allowed = false
+	if type(getbase) == "function" and type(memory_read) == "function" then
+		local okBase, base = pcall(getbase)
+		if okBase and type(base) == "number" and base > 0 then
+			local okRead, header = pcall(memory_read, "byte", base)
+			allowed = okRead and header == 0x4D
+		end
+	end
+	Library.MemoryAllowed = allowed
+	return allowed
+end
+
 function Library.GameTyping()
 	local now = tick()
 	if now < (Library.ChatAt or 0) then return Library.ChatTyping == true end
 	Library.ChatAt = now + 0.05
 	Library.ChatTyping = false
-	if type(memory_read) ~= "function" then return false end
+	if not Library.MemoryAccess() then return false end
 	local Box = Library.ChatBox
 	local ok, alive = pcall(function() return Box and Box.Parent ~= nil end)
 	if not (ok and alive) then
@@ -2081,18 +2102,20 @@ function Library.GameTyping()
 	if not Box then return false end
 	local okAddress, address = pcall(function() return tonumber(Box.Address) end)
 	if not (okAddress and address) then return false end
-	local cursor = memory_read("int", address + Library.ChatCursor)
+	local okCursor, cursor = pcall(memory_read, "int", address + Library.ChatCursor)
+	if not okCursor then return false end
 	Library.ChatTyping = type(cursor) == "number" and cursor >= 0
 	return Library.ChatTyping
 end
 
 local function keybindStep()
-	local blocked = Library.Typing ~= nil or Library.GameTyping()
+	local blocked
 	for _, Element in ipairs(Library.Keybinds) do
 		if Element.Key then
 			local down = keyDown(Element.Key)
 			if down ~= (Element.Held == true) then
 				Element.Held = down
+				if down and blocked == nil then blocked = Library.Typing ~= nil or Library.GameTyping() end
 				if not (blocked and down) then Element:Pressed(down) end
 			end
 		end

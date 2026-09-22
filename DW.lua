@@ -88,7 +88,7 @@ local ITEM_INFO = {
     ExtractionSpeedCandy = {name = "Extraction Speed Candy", rarity = "Uncommon", use = "Machines", effect = "+50% extraction speed", floor = true, store = true, cost = 35, duration = 5},
     BonBon = {name = "BonBon", rarity = "Rare", use = "Machines", effect = "+50% extraction speed, +25% movement speed", abilityOnly = true, floor = false, store = false, cost = 0, duration = 10},
     SkillCheckCandy = {name = "Skill Check Candy", rarity = "Uncommon", use = "Skill Check", effect = "+25% skill check chance", floor = true, store = true, cost = 42, duration = 15},
-    Stopwatch = {name = "Stopwatch", rarity = "Common", use = "Skill Check", effect = "+50 skill check window", floor = false, store = true, cost = 18, duration = 15},
+    Stopwatch = {name = "Stopwatch", rarity = "Common", use = "Skill Check", effect = "+50 skill check window", needsMachine = true, floor = false, store = true, cost = 18, duration = 15},
     SpeedCandy = {name = "Speed Candy", rarity = "Uncommon", use = "Speed", effect = "+25% walk and run speed", floor = true, store = true, cost = 45, duration = 5},
     ChristmasCookie = {name = "Christmas Cookie", rarity = "Rare", use = "Speed", effect = "+15% speed to nearby Toons", abilityOnly = true, floor = false, store = false, cost = 0, duration = 10},
     DandyEasterEggs = {name = "Dandy's Easter Eggs", rarity = "Rare", use = "Speed", effect = "+15% speed to nearby Toons", abilityOnly = true, floor = false, store = false, cost = 0, duration = 10},
@@ -209,6 +209,9 @@ local SETTINGS = {
     floorLimit = 15,
     unlimitedFloors = false,
     farmWarningAccepted = false,
+    masteryFarm = false,
+    masterySelect = true,
+    masteryEnd = true,
     farmAutoResume = true,
     farmHideOnTeleport = true,
     farmHealItems = true,
@@ -319,6 +322,9 @@ local SAVED_KEYS = {
     "floorLimit",
     "unlimitedFloors",
     "farmWarningAccepted",
+    "masteryFarm",
+    "masterySelect",
+    "masteryEnd",
     "farmAutoResume",
     "farmHideOnTeleport",
     "farmHealItems",
@@ -2274,7 +2280,7 @@ function STRINGS.read(instance)
         return ""
     end
 
-    if STRINGS.memoryReads ~= false and type(memory_read) ~= "function" then
+    if STRINGS.memoryReads ~= false and not VantaUI.MemoryAccess() then
         STRINGS.memoryReads = false
     end
 
@@ -2680,6 +2686,9 @@ local function refreshSettingsFromUi()
     SETTINGS.tweenWalkSpeed = uiValue("dw_farm_speed", SETTINGS.tweenWalkSpeed)
     SETTINGS.floorLimit = uiValue("dw_farm_floor_limit", SETTINGS.floorLimit)
     SETTINGS.unlimitedFloors = uiValue("dw_farm_unlimited", SETTINGS.unlimitedFloors)
+    SETTINGS.masteryFarm = uiValue("dw_mastery_farm", SETTINGS.masteryFarm)
+    SETTINGS.masterySelect = uiValue("dw_mastery_select", SETTINGS.masterySelect)
+    SETTINGS.masteryEnd = uiValue("dw_mastery_end", SETTINGS.masteryEnd)
     SETTINGS.farmAutoResume = uiValue("dw_farm_auto_resume", SETTINGS.farmAutoResume)
     SETTINGS.farmHideOnTeleport = uiValue("dw_farm_hide_teleport", SETTINGS.farmHideOnTeleport)
     SETTINGS.farmHealItems = uiValue("dw_farm_heal_items", SETTINGS.farmHealItems)
@@ -3584,6 +3593,7 @@ local FARM = {
         skipMap = nil,
         dead = false,
         skipped = false,
+        BUTTON_WAIT = 1.5,
         sacrificeY = 0,
         phase = "idle",
         at = 0,
@@ -3805,6 +3815,9 @@ function FARM.statusText(now)
     if FARM.pauseWanted then
         return "Pausing after surfacing"
     end
+    if FARM.UNSAFE.missing then
+        return "Unsafe LuaU is required."
+    end
 
     local elapsed = now - FARM.armedAt
     if elapsed < FARM.BANNER.STARTUP then
@@ -3816,6 +3829,718 @@ end
 
 function FARM.setStatus(text)
     FARM.status = text
+end
+
+FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled = false }
+
+function FARM.unsafeEnabled()
+    return VantaUI.MemoryAccess(true)
+end
+
+function FARM.updateUnsafeWarning()
+    local U = FARM.UNSAFE
+    local warning = U.label
+    if not warning then
+        return
+    end
+    local active = SETTINGS.masteryFarm and PLACE_MODE == "lobby"
+    local now = tick()
+    if active and not U.enabled and not U.probing and now - U.checkedAt >= U.interval then
+        U.checkedAt = now
+        U.probing = true
+        task.spawn(function()
+            U.enabled = FARM.unsafeEnabled()
+            U.probing = false
+        end)
+    end
+    U.missing = active and not U.enabled
+    warning:SetHidden(not U.missing)
+end
+
+FARM.MASTERY = {
+    VISIBLE = 0x5AD,
+    TEXT = 0xB98,
+    STATE = 0x578,
+    QUESTS = {
+        { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
+        { "PassiveAbilityActivate", "passive", "Passive Ability", "Activate Passive Ability %s times" },
+        { "TravelDistance", true, "^Travel %d+ Meters", "Travel %s Meters" },
+        { "PickUpCapsule", true, "Research Capsules", "Pick up %s Research Capsules" },
+        { "PickUpItem", true, "^Pick up %d+ Items", "Pick up %s Items" },
+        { "UseItem", true, "^Use %d+ Items", "Use %s Items" },
+        { "UseItemSpecific", true, "^Use %d+ ", "Use %s specific items" },
+        { "SurviveFloorWithParty", false, "other Players", "Survive %s Floors with a party" },
+        { "SurviveFloorWithToon", false, "Floors with .+ in your round", "Survive %s Floors with a toon" },
+        { "SurviveFloor", true, "^Survive %d+ Floors", "Survive %s Floors" },
+        { "CompleteDuoGenerator", false, "Duo Machines", "Complete %s Duo Machines" },
+        { "CompleteFloorWithTrinket", false, "equipped", "Complete Floor %s with a trinket" },
+        { "CompleteGenerator", true, "Machines", "Finish %s Machines" },
+        { "ReachFloor", true, "^Reach Floor", "Reach Floor %s" },
+        { "BuyDandyStoreItem", true, "Elevator Shop", "Buy %s items from Dandy's Shop" },
+        { "CollectResearch", true, "Twisted Research", "Collect %s%% Twisted Research" },
+        { "EncounterMonster", true, "^Encounter", "Encounter %s Twisteds" },
+        { "BlackOut", true, "Blackouts", "Experience %s Blackouts" },
+        { "IchorSpill", true, "Ichor Spills", "Experience %s Ichor Spills" },
+        { "EatBookshelfOnCooldown", false, "Bookshelves", "Eat from %s Bookshelves" },
+        { "IcedOver", false, "Iced", "Get Iced Over %s times" },
+    },
+    SPECIFIC = { Cocoa = "BonBon", Waxwell = "Instructions" },
+    PASSIVE = { Eggson = "machines", Poppy = "damage", Looey = "damage" },
+    PASSIVE_DOABLE = { machines = true, damage = true },
+    RUN_POLL = 2,
+    TRAVEL_SPEED = 50,
+    runAt = 0,
+    runState = nil,
+    target = nil,
+    running = false,
+    done = false,
+    stop = false,
+    results = nil,
+}
+
+FARM.MASTERY.AUTO = {}
+FARM.MASTERY.LABELS = {}
+for _, quest in ipairs(FARM.MASTERY.QUESTS) do
+    FARM.MASTERY.AUTO[quest[1]] = quest[2]
+    FARM.MASTERY.LABELS[quest[1]] = quest[4]
+end
+
+function FARM.MASTERY.questType(name, text)
+    if FARM.MASTERY.AUTO[name] ~= nil then return name end
+    for _, quest in ipairs(FARM.MASTERY.QUESTS) do
+        if text:find(quest[3]) then return quest[1] end
+    end
+    return name
+end
+
+function FARM.MASTERY.wants(questType)
+    local M = FARM.MASTERY
+    return SETTINGS.masteryFarm and PLACE_MODE == "main" and M.runLeft ~= nil and M.runLeft[questType] == true
+end
+
+function FARM.MASTERY.itemMode()
+    local M = FARM.MASTERY
+    return M.wants("PickUpItem") or M.wants("UseItem") or M.wants("BuyDandyStoreItem") or M.wants("UseItemSpecific")
+end
+
+function FARM.MASTERY.capsuleMode()
+    return FARM.MASTERY.wants("PickUpCapsule") or FARM.MASTERY.wants("CollectResearch")
+end
+
+function FARM.MASTERY.researchMode()
+    return FARM.MASTERY.wants("CollectResearch") or FARM.MASTERY.wants("EncounterMonster")
+end
+
+function FARM.MASTERY.specificItem()
+    local M = FARM.MASTERY
+    if not M.wants("UseItemSpecific") then return nil end
+    return M.runToon and M.SPECIFIC[M.runToon] or nil
+end
+
+function FARM.MASTERY.abilityMode(name)
+    local M = FARM.MASTERY
+    local item = M.specificItem()
+    local info = item and ITEM_INFO[item]
+    return M.wants("ActiveAbilityActivate") or (info ~= nil and info.abilityOnly == true and M.SPECIFIC[name] == item)
+end
+
+function FARM.MASTERY.passiveDeath()
+    local M = FARM.MASTERY
+    if not (SETTINGS.masteryFarm and PLACE_MODE == "main" and M.runLeft and M.runLeft.PassiveAbilityActivate) then return false end
+    if not (M.runToon and M.PASSIVE[M.runToon] == "damage") then return false end
+    for questType in pairs(M.runLeft) do
+        if questType ~= "PassiveAbilityActivate" and questType ~= "TravelDistance" then return false end
+    end
+    return true
+end
+
+function FARM.MASTERY.travelOnly()
+    local M = FARM.MASTERY
+    if not (SETTINGS.masteryFarm and PLACE_MODE == "main" and M.runLeft) then return false end
+    local any = false
+    for questType in pairs(M.runLeft) do
+        if questType ~= "TravelDistance" then return false end
+        any = true
+    end
+    return any
+end
+
+function FARM.MASTERY.itemInfo(key)
+    local M = FARM.MASTERY
+    if not M.itemKeys then
+        M.itemKeys = {}
+        for name, info in pairs(ITEM_INFO) do
+            M.itemKeys[FARM.runItemKey(name)] = info
+        end
+    end
+    return M.itemKeys[key]
+end
+
+function FARM.MASTERY.health(character)
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    local ok, health, maxHealth = pcall(function()
+        return humanoid.Health, humanoid.MaxHealth
+    end)
+    if ok and type(health) == "number" and type(maxHealth) == "number" then return health, maxHealth end
+    return nil, nil
+end
+
+function FARM.MASTERY.useItems(now, character)
+    local M = FARM.MASTERY
+    local R = FARM.RUN
+    local health, maxHealth = M.health(character)
+    local hurt = health ~= nil and health > 0 and health < maxHealth
+    local working = R.phase == "working" and R.current ~= nil and FARM.runEngagedBy(R.current) == LocalPlayer.Name
+    local inventory = FARM.runInventory(character)
+    M.blocked = M.blocked or {}
+    local last = M.lastUse
+    if last then
+        M.lastUse = nil
+        for _, slot in ipairs(inventory) do
+            if slot.index == last.index and FARM.runItemKey(slot.item) == last.key and not last.charges then
+                M.blocked[last.key] = now + 8
+            end
+        end
+    end
+    for _, slot in ipairs(inventory) do
+        local key = FARM.runItemKey(slot.item)
+        if key ~= "" and key ~= "none" and now >= (M.blocked[key] or 0) then
+            local info = M.itemInfo(key)
+            local heal = info ~= nil and info.use == "Healing"
+            local machine = info ~= nil and info.needsMachine == true
+            local stamina = R.STAMINA_ITEMS[key] and FARM.runStaminaFull(character)
+            if stamina then
+                R.staminaSprint = true
+            elseif (heal and hurt) or (machine and working) or (not heal and not machine) then
+                FARM.runPressItem(now, slot.index)
+                R.useAt = now + R.USE_COOLDOWN
+                M.lastUse = {index = slot.index, key = key, charges = info ~= nil and info.charges ~= nil}
+                FARM.setStatus("Mastery: using " .. slot.item)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function FARM.MASTERY.itemOnMap()
+    local R = FARM.RUN
+    local map = FARM.runMap()
+    local folder = map and map:FindFirstChild("Items")
+    for _, model in ipairs(folder and folder:GetChildren() or {}) do
+        local info = ITEM_INFO[model.Name]
+        if info and info.use ~= "Collectible" then
+            local prompt = model:FindFirstChild("Prompt")
+            local ok, position = pcall(function() return prompt.Position end)
+            if ok and position and not R.skip[FARM.runSpotKey(position)] then return true end
+        end
+    end
+    return false
+end
+
+function FARM.MASTERY.needHit(now, character)
+    local M = FARM.MASTERY
+    if not M.itemMode() or now < (M.hitBlockUntil or 0) or FARM.runHasFreeSlot(character) then return false end
+    local health, maxHealth = M.health(character)
+    if not health or health <= 0 or health < maxHealth then return false end
+    local heals = false
+    for _, slot in ipairs(FARM.runInventory(character)) do
+        local info = M.itemInfo(FARM.runItemKey(slot.item))
+        if info and info.use == "Healing" then heals = true end
+    end
+    return heals and M.itemOnMap()
+end
+
+function FARM.MASTERY.wanderPoint(root)
+    local M = FARM.MASTERY
+    local map = FARM.runMap()
+    local here = root.Position
+    local goal = M.wanderGoal
+    if goal and M.wanderMap == map and Vector3.new(goal.X - here.X, 0, goal.Z - here.Z).Magnitude > 8 then
+        return goal
+    end
+    local points = {}
+    local folder = map and map:FindFirstChild("Waypoints")
+    for _, Waypoint in ipairs(folder and folder:GetChildren() or {}) do
+        local ok, position = pcall(function() return Waypoint.Position end)
+        if ok and position then table.insert(points, position) end
+    end
+    if #points == 0 then
+        for _, machine in ipairs(FARM.runMachines()) do
+            local ok, position = pcall(function() return machine.stand.Position end)
+            if ok and position then table.insert(points, position) end
+        end
+    end
+    if #points == 0 then return nil end
+    table.sort(points, function(a, b)
+        return Vector3.new(a.X - here.X, 0, a.Z - here.Z).Magnitude > Vector3.new(b.X - here.X, 0, b.Z - here.Z).Magnitude
+    end)
+    M.wanderGoal = points[math.random(1, math.max(1, math.floor(#points / 3)))]
+    M.wanderMap = map
+    return M.wanderGoal
+end
+
+function FARM.MASTERY.log(message)
+    FARM.MASTERY.lastLog = message
+end
+
+function FARM.MASTERY.byte(gui, offset)
+    local ok, value = pcall(memory_read, "byte", gui.Address + offset)
+    return ok and value or 0
+end
+
+function FARM.MASTERY.shown(gui)
+    local M = FARM.MASTERY
+    while gui and gui.ClassName ~= "ScreenGui" and gui.ClassName ~= "PlayerGui" and gui.ClassName ~= "CoreGui" do
+        if M.byte(gui, M.VISIBLE) == 0 then return false end
+        gui = gui.Parent
+    end
+    return true
+end
+
+function FARM.MASTERY.text(label)
+    if not label then return "" end
+    local ok, text = pcall(function()
+        local address = label.Address + FARM.MASTERY.TEXT
+        if memory_read("int", address + 24) > 15 then
+            return memory_read("string", memory_read("uintptr_t", address))
+        end
+        return memory_read("string", address)
+    end)
+    return ok and type(text) == "string" and text or ""
+end
+
+function FARM.MASTERY.waitFor(check, timeout)
+    local deadline = tick() + timeout
+    while tick() < deadline do
+        if FARM.MASTERY.stop then return false end
+        if check() then return true end
+        task.wait(0.05)
+    end
+    return check()
+end
+
+function FARM.MASTERY.waitFocus()
+    if robloxFocused() then return true end
+    FARM.setStatus("Mastery: waiting for Roblox focus")
+    local focused = FARM.MASTERY.waitFor(robloxFocused, 600)
+    FARM.setStatus("Checking mastery")
+    return focused
+end
+
+function FARM.MASTERY.centre(gui)
+    local position, size = gui.AbsolutePosition, gui.AbsoluteSize
+    return math.floor(position.X + size.X / 2 + 0.5), math.floor(position.Y + size.Y / 2 + 0.5)
+end
+
+function FARM.MASTERY.moveTo(x, y)
+    local offset = FARM.MASTERY.offset or { x = 0, y = 0 }
+    mousemoveabs(x + offset.x, y + offset.y)
+end
+
+function FARM.MASTERY.calibrate()
+    local M = FARM.MASTERY
+    local Mouse = LocalPlayer:GetMouse()
+    local samples = {}
+    for _, point in ipairs({ { 640, 480 }, { 1200, 700 } }) do
+        mousemoveabs(point[1], point[2])
+        task.wait(0.2)
+        local ok, mx, my = pcall(function() return Mouse.X, Mouse.Y end)
+        if ok and type(mx) == "number" and type(my) == "number" then
+            table.insert(samples, { x = point[1] - mx, y = point[2] - my })
+        end
+    end
+    local first, second = samples[1], samples[2]
+    if first and second and math.abs(first.x - second.x) <= 3 and math.abs(first.y - second.y) <= 3 then
+        M.offset = { x = math.floor((first.x + second.x) / 2 + 0.5), y = math.floor((first.y + second.y) / 2 + 0.5) }
+    else
+        M.offset = { x = 0, y = 0 }
+    end
+    M.log(string.format("mouse offset %d, %d", M.offset.x, M.offset.y))
+end
+
+function FARM.MASTERY.click(gui, delay)
+    local M = FARM.MASTERY
+    if not M.waitFocus() then return false end
+    local x, y = M.centre(gui)
+    M.moveTo(x, y)
+    task.wait(0.03)
+    mousemoverel(1, 0)
+    M.waitFor(function()
+        local state = M.byte(gui, M.STATE)
+        return state == 1 or state == 2
+    end, 0.3)
+    if delay then task.wait(delay) end
+    mouse1click()
+    task.wait(0.15)
+    return true
+end
+
+function FARM.MASTERY.clickUntil(gui, check, timeout, tries, delay)
+    local M = FARM.MASTERY
+    for _ = 1, tries or 3 do
+        if M.stop then return false end
+        M.click(gui, delay)
+        if M.waitFor(check, timeout) then return true end
+    end
+    return false
+end
+
+function FARM.MASTERY.chat()
+    local CoreGui = game:GetService("CoreGui")
+    local Chat = CoreGui:FindFirstChild("ExperienceChat")
+    local Layout = Chat and Chat:FindFirstChild("appLayout")
+    local TopBar = CoreGui:FindFirstChild("TopBarApp")
+    local Icon
+    for _, Item in ipairs(TopBar and TopBar:GetDescendants() or {}) do
+        if Item.Name == "IconHitArea_chat" then
+            Icon = Item
+            break
+        end
+    end
+    return Layout, Icon
+end
+
+function FARM.MASTERY.chatOpen()
+    local M = FARM.MASTERY
+    local Layout = M.chat()
+    if not Layout then return false end
+    if Layout:FindFirstChild("chatWindow") then return true end
+    local InputRow = Layout:FindFirstChild("chatInputRow")
+    return InputRow ~= nil and M.byte(InputRow, M.VISIBLE) == 1
+end
+
+function FARM.MASTERY.closeChat()
+    local M = FARM.MASTERY
+    if not M.chatOpen() then return true end
+    local _, Icon = M.chat()
+    if not Icon then return false end
+    M.log("closing chat")
+    return M.clickUntil(Icon, function() return not M.chatOpen() end, 1.5)
+end
+
+function FARM.MASTERY.ui()
+    local MainGui = LocalPlayer.PlayerGui:FindFirstChild("MainGui")
+    if not MainGui then return nil end
+    local ok, ui = pcall(function()
+        return {
+            toonsButton = MainGui.Menu.LeftSide.CharacterButton,
+            toons = MainGui.CharacterFrame,
+            cards = MainGui.CharacterFrame.ScrollingFrame,
+            selectedName = MainGui.CharacterFrame.DescribeFrame.CharacterName,
+            masteryButton = MainGui.CharacterFrame.MasteryFrame.SelectCharacter,
+            selectButton = MainGui.CharacterFrame.DescribeFrame.SelectCharacter,
+            toonsExit = MainGui.CharacterFrame.ExitButton,
+            mastery = MainGui.MasteryFrame,
+            holder = MainGui.MasteryFrame.HolderFrame,
+            masteryExit = MainGui.MasteryFrame.ExitButton,
+        }
+    end)
+    return ok and ui or nil
+end
+
+function FARM.MASTERY.openToons(ui)
+    local M = FARM.MASTERY
+    if M.shown(ui.toons) then return true end
+    return M.clickUntil(ui.toonsButton, function() return M.shown(ui.toons) end, 2)
+end
+
+function FARM.MASTERY.owned(ui)
+    local M = FARM.MASTERY
+    local toons = {}
+    for _, Card in ipairs(ui.cards:GetChildren()) do
+        if Card.ClassName == "TextButton" and Card.Name ~= "Template" and M.byte(Card, M.VISIBLE) == 1 then
+            local Star = Card:FindFirstChild("MasteryStar")
+            table.insert(toons, {
+                name = Card.Name,
+                label = M.text(Card:FindFirstChild("CharacterName")),
+                card = Card,
+                mastered = Star ~= nil and M.byte(Star, M.VISIBLE) == 1,
+            })
+        end
+    end
+    table.sort(toons, function(a, b)
+        local pa, pb = a.card.AbsolutePosition, b.card.AbsolutePosition
+        if math.abs(pa.Y - pb.Y) > 5 then return pa.Y < pb.Y end
+        return pa.X < pb.X
+    end)
+    return toons
+end
+
+function FARM.MASTERY.offView(ui, card)
+    local ok, cardTop, cardBottom, top, bottom = pcall(function()
+        local cardTop = card.AbsolutePosition.Y
+        local top = ui.cards.AbsolutePosition.Y
+        return cardTop, cardTop + card.AbsoluteSize.Y, top, top + ui.cards.AbsoluteSize.Y
+    end)
+    if not ok then return nil end
+    if cardTop < top - 1 then return -1 end
+    if cardBottom > bottom + 1 then return 1 end
+    return 0
+end
+
+function FARM.MASTERY.scrollTo(ui, card)
+    local M = FARM.MASTERY
+    local direction = M.offView(ui, card)
+    if direction == nil then
+        task.wait(0.1)
+        direction = M.offView(ui, card) or 0
+    end
+    if direction == 0 then return true end
+    local stuck = 0
+    for _ = 1, 30 do
+        if M.stop or not M.waitFocus() then return false end
+        local x, y = M.centre(ui.cards)
+        M.moveTo(x, y)
+        task.wait(0.03)
+        local okBefore, before, notches = pcall(function()
+            local before = card.AbsolutePosition.Y
+            local top = ui.cards.AbsolutePosition.Y
+            local edge = direction > 0 and (top + ui.cards.AbsoluteSize.Y) or top
+            local cardEdge = direction > 0 and (before + card.AbsoluteSize.Y) or before
+            return before, math.clamp(math.ceil(math.abs(cardEdge - edge) / 100), 1, 5)
+        end)
+        if not okBefore then before, notches = nil, 1 end
+        mousescroll(-direction * notches)
+        task.wait(0.35)
+        local okAfter, after = pcall(function() return card.AbsolutePosition.Y end)
+        local moved = (okAfter and before) and (after - before) or 100
+        stuck = math.abs(moved) < 1 and stuck + 1 or 0
+        direction = M.offView(ui, card) or direction
+        if direction == 0 then return true end
+        if stuck >= 3 then
+            local okCentre, inside = pcall(function()
+                local _, y = M.centre(card)
+                return y > ui.cards.AbsolutePosition.Y and y < ui.cards.AbsolutePosition.Y + ui.cards.AbsoluteSize.Y
+            end)
+            return okCentre and inside
+        end
+    end
+    return false
+end
+
+function FARM.MASTERY.entries(ui)
+    local entries = {}
+    for _, Entry in ipairs(ui.holder:GetChildren()) do
+        if Entry.Name ~= "Template" and Entry:FindFirstChild("CharacterAmount") then table.insert(entries, Entry) end
+    end
+    return entries
+end
+
+function FARM.MASTERY.signature(ui)
+    local M = FARM.MASTERY
+    local parts = {}
+    for _, Entry in ipairs(M.entries(ui)) do
+        table.insert(parts, tostring(Entry.Address) .. M.text(Entry.CharacterName) .. M.text(Entry.CharacterAmount))
+    end
+    table.sort(parts)
+    return table.concat(parts, ";")
+end
+
+function FARM.MASTERY.quests(ui)
+    local M = FARM.MASTERY
+    local quests = {}
+    for _, Entry in ipairs(M.entries(ui)) do
+        local progress = M.text(Entry.CharacterAmount)
+        local text = M.text(Entry.CharacterName)
+        local current, amount = progress:gsub(",", ""):match("(%d+)%s*/%s*(%d+)")
+        local quest = {
+            type = M.questType(Entry.Name, text),
+            text = text,
+            progress = progress,
+            current = tonumber(current),
+            amount = tonumber(amount),
+            row = Entry.AbsolutePosition.Y,
+            column = Entry.AbsolutePosition.X,
+        }
+        quest.done = progress:upper():find("COMPLETE") ~= nil or (quest.current ~= nil and quest.amount ~= nil and quest.current >= quest.amount)
+        table.insert(quests, quest)
+    end
+    table.sort(quests, function(a, b)
+        if math.abs(a.row - b.row) > 5 then return a.row < b.row end
+        return a.column < b.column
+    end)
+    for _, quest in ipairs(quests) do
+        quest.row = nil
+        quest.column = nil
+    end
+    return quests
+end
+
+function FARM.MASTERY.canDo(questType, toonName)
+    local auto = FARM.MASTERY.AUTO[questType]
+    if auto == "passive" then
+        local trigger = toonName and FARM.MASTERY.PASSIVE[toonName]
+        return trigger ~= nil and FARM.MASTERY.PASSIVE_DOABLE[trigger] == true
+    end
+    if auto == "ability" then
+        local rules = FARM.MASTERY.toonRules
+        return rules ~= nil and toonName ~= nil and rules[toonName] ~= nil
+    end
+    return auto == true
+end
+
+function FARM.MASTERY.equipped()
+    local char = LocalPlayer.Character
+    local ok, name = pcall(function() return char and char:GetAttribute("ToonName") end)
+    return ok and name or nil
+end
+
+function FARM.MASTERY.select(ui, toon)
+    local M = FARM.MASTERY
+    if M.equipped() == toon.name then return true end
+    if not M.openToons(ui) then return false end
+    if not M.scrollTo(ui, toon.card) then return false end
+    if not M.clickUntil(toon.card, function() return M.text(ui.selectedName) == toon.label end, 1.5) then return false end
+    return M.clickUntil(ui.selectButton, function() return M.equipped() == toon.name end, 3, 3, 0.2)
+end
+
+function FARM.MASTERY.readToon(ui, toon)
+    local M = FARM.MASTERY
+    if not M.openToons(ui) then return nil, "toons menu did not open" end
+    if not M.scrollTo(ui, toon.card) then return nil, "could not scroll to the card" end
+    if not M.clickUntil(toon.card, function() return M.text(ui.selectedName) == toon.label end, 1.5) then return nil, "card did not select" end
+    local before = M.signature(ui)
+    if not M.clickUntil(ui.masteryButton, function() return M.shown(ui.mastery) end, 2, 3, 0.2) then return nil, "mastery window did not open" end
+    M.waitFor(function()
+        local now = M.signature(ui)
+        return now ~= "" and now ~= before
+    end, 2)
+    task.wait(0.3)
+    local quests = M.quests(ui)
+    M.clickUntil(ui.masteryExit, function() return not M.shown(ui.mastery) end, 1.5)
+    if #quests == 0 then return nil, "no quests read" end
+    return quests
+end
+
+function FARM.MASTERY.scan()
+    local M = FARM.MASTERY
+    local ui = M.ui()
+    if not ui then M.log("MainGui not found") return end
+    FARM.setStatus("Checking mastery")
+    if not M.waitFocus() then return end
+    M.calibrate()
+    if not M.closeChat() then M.log("could not close chat") end
+    if not M.openToons(ui) then M.log("could not open the toons menu") return end
+    task.wait(0.3)
+    local chosen
+    local current = M.equipped()
+    local ordered = {}
+    for _, toon in ipairs(M.owned(ui)) do
+        if toon.name == current then
+            table.insert(ordered, 1, toon)
+        elseif SETTINGS.masterySelect then
+            table.insert(ordered, toon)
+        end
+    end
+    for _, toon in ipairs(ordered) do
+        if M.stop then return end
+        if not toon.mastered then
+            FARM.setStatus("Checking mastery: " .. toon.label)
+            local quests, problem
+            for _ = 1, 2 do
+                quests, problem = M.readToon(ui, toon)
+                if quests or M.stop then break end
+                M.log(toon.name .. ": " .. problem .. ", retrying")
+            end
+            if quests then
+                local left = {}
+                for _, quest in ipairs(quests) do
+                    if not quest.done and M.canDo(quest.type, toon.name) then
+                        table.insert(left, quest.text .. " " .. quest.progress)
+                    end
+                    if M.AUTO[quest.type] == nil then M.log(toon.name .. ": unknown quest type " .. quest.type) end
+                end
+                if #left > 0 then
+                    M.log(toon.name .. ": " .. table.concat(left, ", "))
+                    chosen = toon
+                    break
+                end
+                M.log(toon.name .. ": nothing left that can be automated")
+            elseif problem then
+                M.log(toon.name .. ": " .. problem)
+            end
+        end
+    end
+    if M.stop then return end
+    if chosen then
+        FARM.setStatus("Selecting " .. chosen.label)
+        if M.select(ui, chosen) then
+            M.target = chosen.name
+            M.log("selected " .. chosen.name)
+        else
+            M.log("could not select " .. chosen.name)
+        end
+    else
+        M.log(SETTINGS.masterySelect and "every toon is done, turning Mastery farm off" or "the equipped toon is done, turning Mastery farm off")
+        SETTINGS.masteryFarm = false
+        pcall(UI.SetValue, "dw_mastery_farm", false)
+        pcall(notify, "Dandy's World", SETTINGS.masterySelect and "Mastery farm finished every toon." or "Mastery farm finished this toon.", 4)
+    end
+    if M.shown(ui.mastery) then M.clickUntil(ui.masteryExit, function() return not M.shown(ui.mastery) end, 1.5) end
+    if M.shown(ui.toons) then M.clickUntil(ui.toonsExit, function() return not M.shown(ui.toons) end, 1.5) end
+end
+
+function FARM.MASTERY.runUpdate()
+    local M = FARM.MASTERY
+    if PLACE_MODE ~= "main" or not SETTINGS.masteryFarm then
+        M.runState = nil
+        M.runLeft = nil
+        return
+    end
+    local now = tick()
+    if now < M.runAt then return end
+    M.runAt = now + M.RUN_POLL
+    local ok, state, detail = pcall(function()
+        local char = LocalPlayer.Character
+        local toonName = M.toonName and M.toonName(char)
+        if not toonName then return nil end
+        local Folder = game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Mastery:FindFirstChild(toonName)
+        if not Folder then return nil end
+        local left, total, types, reach = {}, 0, {}, nil
+        for _, Quest in ipairs(Folder:GetChildren()) do
+            local Current, Amount = Quest:FindFirstChild("Current"), Quest:FindFirstChild("Amount")
+            if Current and Amount then
+                total = total + 1
+                local questType = M.questType(Quest.Name, "")
+                if M.canDo(questType, toonName) and Current.Value < Amount.Value then
+                    types[questType] = true
+                    if questType == "ReachFloor" then reach = Amount.Value end
+                    table.insert(left, Quest.Name .. " " .. tostring(Current.Value) .. "/" .. tostring(Amount.Value))
+                end
+            end
+        end
+        if total == 0 then return nil end
+        M.runLeft = types
+        M.reachFloor = reach
+        M.runToon = toonName
+        return #left == 0 and "done" or "working", toonName .. ": " .. (#left == 0 and "done" or table.concat(left, ", "))
+    end)
+    local newState = ok and state or nil
+    if not newState then M.runLeft = nil end
+    M.runDetail = detail
+    M.runState = newState
+end
+
+function FARM.MASTERY.update()
+    local M = FARM.MASTERY
+    local wanted = SETTINGS.masteryFarm and PLACE_MODE == "lobby" and FARM.active and not FARM.paused and not FARM.pauseWanted
+        and tick() - FARM.armedAt >= FARM.BANNER.STARTUP
+    if not wanted then
+        M.done = false
+        if M.running then M.stop = true end
+        return
+    end
+    if M.running or M.done or not FARM.UNSAFE.enabled then return end
+    M.running = true
+    M.done = true
+    M.stop = false
+    task.spawn(function()
+        local ok, err = pcall(M.scan)
+        if not ok then M.log("error: " .. tostring(err)) end
+        M.running = false
+        FARM.setStatus(nil)
+    end)
 end
 
 function FARM.resetBanner(now)
@@ -4007,7 +4732,9 @@ function FARM.update(now)
         FARM.updateBanner(now)
 
         if not FARM.paused and now - FARM.armedAt >= FARM.BANNER.STARTUP then
-            if PLACE_MODE == "lobby" then
+            if PLACE_MODE == "lobby" and (FARM.MASTERY.running or (SETTINGS.masteryFarm and FARM.UNSAFE.enabled and not FARM.MASTERY.done)) then
+                FARM.lobbyStop()
+            elseif PLACE_MODE == "lobby" then
                 FARM.lobbyUpdate(now)
             elseif PLACE_MODE == "main" then
                 FARM.runUpdate(now)
@@ -4769,12 +5496,29 @@ function FARM.currentFloor()
     return (ok and floor) or 0
 end
 
+function FARM.tweenSpeed()
+    local speed = math.max(SETTINGS.tweenWalkSpeed, 1)
+    if FARM.MASTERY.travelOnly() then
+        speed = math.min(speed, FARM.MASTERY.TRAVEL_SPEED)
+    end
+    return speed
+end
+
 function FARM.floorLimitHit()
+    local floor = FARM.currentFloor()
+    local M = FARM.MASTERY
+    if SETTINGS.masteryFarm and M.runState ~= nil then
+        if (M.runState == "done" and SETTINGS.masteryEnd) or M.passiveDeath() then
+            return true
+        end
+        if M.reachFloor and floor < M.reachFloor then
+            return false
+        end
+    end
     if SETTINGS.unlimitedFloors then
         return false
     end
 
-    local floor = FARM.currentFloor()
     return floor > 0 and floor >= SETTINGS.floorLimit
 end
 
@@ -4981,6 +5725,29 @@ function FARM.runStoreDiscount()
     return 1
 end
 
+function FARM.runPromptShows(name)
+    local Gui = LocalPlayer.PlayerGui:FindFirstChild("ProximityPrompts")
+    if not Gui then return nil end
+    local info = ITEM_INFO[name]
+    local wanted = { FARM.runItemKey(name), info and FARM.runItemKey(info.name) or nil }
+    local readable = false
+    for _, Prompt in ipairs(Gui:GetChildren()) do
+        local Frame = Prompt:FindFirstChild("Frame")
+        local TextFrame = Frame and Frame:FindFirstChild("TextFrame")
+        for _, Label in ipairs(TextFrame and TextFrame:GetChildren() or {}) do
+            if Label.ClassName == "TextLabel" then
+                local key = FARM.runItemKey(FARM.MASTERY.text(Label))
+                if key ~= "" then readable = true end
+                for _, want in ipairs(wanted) do
+                    if want and key == want then return true end
+                end
+            end
+        end
+    end
+    if not readable then return nil end
+    return false
+end
+
 function FARM.runStoreTarget(root, character)
     local R = FARM.RUN
     local info = Workspace:FindFirstChild("Info")
@@ -4997,6 +5764,9 @@ function FARM.runStoreTarget(root, character)
     if not FARM.runHasFreeSlot(character) then
         return nil
     end
+
+    local masteryBuy = FARM.MASTERY.wants("BuyDandyStoreItem")
+    local specific = FARM.MASTERY.specificItem()
 
     local folder = Workspace:FindFirstChild("Elevators")
     local elevator = folder and folder:FindFirstChild("Elevator")
@@ -5022,6 +5792,31 @@ function FARM.runStoreTarget(root, character)
 
     local tapes = FARM.runTapes()
     local discount = FARM.runStoreDiscount()
+
+    if specific and offers[specific] and not R.bought[specific] then
+        local info = ITEM_INFO[specific]
+        local cost = (info and info.cost and info.cost > 0 and info.cost) or R.PRICES[specific]
+        local price = cost and math.ceil(cost * discount - 0.001)
+        if price and tapes >= price then
+            offers[specific].price = price
+            return offers[specific]
+        end
+    end
+
+    if masteryBuy then
+        for name, offer in pairs(offers) do
+            local info = ITEM_INFO[name]
+            local cost = (info and info.cost and info.cost > 0 and info.cost) or R.PRICES[name]
+            if cost and not R.bought[name] then
+                local price = math.ceil(cost * discount - 0.001)
+                if tapes >= price then
+                    offer.price = price
+                    return offer
+                end
+            end
+        end
+        return nil
+    end
 
     for _, name in ipairs(R.BUY_ORDER) do
         local offer = offers[name]
@@ -5110,13 +5905,23 @@ function FARM.runCollectTarget(root, character, itemsOnly)
 
     local canCarry = FARM.runHasFreeSlot(character)
     local bestItem, itemDistance, bestCapsule, capsuleDistance
+    local M = FARM.MASTERY
+    local masteryItems = M.itemMode()
+    local specificInfo = ITEM_INFO[M.specificItem() or ""]
+    local masteryTapes = M.wants("BuyDandyStoreItem") or (specificInfo ~= nil and specificInfo.store == true)
+    local masteryCapsules = M.capsuleMode()
 
     for _, model in ipairs(folder:GetChildren()) do
         local kind = nil
         local setting = R.WANT_ITEMS[model.Name]
+        local info = ITEM_INFO[model.Name]
         if canCarry and setting and SETTINGS[setting] then
             kind = "item"
-        elseif model.Name == "ResearchCapsule" and SETTINGS.farmCapsules and not itemsOnly then
+        elseif canCarry and masteryItems and info and info.use ~= "Collectible" then
+            kind = "item"
+        elseif masteryTapes and model.Name == "Tape" then
+            kind = "item"
+        elseif model.Name == "ResearchCapsule" and (SETTINGS.farmCapsules or masteryCapsules) and not itemsOnly then
             kind = "capsule"
         end
 
@@ -5140,12 +5945,21 @@ function FARM.runCollectTarget(root, character, itemsOnly)
         end
     end
 
+    if (masteryItems or masteryCapsules) and bestItem and bestCapsule then
+        return capsuleDistance < itemDistance and bestCapsule or bestItem
+    end
     return bestItem or bestCapsule
 end
 
 function FARM.runUseItems(now, character)
     local R = FARM.RUN
     if now < R.useAt then
+        return
+    end
+
+    if FARM.MASTERY.itemMode() then
+        R.staminaSprint = false
+        FARM.MASTERY.useItems(now, character)
         return
     end
 
@@ -5887,6 +6701,9 @@ function FARM.runRodgerAt(monsters, position)
 end
 
 function FARM.runFullyResearched(name)
+    if FARM.MASTERY.wants("EncounterMonster") then
+        return false
+    end
     if not SETTINGS.farmSkipResearched then
         return false
     end
@@ -5898,7 +6715,7 @@ end
 
 function FARM.runResearchTarget(root)
     local R = FARM.RUN
-    if not SETTINGS.farmResearchTwisteds then
+    if not SETTINGS.farmResearchTwisteds and not FARM.MASTERY.researchMode() then
         return nil
     end
 
@@ -6031,7 +6848,7 @@ function FARM.runChaser(monster)
     return read("InstantRadius"), read("VisionRadius"), read("LineOfSight")
 end
 
-function FARM.runNearestTwisted(root)
+function FARM.runNearestTwisted(root, skipLethal)
     local R = FARM.RUN
     local map = FARM.runMap()
     local monsters = map and map:FindFirstChild("Monsters")
@@ -6041,7 +6858,9 @@ function FARM.runNearestTwisted(root)
 
     local bestMonster, bestPart, bestDistance
     for _, monster in ipairs(monsters:GetChildren()) do
-        if not FARM.runPassive(monster) then
+        local info = MONSTER_INFO[monster.Name]
+        local lethal = skipLethal and info ~= nil and info.rarity == "Lethal"
+        if not FARM.runPassive(monster) and not lethal then
             local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
             local ok, position = pcall(function()
                 return part.Position
@@ -6075,6 +6894,13 @@ end
 function FARM.runHideGoal(root, character)
     local R = FARM.RUN
     local p = root.Position
+
+    if FARM.MASTERY.travelOnly() then
+        local spot = FARM.MASTERY.wanderPoint(root)
+        if spot then
+            return spot, R.ARRIVE, "travel checkpoint", nil, spot.Y + R.hipOffset
+        end
+    end
 
     if R.current and R.current.stand and not FARM.runDone(R.current) then
         local ok, stand = pcall(function()
@@ -6199,10 +7025,36 @@ function FARM.runIsDead(character, root)
     return ok and type(health) == "number" and health <= 0
 end
 
-function FARM.runDeathClick(now, button, status, settle)
+function FARM.runButtonReady(button, now, wait)
+    local R = FARM.RUN
+    if not FARM.runSized(button) then
+        R.buttonSeen = nil
+        return false
+    end
+    local ok, position = pcall(function()
+        return button.AbsolutePosition
+    end)
+    if not ok or not position then
+        return false
+    end
+    local seen = R.buttonSeen
+    if not seen or seen.button ~= button or math.abs(seen.position.X - position.X) > 1 or math.abs(seen.position.Y - position.Y) > 1 then
+        R.buttonSeen = { button = button, position = position, at = now }
+        return false
+    end
+    return now - seen.at >= (wait or R.BUTTON_WAIT)
+end
+
+
+function FARM.runDeathClick(now, button, status, settle, wait)
     local R = FARM.RUN
 
     if R.deathStage == 0 then
+        if not FARM.runButtonReady(button, now, wait) then
+            FARM.setStatus("Dead, waiting for the button")
+            return false
+        end
+        R.buttonSeen = nil
         FARM.setStatus(status)
         FARM.runClick(button)
         R.deathStage = 1
@@ -6234,7 +7086,7 @@ function FARM.runDeath(now)
         if R.deathStage == 0 then
             FARM.writeResume()
         end
-        FARM.runDeathClick(now, leave, "Leaving to lobby", 3)
+        FARM.runDeathClick(now, leave, "Leaving to lobby", 3, 0.5)
         return
     end
 
@@ -6243,14 +7095,14 @@ function FARM.runDeath(now)
     local spectate = death and death:FindFirstChild("SpectateButton")
 
     if not R.skipped and FARM.runSized(skip) then
-        if FARM.runDeathClick(now, skip, "Dead, skipping results", 1.5) then
+        if FARM.runDeathClick(now, skip, "Dead, skipping results", 0.5) then
             R.skipped = true
         end
         return
     end
 
     if spectate then
-        FARM.runDeathClick(now, spectate, "Dead, opening spectate", 2.5)
+        FARM.runDeathClick(now, spectate, "Dead, opening spectate", 2.5, 0.5)
         return
     end
 
@@ -6674,7 +7526,7 @@ function FARM.runUpdate(now)
         local away = Vector3.new(p.X - tendril.X, 0, p.Z - tendril.Z)
         local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
         FARM.runFace(camera, root, p + direction * 10)
-        local step = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+        local step = FARM.tweenSpeed() * 0.016
         local x, z = p.X + direction.X * step, p.Z + direction.Z * step
         local floor = FARM.runFloorY(x, R.fleeY, z)
         local y = floor and (floor + R.hipOffset) or R.fleeY
@@ -6706,7 +7558,7 @@ function FARM.runUpdate(now)
             local away = Vector3.new(p.X - tendril.X, 0, p.Z - tendril.Z)
             local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
             FARM.runFace(camera, root, p + direction * 10)
-            local step = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+            local step = FARM.tweenSpeed() * 0.016
             root.Position = Vector3.new(p.X + direction.X * step, R.hideY, p.Z + direction.Z * step)
             FARM.setStatus("Sprout tendril or active Rodger near, moving away")
             return
@@ -6734,7 +7586,7 @@ function FARM.runUpdate(now)
                 end
                 FARM.runHoldW(true)
                 FARM.runFace(camera, root, target)
-                local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, flat.Magnitude)
+                local step = math.min(FARM.tweenSpeed() * 0.016, flat.Magnitude)
                 local direction = flat.Unit
                 root.Position = Vector3.new(p.X + direction.X * step, R.hideY, p.Z + direction.Z * step)
                 FARM.setStatus("Hiding, moving to the elevator underground")
@@ -6781,7 +7633,7 @@ function FARM.runUpdate(now)
         if flat and flat.Magnitude > R.hideGoalRadius then
             FARM.runHoldW(true)
             FARM.runFace(camera, root, goal)
-            local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, flat.Magnitude)
+            local step = math.min(FARM.tweenSpeed() * 0.016, flat.Magnitude)
             local direction = flat.Unit
             root.Position = Vector3.new(p.X + direction.X * step, R.hideY, p.Z + direction.Z * step)
             FARM.setStatus("Hiding, moving to " .. R.hideGoalLabel)
@@ -6790,6 +7642,9 @@ function FARM.runUpdate(now)
             FARM.runRmb(false)
             root.Position = Vector3.new(p.X, R.hideY, p.Z)
             FARM.setStatus("Hiding")
+            if FARM.MASTERY.travelOnly() then
+                R.hideGoalAt = 0
+            end
         end
         return
     end
@@ -6833,9 +7688,6 @@ function FARM.runUpdate(now)
     if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runConnie(R.current) then
         FARM.runRmb(false)
         FARM.runHoldW(false)
-        if R.phase == "working" then
-            FARM.tapKey(R.E_KEY)
-        end
         if R.noCollide then
             FARM.runCollide(true)
         end
@@ -6881,7 +7733,7 @@ function FARM.runUpdate(now)
             R.current = nil
             R.sacrificeY = root.Position.Y
             R.phase = "sacrifice"
-            FARM.setStatus("Floor limit reached (" .. FARM.currentFloor() .. ")")
+            FARM.setStatus(FARM.MASTERY.passiveDeath() and "Mastery: getting hit for the passive ability" or (FARM.MASTERY.runState == "done" and SETTINGS.masteryEnd and "Mastery done, ending the run" or ("Floor limit reached (" .. FARM.currentFloor() .. ")")))
             return
         end
 
@@ -6891,6 +7743,15 @@ function FARM.runUpdate(now)
         end
 
         if FARM.runMakeRoom(now, character) then
+            return
+        end
+
+        if FARM.MASTERY.needHit(now, character) then
+            R.current = nil
+            R.sacrificeY = root.Position.Y
+            R.hurtFrom = FARM.MASTERY.health(character)
+            R.phase = "sacrifice"
+            FARM.setStatus("Mastery: inventory full of heals, taking a hit")
             return
         end
 
@@ -6931,6 +7792,19 @@ function FARM.runUpdate(now)
             R.phase = "research"
             FARM.setStatus("Moving to " .. FARM.runResearchName(study.name) .. " for research")
             return
+        end
+
+        if FARM.MASTERY.travelOnly() then
+            local spot = FARM.MASTERY.wanderPoint(root)
+            if spot then
+                R.current = nil
+                R.collect = nil
+                R.targetKind = "wander"
+                FARM.runTravelTo(root, spot, spot.Y + R.hipOffset)
+                R.phase = "tween"
+                FARM.setStatus("Mastery: walking for Travel")
+                return
+            end
         end
 
         R.targetKind = "machine"
@@ -7035,13 +7909,19 @@ function FARM.runUpdate(now)
                 return
             end
 
+            if R.targetKind == "wander" then
+                R.targetKind = "machine"
+                R.phase = "pick"
+                return
+            end
+
             if FARM.onArrive then FARM.onArrive() end
             R.phase = "aim"
             R.at = now + R.AIM_MAX
             return
         end
 
-        local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, distance)
+        local step = math.min(FARM.tweenSpeed() * 0.016, distance)
         local direction = flat.Unit
         local t = total > 0 and math.clamp(1 - distance / total, 0, 1) or 1
         root.Position = Vector3.new(p.X + direction.X * step, R.startY + (R.goalY - R.startY) * t, p.Z + direction.Z * step)
@@ -7190,7 +8070,7 @@ function FARM.runUpdate(now)
         FARM.runHoldW(true)
         FARM.runCollide(false)
         FARM.runFreeze(root)
-        local speed = math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016
+        local speed = FARM.tweenSpeed() * 0.016
         local step = math.min(speed, distance)
         local direction = distance > 0.01 and flat.Unit or Vector3.new(0, 0, 0)
         local y = p.Y + math.clamp(standY - p.Y, -speed, speed)
@@ -7198,15 +8078,31 @@ function FARM.runUpdate(now)
         return
     end
 
+    if R.phase == "sacrifice" and R.hurtFrom then
+        local health = FARM.MASTERY.health(character)
+        local hit = health ~= nil and health < R.hurtFrom
+        local monster = FARM.runNearestTwisted(root, true)
+        if hit or not monster or not FARM.MASTERY.itemMode() then
+            if not hit then FARM.MASTERY.hitBlockUntil = now + 10 end
+            R.hurtFrom = nil
+            FARM.runHoldW(false)
+            if R.noCollide then
+                FARM.runCollide(true)
+            end
+            R.phase = "pick"
+            return
+        end
+    end
+
     if R.phase == "sacrifice" then
-        local monster, part = FARM.runNearestTwisted(root)
+        local monster, part = FARM.runNearestTwisted(root, R.hurtFrom ~= nil or FARM.MASTERY.passiveDeath())
         if not part then
             FARM.runRmb(false)
             FARM.runHoldW(false)
             if R.noCollide then
                 FARM.runCollide(true)
             end
-            FARM.setStatus("Floor limit reached, no twisted found")
+            FARM.setStatus((FARM.MASTERY.runState == "done" and SETTINGS.masteryEnd and "Mastery done" or "Floor limit reached") .. ", no twisted found")
             return
         end
 
@@ -7215,7 +8111,7 @@ function FARM.runUpdate(now)
         local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z)
         local distance = flat.Magnitude
 
-        FARM.setStatus(string.format("Floor limit reached, walking into %s (%d)", monster.Name, math.floor(distance)))
+        FARM.setStatus(string.format("%s, walking into %s (%d)", R.hurtFrom and "Mastery: taking a hit" or (FARM.MASTERY.passiveDeath() and "Mastery: passive ability" or (FARM.MASTERY.runState == "done" and SETTINGS.masteryEnd and "Mastery done" or "Floor limit reached")), monster.Name, math.floor(distance)))
         FARM.runFace(camera, root, target)
         FARM.runHoldW(true)
 
@@ -7228,7 +8124,7 @@ function FARM.runUpdate(now)
 
         FARM.runCollide(false)
         FARM.runFreeze(root)
-        local step = math.min(math.max(SETTINGS.tweenWalkSpeed, 1) * 0.016, distance)
+        local step = math.min(FARM.tweenSpeed() * 0.016, distance)
         local direction = flat.Unit
         root.Position = Vector3.new(p.X + direction.X * step, R.sacrificeY, p.Z + direction.Z * step)
         return
@@ -7248,8 +8144,10 @@ function FARM.runUpdate(now)
     end
 
     if R.phase == "collect" then
-        FARM.runRmb(false)
         local target = R.collect
+        if not (target and target.wrongSince) then
+            FARM.runRmb(false)
+        end
 
         if target and target.kind == "buy" and FARM.runTapes() < R.buyTapes then
             R.bought[target.name] = true
@@ -7275,6 +8173,28 @@ function FARM.runUpdate(now)
         if flat > R.LOST then
             R.phase = "pick"
             return
+        end
+
+        if target.kind == "buy" and okPos and position then
+            if FARM.runPromptShows(target.name) == false then
+                target.wrongSince = target.wrongSince or now
+                if now - target.wrongSince < 3 then
+                    FARM.runFace(camera, root, position)
+                    if flat > 1.5 then
+                        local direction = Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Unit
+                        local step = math.min(flat - 1.5, 0.5)
+                        root.Position = root.Position + direction * step
+                    end
+                    FARM.setStatus("Aiming at " .. target.name)
+                    return
+                end
+                R.skip[target.spot] = true
+                R.collect = nil
+                R.phase = "pick"
+                FARM.runRmb(false)
+                return
+            end
+            target.wrongSince = nil
         end
 
         if now >= R.at then
@@ -7743,6 +8663,9 @@ TOON.RULES.Blot = TOON.RULES.Blott
 
 TOON.UNSUPPORTED = {Shelly = true, Sprout = true, Goob = true, Glisten = true, Cosmo = true, Scraps = true, Brusha = true, Squirm = true, Ginger = true}
 
+FARM.MASTERY.toonRules = TOON.RULES
+FARM.MASTERY.toonName = function(char) return TOON.character(char) end
+
 function TOON.character(char)
     local Config = char and char:FindFirstChild("Config")
     local Module = Config and Config:FindFirstChild("ModuleName")
@@ -7830,6 +8753,7 @@ function TOON.update(now)
     local char = LocalPlayer.Character
     local ok, name = pcall(TOON.character, char)
     name = ok and name or nil
+    if name then TOON.lastName = name end
     local hasAbility = TOON.hasAbility(char, name)
     local shown = tostring(name) .. tostring(hasAbility)
     if shown ~= TOON.shown and TOON.Label then
@@ -7837,24 +8761,26 @@ function TOON.update(now)
         TOON.Label:SetText(TOON.describe(name, hasAbility))
     end
     local Rule = name and TOON.RULES[name]
-    if not (SETTINGS.autoAbility and Rule and FARM.active and not FARM.paused) then return end
+    local mastery = FARM.MASTERY.abilityMode(name)
+    if not ((SETTINGS.autoAbility or mastery) and Rule and FARM.active and not FARM.paused) then return end
     if PLACE_MODE ~= "main" or VantaUI.Blocked or not robloxFocused() then return end
     TOON.confirm(char, now)
     local working = FARM.RUN.phase == "working" and FARM.RUN.current ~= nil
     if Rule.machine and not working then return end
     if Rule.offMachine and working then return end
     local floor = FARM.currentFloor()
-    if Rule.perFloor and (TOON.usedFloor[name] == floor or TOON.pending) then return end
+    local perFloor = Rule.perFloor and not mastery
+    if perFloor and (TOON.usedFloor[name] == floor or TOON.pending) then return end
     if Rule.blackout and not TOON.blackout() then return end
     local okReady, ready = pcall(TOON.ready, char, Rule)
     if not (okReady and ready) then return end
     FARM.tapKey(TOON.KEY)
     if Rule.presses == 2 then TOON.secondAt = now + TOON.SECOND_PRESS end
-    if Rule.perFloor then TOON.pending = {Name = name, Floor = floor, At = now, Instant = Rule.instant} end
+    if perFloor then TOON.pending = {Name = name, Floor = floor, At = now, Instant = Rule.instant} end
     TOON.nextAt = now + TOON.RETRY
 end
 
-local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>"}, nextAt = 0, beatAt = 0}
+local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>", Mastery = "<:Mastery:1537206041085747331>"}, nextAt = 0, beatAt = 0}
 
 function REPORT.clock()
     local ok, value = pcall(os.time)
@@ -7957,6 +8883,33 @@ function REPORT.researchLines(base)
     return out
 end
 
+function REPORT.masteryLines()
+    local okName, current = pcall(TOON.character, LocalPlayer.Character)
+    local name = (okName and current) or TOON.lastName
+    if not name then return nil, {} end
+    local ok, Folder = pcall(function()
+        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Mastery[name]
+    end)
+    local lines = {}
+    for _, Quest in ipairs(ok and Folder and Folder:GetChildren() or {}) do
+        local okValues, current, amount = pcall(function()
+            return Quest.Current.Value, Quest.Amount.Value
+        end)
+        if okValues and type(current) == "number" and type(amount) == "number" then
+            local questType = FARM.MASTERY.questType(Quest.Name, "")
+            local label = FARM.MASTERY.LABELS[questType]
+            local specific = questType == "UseItemSpecific" and FARM.MASTERY.SPECIFIC[name]
+            local info = specific and ITEM_INFO[specific]
+            if info then label = "Use %s " .. info.name end
+            label = label and string.format(label, REPORT.number(amount)) or Quest.Name
+            local state = current >= amount and "COMPLETED" or (REPORT.number(math.floor(current)) .. "/" .. REPORT.number(amount))
+            lines[#lines + 1] = label .. ": " .. state
+        end
+    end
+    table.sort(lines)
+    return name, lines
+end
+
 function REPORT.coin()
     local ok, value = pcall(function()
         return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Coin.Value
@@ -8053,10 +9006,19 @@ function REPORT.summary(Options, heading)
         local block = E.Research .. " Research:\n```\n" .. (#found > 0 and table.concat(found, "\n"):sub(1, 900) or "None") .. "\n```"
         table.insert(Fields, REPORT.field("\u{200B}", block, false))
     end
+    if Options.summary.includeMastery then
+        table.insert(Fields, REPORT.masteryField(E))
+    end
     return {embeds = {{title = "Summary (" .. (heading or "Since the beginning") .. ")", color = REPORT.COLOR, description = #lines > 0 and table.concat(lines, "\n") or nil, fields = Fields, footer = {text = "VantaH | Dandy's World"}, timestamp = REPORT.stamp()}}}
 end
 
-function REPORT.runEnded(died, Run)
+function REPORT.masteryField(E)
+    local name, found = REPORT.masteryLines()
+    local block = E.Mastery .. " Mastery" .. (name and (" (" .. name .. ")") or "") .. ":\n```\n" .. (#found > 0 and table.concat(found, "\n"):sub(1, 900) or "None") .. "\n```"
+    return REPORT.field("\u{200B}", block, false)
+end
+
+function REPORT.runEnded(died, Run, Options)
     local S = REPORT.session
     local limit = S.limitEnd == true
     local Fields = {
@@ -8070,6 +9032,9 @@ function REPORT.runEnded(died, Run)
     table.insert(Fields, REPORT.field("Twisteds on the floor:", #Twisteds > 0 and table.concat(Twisteds, "\n"):sub(1, 900) or "None"))
     local found = REPORT.researchLines(S.runResearch)
     table.insert(Fields, REPORT.field("Research:", "```\n" .. (#found > 0 and table.concat(found, "\n"):sub(1, 900) or "None") .. "\n```", false))
+    if Options and Options.summary.includeMastery then
+        table.insert(Fields, REPORT.masteryField(REPORT.EMOJI))
+    end
     return {embeds = {{title = "Run Ended", color = (limit and REPORT.LIMIT_COLOR) or (died and REPORT.DEATH_COLOR) or REPORT.COLOR, fields = Fields, footer = {text = "VantaH | Dandy's World"}, timestamp = REPORT.stamp()}}}
 end
 
@@ -8104,8 +9069,8 @@ function REPORT.finishRun(died)
     S.capsules = (S.capsules or 0) + (Run.capsules or 0)
     if died then S.deaths = (S.deaths or 0) + 1 end
     S.runOpen = false
-    REPORT.send("runEnded", function()
-        return REPORT.runEnded(died, Run)
+    REPORT.send("runEnded", function(Given)
+        return REPORT.runEnded(died, Run, Given)
     end, died)
     S.lastRun = Run
     S.lastRunTime = REPORT.clock() - (S.runStartedAt or REPORT.clock())
@@ -8425,6 +9390,14 @@ local function buildMenu()
     toggle(FarmAbility, "dw_auto_ability", "Auto Use Ability", "autoAbility")
     TOON.Label = FarmAbility:AddLabel("Character: none")
 
+    local MasterySection = FarmTab:AddSection("Mastery", "Right")
+    toggle(MasterySection, "dw_mastery_farm", "Mastery farm", "masteryFarm")
+    MasterySection:AddParagraph({Title = "", Content = "Farms only mastery, going through every Toon. Farming is slower, but it gets every mastery done."})
+    FARM.UNSAFE.label = MasterySection:AddLabel("Unsafe LuaU is required.", Color3.fromRGB(214, 84, 72))
+    FARM.UNSAFE.label:SetHidden(true)
+    toggle(MasterySection, "dw_mastery_select", "Select Toon without Mastery (Lobby)", "masterySelect")
+    toggle(MasterySection, "dw_mastery_end", "End the game after getting Mastery", "masteryEnd")
+
     local Machines = FarmTab:AddSection("Machines", "Right")
     toggle(Machines, "dw_farm_treadmill_run", "Run on Treadmill Machines", "farmTreadmillRun")
     slider(Machines, "dw_farm_treadmill_stop", "Stop Running at", "farmTreadmillStopAt", 0, 270, 0, " stamina")
@@ -8469,7 +9442,7 @@ local function buildMenu()
 
     local webhookFolder = "DW/Webhooks"
     local webhookDefaults = {
-        summary = {enabled = true, intervalMinutes = 20, includeIchor = true, includeResearch = false, includeItems = false, includeTwisteds = false},
+        summary = {enabled = true, intervalMinutes = 20, includeIchor = true, includeResearch = false, includeItems = false, includeTwisteds = false, includeMastery = false},
         runEnded = {enabled = true, mentionOnDeath = false},
         connection = {onReconnect = true, onLost = true},
     }
@@ -8537,7 +9510,8 @@ local function buildMenu()
             '\t\t\t"includeIchor": ' .. flag(Summary.includeIchor) .. ",",
             '\t\t\t"includeResearch": ' .. flag(Summary.includeResearch) .. ",",
             '\t\t\t"includeItems": ' .. flag(Summary.includeItems) .. ",",
-            '\t\t\t"includeTwisteds": ' .. flag(Summary.includeTwisteds),
+            '\t\t\t"includeTwisteds": ' .. flag(Summary.includeTwisteds) .. ",",
+            '\t\t\t"includeMastery": ' .. flag(Summary.includeMastery),
             "\t\t},",
             '\t\t"runEnded": {',
             '\t\t\t"enabled": ' .. flag(RunEnded.enabled) .. ",",
@@ -8652,6 +9626,7 @@ local function buildMenu()
     bind(Summary:AddSlider({Title = "Send a Summary", Min = 5, Max = 60, Default = 20, Suffix = " min"}), "summary", "intervalMinutes")
     bind(Summary:AddToggle({Title = "Include Ichor", Default = true}), "summary", "includeIchor")
     bind(Summary:AddToggle({Title = "Include New Research", Default = false}), "summary", "includeResearch")
+    bind(Summary:AddToggle({Title = "Include Mastery", Default = false}), "summary", "includeMastery")
     bind(Summary:AddToggle({Title = "Include Inventory Items", Default = false}), "summary", "includeItems")
     bind(Summary:AddToggle({Title = "Include Twisteds (Current Floor)", Default = false}), "summary", "includeTwisteds")
     Summary:AddLabel("Run info (floor, machines, time) is always included.")
@@ -8828,6 +9803,9 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     if lastUiRefresh >= UI_REFRESH_INTERVAL then
         lastUiRefresh = 0
         refreshSettingsFromUi()
+        FARM.updateUnsafeWarning()
+        FARM.MASTERY.update()
+        FARM.MASTERY.runUpdate()
     end
 
     lastScan = lastScan + deltaTime
