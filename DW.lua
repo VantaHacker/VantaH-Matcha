@@ -602,14 +602,6 @@ local POSITION_CHILD_NAMES = {
     "WorldCFrame",
 }
 
-local SKILL_FRAME_NAMES = {
-    SkillCheckFrame = true,
-    SkillcheckFrame = true,
-    SkillCheck = true,
-    CircleSkillCheckGui = true,
-    Skillcheck = true,
-}
-
 local SKILL_MARKER_NAMES = {
     Marker = true,
     Needle = true,
@@ -651,9 +643,7 @@ local function isGuiVisible(instance)
 end
 
 local function readScreenRect(instance)
-    local position = instance.AbsolutePosition
-    local size = instance.AbsoluteSize
-    return position ~= nil and size ~= nil and size.X > 0 and size.Y > 0
+    return instance.AbsolutePosition ~= nil
 end
 
 local function hasScreenRect(instance)
@@ -795,14 +785,28 @@ local function sampleBar(marker)
     return now - barLastMove <= BAR_MOTION_GRACE
 end
 
+local function circleDiameter(part)
+    local size = part.AbsoluteSize
+    if size and size.X > 0 then return size.X end
+    local container = part.Parent
+    local position = part.AbsolutePosition
+    if not (container and position) then return nil end
+    local corner = container.AbsolutePosition
+    if not corner then return nil end
+    local shadow = container.Parent and container.Parent:FindFirstChild("Shadow")
+    local shadowPosition = shadow and shadow.AbsolutePosition
+    local width = shadowPosition and (corner.X - shadowPosition.X) / 0.1 or 280
+    if width <= 0 then width = 280 end
+    return 2 * (corner.X + width / 2 - position.X)
+end
+
 local function sampleCircle(marker)
-    local size = marker.AbsoluteSize
-    if not size then
+    local value = circleDiameter(marker)
+    if not value then
         return false, 0
     end
 
     local now = tick()
-    local value = size.X
 
     if circleLastSize == nil then
         circleLastSize, circleLastTime, circleLastMove = value, now, 0
@@ -845,20 +849,16 @@ local function shouldPressCircle(parts)
         return false
     end
 
-    local markerSize = marker.AbsoluteSize
-    local yellowSize = yellow and yellow.AbsoluteSize
-    if not (markerSize and yellowSize) then
+    local markerSize = circleDiameter(marker)
+    local yellowOuter = yellow and circleDiameter(yellow)
+    if not (markerSize and yellowOuter) then
         return false
     end
 
-    local yellowOuter = yellowSize.X
     local yellowInner = 0
 
     if parts.hole then
-        local holeSize = parts.hole.AbsoluteSize
-        if holeSize then
-            yellowInner = holeSize.X
-        end
+        yellowInner = circleDiameter(parts.hole) or 0
     end
 
     if yellowInner <= 0 or yellowInner >= yellowOuter then
@@ -866,15 +866,15 @@ local function shouldPressCircle(parts)
     end
 
     local rate = math.clamp(circleRate, -CIRCLE_MAX_RATE, CIRCLE_MAX_RATE)
-    local predicted = markerSize.X + rate * (SETTINGS.skillCheckLead / 1000)
+    local predicted = markerSize + rate * (SETTINGS.skillCheckLead / 1000)
     local aim = yellowOuter - circleAimFrac * (yellowOuter - yellowInner)
     local press = predicted <= aim and predicted >= yellowInner
 
     if not press and parts.grey and dt > 0 and rate < 0 then
-        local greySize = parts.grey.AbsoluteSize
+        local greySize = circleDiameter(parts.grey)
 
         if greySize then
-            local inGrey = predicted <= greySize.X and predicted > yellowOuter
+            local inGrey = predicted <= greySize and predicted > yellowOuter
             if inGrey and predicted + rate * dt < yellowInner then
                 press = true
             end
@@ -902,8 +902,13 @@ local function shouldPressBar(parts)
         return false
     end
 
+    local reqPos = required and required.AbsolutePosition
     local goldStart = goldPos.X
-    local goldFinish = goldStart + goldSize.X
+    local goldWidth = goldSize.X
+    if goldWidth <= 0 and reqPos and required ~= gold then
+        goldWidth = goldStart - reqPos.X
+    end
+    local goldFinish = goldStart + goldWidth
     if goldFinish <= goldStart then
         return false
     end
@@ -928,9 +933,13 @@ local function shouldPressBar(parts)
     end
 
     if not press and required then
-        local reqPos, reqSize = required.AbsolutePosition, required.AbsoluteSize
+        local reqSize = required.AbsoluteSize
+        local reqWidth = reqSize and reqSize.X or 0
+        if reqWidth <= 0 then
+            reqWidth = goldWidth * 3
+        end
 
-        if reqPos and reqSize then
+        if reqPos then
             local pastGold
 
             if forward then
@@ -939,7 +948,7 @@ local function shouldPressBar(parts)
                 pastGold = predicted < goldStart
             end
 
-            if pastGold and predicted >= reqPos.X and predicted <= reqPos.X + reqSize.X then
+            if pastGold and predicted >= reqPos.X and predicted <= reqPos.X + reqWidth then
                 press = true
             end
         end
@@ -1022,15 +1031,6 @@ local function getSkillCheckFrame()
     parts = trySkillCheckFrame(menu and menu:FindFirstChild("SkillCheckFrame"))
     if parts then
         return cacheSkillCheckParts(parts)
-    end
-
-    for _, descendant in ipairs(playerGui:GetDescendants()) do
-        if SKILL_FRAME_NAMES[descendant.Name] then
-            parts = trySkillCheckFrame(descendant)
-            if parts then
-                return cacheSkillCheckParts(parts)
-            end
-        end
     end
 
     return nil
@@ -2260,7 +2260,7 @@ local function getVisualColor(visual)
 end
 
 local STRINGS = {
-    OFFSET = 0xB8,
+    OFFSET = 0xA8,
     memoryReads = nil,
 }
 
@@ -3692,6 +3692,40 @@ local FARM = {
     },
 }
 
+FARM.GUI = {positionOffset = 0xFC}
+
+function FARM.guiMatches(address, offset, position)
+    local x, y = memory_read("float", address + offset), memory_read("float", address + offset + 4)
+    return type(x) == "number" and type(y) == "number" and math.abs(x - position.X) < 0.01 and math.abs(y - position.Y) < 0.01
+end
+
+function FARM.guiSize(gui)
+    local size = gui.AbsoluteSize
+    if size and size.X > 1 and size.Y > 1 then return size end
+    if not VantaUI.MemoryAccess() then return size end
+    local position = gui.AbsolutePosition
+    local address = tonumber(gui.Address)
+    if not (position and address) then return size end
+    local G = FARM.GUI
+    if not FARM.guiMatches(address, G.positionOffset, position) then
+        if position.X == 0 and position.Y == 0 then return size end
+        local found = nil
+        for offset = 0x40, 0x400, 4 do
+            if FARM.guiMatches(address, offset, position) then
+                found = offset
+                break
+            end
+        end
+        if not found then return size end
+        G.positionOffset = found
+    end
+    local width = memory_read("float", address + G.positionOffset + 8)
+    local height = memory_read("float", address + G.positionOffset + 12)
+    if type(width) ~= "number" or type(height) ~= "number" or width ~= width or height ~= height then return size end
+    if width < 0 or height < 0 or width > 20000 or height > 20000 then return size end
+    return Vector2.new(width, height)
+end
+
 function FARM.showPrompt()
     local P = FARM.PROMPT
     local Dialog, Body = UI.dialog(P.TITLE, "Auto-farm", "READ BEFORE CONTINUING", P.SIZE, function()
@@ -3858,9 +3892,9 @@ function FARM.updateUnsafeWarning()
 end
 
 FARM.MASTERY = {
-    VISIBLE = 0x5AD,
-    TEXT = 0xB98,
-    STATE = 0x578,
+    VISIBLE = 0x59D,
+    TEXT = 0xB88,
+    STATE = 0x568,
     QUESTS = {
         { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
         { "PassiveAbilityActivate", "passive", "Passive Ability", "Activate Passive Ability %s times" },
@@ -4080,10 +4114,6 @@ function FARM.MASTERY.wanderPoint(root)
     return M.wanderGoal
 end
 
-function FARM.MASTERY.log(message)
-    FARM.MASTERY.lastLog = message
-end
-
 function FARM.MASTERY.byte(gui, offset)
     local ok, value = pcall(memory_read, "byte", gui.Address + offset)
     return ok and value or 0
@@ -4129,7 +4159,7 @@ function FARM.MASTERY.waitFocus()
 end
 
 function FARM.MASTERY.centre(gui)
-    local position, size = gui.AbsolutePosition, gui.AbsoluteSize
+    local position, size = gui.AbsolutePosition, FARM.guiSize(gui)
     return math.floor(position.X + size.X / 2 + 0.5), math.floor(position.Y + size.Y / 2 + 0.5)
 end
 
@@ -4156,7 +4186,6 @@ function FARM.MASTERY.calibrate()
     else
         M.offset = { x = 0, y = 0 }
     end
-    M.log(string.format("mouse offset %d, %d", M.offset.x, M.offset.y))
 end
 
 function FARM.MASTERY.click(gui, delay)
@@ -4215,7 +4244,6 @@ function FARM.MASTERY.closeChat()
     if not M.chatOpen() then return true end
     local _, Icon = M.chat()
     if not Icon then return false end
-    M.log("closing chat")
     return M.clickUntil(Icon, function() return not M.chatOpen() end, 1.5)
 end
 
@@ -4271,7 +4299,7 @@ function FARM.MASTERY.offView(ui, card)
     local ok, cardTop, cardBottom, top, bottom = pcall(function()
         local cardTop = card.AbsolutePosition.Y
         local top = ui.cards.AbsolutePosition.Y
-        return cardTop, cardTop + card.AbsoluteSize.Y, top, top + ui.cards.AbsoluteSize.Y
+        return cardTop, cardTop + FARM.guiSize(card).Y, top, top + FARM.guiSize(ui.cards).Y
     end)
     if not ok then return nil end
     if cardTop < top - 1 then return -1 end
@@ -4296,8 +4324,8 @@ function FARM.MASTERY.scrollTo(ui, card)
         local okBefore, before, notches = pcall(function()
             local before = card.AbsolutePosition.Y
             local top = ui.cards.AbsolutePosition.Y
-            local edge = direction > 0 and (top + ui.cards.AbsoluteSize.Y) or top
-            local cardEdge = direction > 0 and (before + card.AbsoluteSize.Y) or before
+            local edge = direction > 0 and (top + FARM.guiSize(ui.cards).Y) or top
+            local cardEdge = direction > 0 and (before + FARM.guiSize(card).Y) or before
             return before, math.clamp(math.ceil(math.abs(cardEdge - edge) / 100), 1, 5)
         end)
         if not okBefore then before, notches = nil, 1 end
@@ -4311,7 +4339,7 @@ function FARM.MASTERY.scrollTo(ui, card)
         if stuck >= 3 then
             local okCentre, inside = pcall(function()
                 local _, y = M.centre(card)
-                return y > ui.cards.AbsolutePosition.Y and y < ui.cards.AbsolutePosition.Y + ui.cards.AbsoluteSize.Y
+                return y > ui.cards.AbsolutePosition.Y and y < ui.cards.AbsolutePosition.Y + FARM.guiSize(ui.cards).Y
             end)
             return okCentre and inside
         end
@@ -4416,12 +4444,12 @@ end
 function FARM.MASTERY.scan()
     local M = FARM.MASTERY
     local ui = M.ui()
-    if not ui then M.log("MainGui not found") return end
+    if not ui then return end
     FARM.setStatus("Checking mastery")
     if not M.waitFocus() then return end
     M.calibrate()
-    if not M.closeChat() then M.log("could not close chat") end
-    if not M.openToons(ui) then M.log("could not open the toons menu") return end
+    M.closeChat()
+    if not M.openToons(ui) then return end
     task.wait(0.3)
     local chosen
     local current = M.equipped()
@@ -4437,11 +4465,10 @@ function FARM.MASTERY.scan()
         if M.stop then return end
         if not toon.mastered then
             FARM.setStatus("Checking mastery: " .. toon.label)
-            local quests, problem
+            local quests
             for _ = 1, 2 do
-                quests, problem = M.readToon(ui, toon)
+                quests = M.readToon(ui, toon)
                 if quests or M.stop then break end
-                M.log(toon.name .. ": " .. problem .. ", retrying")
             end
             if quests then
                 local left = {}
@@ -4449,16 +4476,11 @@ function FARM.MASTERY.scan()
                     if not quest.done and M.canDo(quest.type, toon.name) then
                         table.insert(left, quest.text .. " " .. quest.progress)
                     end
-                    if M.AUTO[quest.type] == nil then M.log(toon.name .. ": unknown quest type " .. quest.type) end
                 end
                 if #left > 0 then
-                    M.log(toon.name .. ": " .. table.concat(left, ", "))
                     chosen = toon
                     break
                 end
-                M.log(toon.name .. ": nothing left that can be automated")
-            elseif problem then
-                M.log(toon.name .. ": " .. problem)
             end
         end
     end
@@ -4467,12 +4489,8 @@ function FARM.MASTERY.scan()
         FARM.setStatus("Selecting " .. chosen.label)
         if M.select(ui, chosen) then
             M.target = chosen.name
-            M.log("selected " .. chosen.name)
-        else
-            M.log("could not select " .. chosen.name)
         end
     else
-        M.log(SETTINGS.masterySelect and "every toon is done, turning Mastery farm off" or "the equipped toon is done, turning Mastery farm off")
         SETTINGS.masteryFarm = false
         pcall(UI.SetValue, "dw_mastery_farm", false)
         pcall(notify, "Dandy's World", SETTINGS.masterySelect and "Mastery farm finished every toon." or "Mastery farm finished this toon.", 4)
@@ -4491,13 +4509,13 @@ function FARM.MASTERY.runUpdate()
     local now = tick()
     if now < M.runAt then return end
     M.runAt = now + M.RUN_POLL
-    local ok, state, detail = pcall(function()
+    local ok, state = pcall(function()
         local char = LocalPlayer.Character
         local toonName = M.toonName and M.toonName(char)
         if not toonName then return nil end
         local Folder = game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Mastery:FindFirstChild(toonName)
         if not Folder then return nil end
-        local left, total, types, reach = {}, 0, {}, nil
+        local left, total, types, reach = 0, 0, {}, nil
         for _, Quest in ipairs(Folder:GetChildren()) do
             local Current, Amount = Quest:FindFirstChild("Current"), Quest:FindFirstChild("Amount")
             if Current and Amount then
@@ -4506,7 +4524,7 @@ function FARM.MASTERY.runUpdate()
                 if M.canDo(questType, toonName) and Current.Value < Amount.Value then
                     types[questType] = true
                     if questType == "ReachFloor" then reach = Amount.Value end
-                    table.insert(left, Quest.Name .. " " .. tostring(Current.Value) .. "/" .. tostring(Amount.Value))
+                    left = left + 1
                 end
             end
         end
@@ -4514,11 +4532,10 @@ function FARM.MASTERY.runUpdate()
         M.runLeft = types
         M.reachFloor = reach
         M.runToon = toonName
-        return #left == 0 and "done" or "working", toonName .. ": " .. (#left == 0 and "done" or table.concat(left, ", "))
+        return left == 0 and "done" or "working"
     end)
     local newState = ok and state or nil
     if not newState then M.runLeft = nil end
-    M.runDetail = detail
     M.runState = newState
 end
 
@@ -4536,8 +4553,7 @@ function FARM.MASTERY.update()
     M.done = true
     M.stop = false
     task.spawn(function()
-        local ok, err = pcall(M.scan)
-        if not ok then M.log("error: " .. tostring(err)) end
+        pcall(M.scan)
         M.running = false
         FARM.setStatus(nil)
     end)
@@ -5154,11 +5170,20 @@ function FARM.lobbyClickLeave()
         return false
     end
 
-    local p, s = button.AbsolutePosition, button.AbsoluteSize
+    local p, s = button.AbsolutePosition, FARM.guiSize(button)
     pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
     pcall(mousemoverel, 3, 3)
     pcall(mousemoverel, -3, -3)
     return true
+end
+
+function FARM.lobbyRespawned(character, root)
+    local L = FARM.LOBBY
+    if not (character and root and L.resetFrom) then return false end
+    if getIdentity(character) == L.resetFrom then return false end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local ok, health = pcall(function() return humanoid.Health end)
+    return ok and type(health) == "number" and health > 0
 end
 
 function FARM.lobbyUpdate(now)
@@ -5194,6 +5219,7 @@ function FARM.lobbyUpdate(now)
             L.resetStage = 3
             L.at = now + 0.4
         elseif L.resetStage == 3 and now >= L.at then
+            L.resetFrom = character and getIdentity(character)
             FARM.tapKey(L.VK.ENTER)
             L.phase = "spawnLeg"
             L.at = now + L.RESET_WAIT
@@ -5213,6 +5239,9 @@ function FARM.lobbyUpdate(now)
     FARM.sprintUpdate(now, moving)
 
     if L.phase == "spawnLeg" then
+        if now < L.at and FARM.lobbyRespawned(character, root) then
+            L.at = now
+        end
         if now < L.at then
             FARM.releaseKeys()
             L.lastPos = root.Position
@@ -6973,7 +7002,7 @@ function FARM.runTravelTo(root, position, y)
 end
 
 function FARM.runClick(button)
-    local p, s = button.AbsolutePosition, button.AbsoluteSize
+    local p, s = button.AbsolutePosition, FARM.guiSize(button)
     pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
     pcall(mousemoverel, 3, 3)
     pcall(mousemoverel, -3, -3)
@@ -6985,7 +7014,7 @@ function FARM.runSized(button)
     end
 
     local ok, size = pcall(function()
-        return button.AbsoluteSize
+        return FARM.guiSize(button)
     end)
 
     return ok and size ~= nil and size.X > 0
@@ -7122,7 +7151,7 @@ function FARM.readyButton()
     end
 
     local ok, size = pcall(function()
-        return button.AbsoluteSize
+        return FARM.guiSize(button)
     end)
 
     if not ok or not size then
@@ -7192,7 +7221,7 @@ function FARM.runCards()
                 return label.Text
             end)
             local okRect, size, position = pcall(function()
-                return child.AbsoluteSize, child.AbsolutePosition
+                return FARM.guiSize(child), child.AbsolutePosition
             end)
 
             if okModule and type(module) == "string" and module ~= "" and okRect and size and position and size.X > 0 then

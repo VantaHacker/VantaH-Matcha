@@ -2067,7 +2067,7 @@ local function bindingStep()
 	end
 end
 
-Library.ChatCursor = 0x0CF8
+Library.ChatCursor = 0x0CE8
 
 function Library.MemoryAccess(recheck)
 	if Library.MemoryAllowed ~= nil and not recheck then return Library.MemoryAllowed end
