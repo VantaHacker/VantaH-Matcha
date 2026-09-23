@@ -63,6 +63,17 @@ local UI = {
     end,
 }
 
+function UI.valuePlayer(holder)
+    if not (holder and VantaUI.MemoryAccess()) then return nil end
+    local target = memory_read("uintptr_t", tonumber(holder.Address) + 0xA8)
+    if type(target) ~= "number" or target <= 4096 then return nil end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if char and tonumber(char.Address) == target then return plr.Name end
+    end
+    return nil
+end
+
 function UI.dialog(title, subtitle, heading, size, onClose)
     local camera = Workspace.CurrentCamera
     local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
@@ -1835,7 +1846,7 @@ local function findVisualPart(instance)
         return instance.PrimaryPart
     end)
 
-    if ok and primaryPart then
+    if ok and primaryPart and isVisualPart(primaryPart) then
         return primaryPart
     end
 
@@ -2222,23 +2233,12 @@ local function getVisualColor(visual)
 
                 for index = 1, slots do
                     local holder = stats:FindFirstChild(index == 1 and "ActivePlayer" or "ActivePlayer2")
-                    local okValue, occupant = pcall(function()
-                        return holder and holder.Value
-                    end)
+                    local occupantName = UI.valuePlayer(holder)
 
-                    if okValue and occupant then
-                        local okClass, className = pcall(function()
-                            return occupant.ClassName
-                        end)
-                        local okName, occupantName = pcall(function()
-                            return occupant.Name
-                        end)
-
-                        if okClass and className == "Model" then
-                            taken = taken + 1
-                            if okName and occupantName ~= localName then
-                                byOther = true
-                            end
+                    if occupantName then
+                        taken = taken + 1
+                        if occupantName ~= localName then
+                            byOther = true
                         end
                     end
                 end
@@ -5646,15 +5646,7 @@ function FARM.runEngagedBy(machine)
         return "none"
     end
 
-    local ok, value = pcall(function()
-        return machine.active.Value
-    end)
-
-    if not ok or not value or tostring(value.ClassName) ~= "Model" then
-        return "none"
-    end
-
-    return tostring(value.Name)
+    return UI.valuePlayer(machine.active) or "none"
 end
 
 function FARM.runTaken(machine)
@@ -6072,7 +6064,7 @@ function FARM.runNearRazzle(root)
     if not razzle then
         return false
     end
-    local part = razzle:FindFirstChild("RootPart") or razzle.PrimaryPart
+    local part = razzle:FindFirstChild("RootPart") or razzle:FindFirstChild("HumanoidRootPart") or razzle.PrimaryPart
     local ok, position = pcall(function()
         return part.Position
     end)
@@ -6230,7 +6222,7 @@ function FARM.runThreat(root, ignore)
     local generators = map:FindFirstChild("Generators")
 
     for _, monster in ipairs(monsters:GetChildren()) do
-        local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+        local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
         local ok, position = pcall(function()
             return part.Position
         end)
@@ -6287,12 +6279,7 @@ function FARM.runThreat(root, ignore)
                 end
             end
 
-            local holder = monster:FindFirstChild("ChasingValue")
-            local okTarget, target = pcall(function()
-                return holder.Value
-            end)
-
-            if okTarget and target and tostring(target.ClassName) == "Model" and tostring(target.Name) == LocalPlayer.Name then
+            if UI.valuePlayer(monster:FindFirstChild("ChasingValue")) == LocalPlayer.Name then
                 chasing = true
             end
 
@@ -6570,7 +6557,7 @@ function FARM.runRazzleSees(point)
     local generators = map:FindFirstChild("Generators")
     for _, monster in ipairs(monsters:GetChildren()) do
         if monster.Name == "RazzleDazzleMonster" then
-            local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+            local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
             local ok, position = pcall(function()
                 return part.Position
             end)
@@ -6782,7 +6769,7 @@ function FARM.runResearchTarget(root)
                 end
             else
                 local enraged = monster.Name == "GlistenMonster" and monster:GetAttribute("GlistenActivated") == true
-                local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+                local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
                 local ok, position = pcall(function()
                     return part.Position
                 end)
@@ -6816,11 +6803,7 @@ function FARM.runResearchTarget(root)
 end
 
 function FARM.runSawYou(monster)
-    local holder = monster:FindFirstChild("ChasingValue")
-    local okTarget, target = pcall(function()
-        return holder.Value
-    end)
-    if okTarget and target and tostring(target.ClassName) == "Model" and tostring(target.Name) == LocalPlayer.Name then
+    if UI.valuePlayer(monster:FindFirstChild("ChasingValue")) == LocalPlayer.Name then
         return true
     end
 
@@ -6890,7 +6873,7 @@ function FARM.runNearestTwisted(root, skipLethal)
         local info = MONSTER_INFO[monster.Name]
         local lethal = skipLethal and info ~= nil and info.rarity == "Lethal"
         if not FARM.runPassive(monster) and not lethal then
-            local part = monster:FindFirstChild("RootPart") or monster.PrimaryPart
+            local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
             local ok, position = pcall(function()
                 return part.Position
             end)
@@ -8557,7 +8540,7 @@ function SQUIRM.isTargetingMe(model)
         return false
     end
 
-    local root = model:FindFirstChild("RootPart") or model.PrimaryPart
+    local root = model:FindFirstChild("RootPart") or model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
     local character = LocalPlayer.Character
     local myRoot = character and character:FindFirstChild("HumanoidRootPart")
     if not (root and myRoot) or character:GetAttribute("GrabbedBySquirm") then
