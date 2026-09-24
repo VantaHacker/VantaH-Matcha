@@ -2083,12 +2083,53 @@ function Library.MemoryAccess(recheck)
 	return allowed
 end
 
+Library.FocusMap = 0x02A0
+Library.FocusRecord = 0x48
+
+local function focusedAddress()
+	if not Library.MemoryAccess() then return false end
+	local input = Library.InputAddress
+	if not input then
+		local now = tick()
+		if now < (Library.InputRetry or 0) then return false end
+		Library.InputRetry = now + 5
+		for _, Service in ipairs(game:GetChildren()) do
+			if Service.ClassName == "UserInputService" then input = tonumber(Service.Address) break end
+		end
+		Library.InputAddress = input
+		if not input then return false end
+	end
+	local ok, valid, address = pcall(function()
+		local head = memory_read("uintptr_t", input + Library.FocusMap)
+		if not head or head == 0 or memory_read("byte", head + 0x19) ~= 1 then return false end
+		local node = memory_read("uintptr_t", head)
+		if not node or node == 0 or node == head then return true, 0 end
+		if memory_read("byte", node + 0x19) ~= 0 or memory_read("uintptr_t", node + 0x30) ~= 0 then return false end
+		local record = memory_read("uintptr_t", node + 0x40)
+		if not record or record == 0 then return true, 0 end
+		return true, memory_read("uintptr_t", record + Library.FocusRecord) or 0
+	end)
+	if not (ok and valid) then Library.InputAddress = nil return false end
+	return true, address
+end
+
+function Library.FocusedTextBox()
+	local valid, address = focusedAddress()
+	if not valid or address == 0 then return nil end
+	return address
+end
+
 function Library.GameTyping()
 	local now = tick()
 	if now < (Library.ChatAt or 0) then return Library.ChatTyping == true end
 	Library.ChatAt = now + 0.05
 	Library.ChatTyping = false
 	if not Library.MemoryAccess() then return false end
+	local valid, address = focusedAddress()
+	if valid then
+		Library.ChatTyping = address ~= 0
+		return Library.ChatTyping
+	end
 	local Box = Library.ChatBox
 	local ok, alive = pcall(function() return Box and Box.Parent ~= nil end)
 	if not (ok and alive) then

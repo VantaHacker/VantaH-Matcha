@@ -13,7 +13,7 @@ end
 local ALLOWED_UNIVERSE = 5569032992
 if game.GameId ~= ALLOWED_UNIVERSE then
     if type(notify) == "function" then
-        pcall(notify, "Dandy World", "Wrong game (universe " .. tostring(game.GameId) .. ") - aborted.", 4)
+        pcall(notify, "Dandy's World", "Wrong game (universe " .. tostring(game.GameId) .. ") - aborted.", 4)
     end
     return
 end
@@ -25,6 +25,7 @@ local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players and Players.LocalPlayer
 
+local HttpService = game:GetService("HttpService")
 if not (Players and Workspace and RunService and LocalPlayer) then
     if type(notify) == "function" then
         pcall(notify, "Dandy's World", "Not in a game yet - rejoin, then run the script again.", 4)
@@ -50,36 +51,6 @@ if not VantaUI then
         pcall(notify, "Dandy's World", "Could not load VantaUI - aborted.", 4)
     end
     return
-end
-
-local UI = {
-    GetValue = function(id)
-        local Option = VantaUI.Options[id]
-        return Option and Option.Value
-    end,
-    SetValue = function(id, value)
-        local Option = VantaUI.Options[id]
-        if Option then Option:Set(value) end
-    end,
-}
-
-function UI.valuePlayer(holder)
-    if not (holder and VantaUI.MemoryAccess()) then return nil end
-    local target = memory_read("uintptr_t", tonumber(holder.Address) + 0xA8)
-    if type(target) ~= "number" or target <= 4096 then return nil end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local char = plr.Character
-        if char and tonumber(char.Address) == target then return plr.Name end
-    end
-    return nil
-end
-
-function UI.dialog(title, subtitle, heading, size, onClose)
-    local camera = Workspace.CurrentCamera
-    local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
-    local position = Vector2.new(math.floor(viewport.X / 2 - size.X / 2), math.floor(viewport.Y / 2 - size.Y / 2))
-    local Dialog = VantaUI:CreateWindow({Title = title, SubTitle = subtitle, Size = size, Position = position, MenuKey = false, Sidebar = false, StayOpen = true, Resizable = false, Layer = 40, OnClose = onClose})
-    return Dialog, Dialog:AddTab(title):AddSection(heading, "Full")
 end
 
 local ITEM_USES = {"Collectible", "Healing", "Machines", "Skill Check", "Speed", "Stamina", "Stealth", "Random Effect", "Distraction"}
@@ -228,6 +199,7 @@ local SETTINGS = {
     farmHealItems = true,
     farmExtractionItems = true,
     farmCapsules = true,
+    farmCapsulesResearch = false,
     farmResearchTwisteds = true,
     farmSkipResearched = true,
     farmIgnoreTwistedsTravel = false,
@@ -248,6 +220,8 @@ local SETTINGS = {
     skillCheckAim = 15,
     skillCheckLead = 35,
     treadmillTapRate = 24,
+    alwaysGolden = false,
+    betterBarnaby = false,
     autoBarnaby = true,
     barnabyCollectCoins = true,
     barnabyRiskyCoins = false,
@@ -255,6 +229,7 @@ local SETTINGS = {
     autoAbility = true,
     squirmTapRate = 14,
     alertTracers = true,
+    disable3d = false,
     alertDandy = true,
     alertDyle = true,
     alertGoob = true,
@@ -305,93 +280,998 @@ local COLORS = {
     InUseGenerator = Color3.fromRGB(255, 244, 170),
 }
 
-local HttpService = game:GetService("HttpService")
 local CONFIG_FOLDER = "DW"
 local CONFIG_PATH = "DW/config.json"
 
-local SAVED_KEYS = {
-    "enabled",
-    "maxDistance",
-    "showMonsters",
-    "showItems",
-    "showResearchCapsules",
-    "showTapes",
-    "showGenerators",
-    "showCompletedGenerators",
-    "showInUseGenerators",
-    "showName",
-    "showDistance",
-    "showRoom",
-    "showMachineType",
-    "showTwistedRarity",
-    "showAbilityTimer",
-    "showSquirmWarning",
-    "showItemRarity",
-    "showPlayerHealth",
-    "allowFarmWithPlayers",
-    "tweenWalkSpeed",
-    "floorLimit",
-    "unlimitedFloors",
-    "farmWarningAccepted",
-    "masteryFarm",
-    "masterySelect",
-    "masteryEnd",
-    "farmAutoResume",
-    "farmHideOnTeleport",
-    "farmHealItems",
-    "farmExtractionItems",
-    "farmCapsules",
-    "farmResearchTwisteds",
-    "farmSkipResearched",
-    "farmIgnoreTwistedsTravel",
-    "farmTreadmillRun",
-    "farmTreadmillStopAt",
-    "resumeAutoFarm",
-    "resumeAutoFarmAt",
-    "showPlayerStamina",
-    "lowStaminaThreshold",
-    "showDot",
-    "showTracer",
-    "scanInterval",
-    "updateInterval",
-    "maxVisible",
-    "autoSkillCheck",
-    "skillCheckRandom",
-    "skillCheckAim",
-    "skillCheckLead",
-    "treadmillTapRate",
-    "autoBarnaby",
-    "barnabyCollectCoins",
-    "barnabyRiskyCoins",
-    "autoSquirmEscape",
-    "autoAbility",
-    "squirmTapRate",
-    "alertTracers",
-    "itemAlertTracers",
-    "espKey",
-    "menuKey",
-    "webhooksEnabled",
-}
-
-for _, entry in ipairs(ALERT_MONSTERS) do
-    table.insert(SAVED_KEYS, entry.key)
-end
-for _, entry in ipairs(ALERT_ITEMS) do
-    table.insert(SAVED_KEYS, entry.key)
+local SAVED_KEYS = {}
+for key in pairs(SETTINGS) do
+    if key ~= "aggressiveAutoFarm" and key ~= "resolveBudget" then table.insert(SAVED_KEYS, key) end
 end
 
 local SAVED_COLORS = { "Monsters", "Items", "ItemAlert", "ResearchCapsules", "Tapes", "Generators", "CompletedGenerator", "InUseGenerator" }
+
+local SAVE_DEBOUNCE = 1
+local configSnapshot = nil
+local configDirtyAt = 0
+
+local FOLDERS = {
+    { key = "Monsters", enabledKeys = { "showMonsters" } },
+    { key = "Items", enabledKeys = { "showItems", "showResearchCapsules", "showTapes" } },
+    { key = "Generators", enabledKeys = { "showGenerators" } },
+}
+
+FOLDERS.BLOT_ZONE_PREFIX = "BlotHandZone_"
+FOLDERS.BLOT_ZONE_MAX = 10
+FOLDERS.BLOT_HAND_PREFIX = "BlotHand"
+
+local CATEGORY_ENABLED = {
+    Monsters = "showMonsters",
+    Items = "showItems",
+    ResearchCapsules = "showResearchCapsules",
+    Tapes = "showTapes",
+    Generators = "showGenerators",
+}
+
+local ALERT_DURATION = 5
+
+local alertSeen = {}
+
+local ITEM_CATEGORIES = {
+    ResearchCapsule = "ResearchCapsules",
+    Tape = "Tapes",
+    FakeCapsule = false,
+}
+
+local TARGET_ICHOR_SIZE = Vector3.new(6.22, 3.07, 3.07)
+local SIZE_TOLERANCE = 0.05
+
+local tracked = {}
+local activeKeys = {}
+local lastScan = 0
+local lastUpdate = 0
+local currentResolveBudget = 0
+
+local PART_CLASSES = {
+    BasePart = true,
+    Part = true,
+    MeshPart = true,
+    UnionOperation = true,
+    WedgePart = true,
+    CornerWedgePart = true,
+    TrussPart = true,
+}
+
+local POSITION_CHILD_NAMES = {
+    "HumanoidRootPart",
+    "RootPart",
+    "Head",
+    "Handle",
+    "Main",
+    "Hitbox",
+    "Pickup",
+    "MeshPart",
+    "Part",
+    "Base",
+    "Root",
+    "Ichor",
+    "Position",
+    "CFrame",
+    "WorldPosition",
+    "WorldCFrame",
+}
+
+local SKILL = {
+    RANDOM_MIN = 0.35,
+    RANDOM_MAX = 0.65,
+    CHECK_GAP = 0.35,
+    MOTION_GRACE = 0.25,
+    BAR_MAX_SPEED = 3000,
+    CIRCLE_MAX_RATE = 20000,
+    CIRCLE_FALLBACK_BAND = 12,
+    Bar = {Reverses = true, Rate = 0, Aim = 0, Pressed = false, Frame = 0.005},
+    Circle = {Rate = 0, Aim = 0, Pressed = false, Frame = 0.005},
+    VK_SPACE = 0x20,
+    SPACE_HOLD = 0.05,
+    SPACE_MIN_HOLD = 0.015,
+    PRESS_COOLDOWN = 0.25,
+    FIND_INTERVAL = 0.35,
+    lastPress = 0,
+    lastTap = 0,
+    parts = nil,
+    lastFind = 0,
+    MARKER_NAMES = {
+        Marker = true,
+        Needle = true,
+        Cursor = true,
+        Pointer = true,
+        Line = true,
+        ShrinkingCircle = true,
+    },
+    GOLD_NAMES = {
+        GoldArea = true,
+        PerfectArea = true,
+        YellowCircle = true,
+    },
+    GREY_NAMES = {
+        GreyCircle = true,
+        GrayCircle = true,
+    },
+    HOLE_NAMES = {
+        CenterHole = true,
+        BlackCircle = true,
+        Center = true,
+    },
+    REQUIRED_NAMES = {
+        RequiredArea = true,
+        SuccessArea = true,
+        SafeArea = true,
+        HitArea = true,
+        GoodArea = true,
+        Goal = true,
+        Zone = true,
+    },
+}
+
+local GOLDEN = {PressDelay = 0.65, Ready = false, CircleReady = false, TreadReady = false, Busy = false, Slots = {}, NextScan = 0, NextCheck = 0, Sweep = 2, Attempts = 0, MaxAttempts = 3, RetryDelay = 30}
+GOLDEN.Offsets = {Code = 0x48, CodeSize = 0x94, Upvalue = 0x70, Proto = 0x18, Constants = 0x40, ConstantCount = 0xAC, Children = 0x28, ChildCount = 0x9C, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
+
+local KEYS = {Held = {}, Timed = {}}
+
+local BARNABY = {
+    GRAVITY = 225,
+    MAX_FALL = -120,
+    JUMP_ADD = 48,
+    JUMP_MIN = 60,
+    JUMP_RISE = 8,
+    SCROLL_SPEED = 30,
+    ARENA_HALF = 15,
+    FISH_HALF = 0.57,
+    COLLISION_PAD = 0.25,
+    COIN_REACH_PAD = 0.6,
+    STEP = 1 / 60,
+    HORIZON_STEPS = 48,
+    LATENCY_MIN = 0.003,
+    LATENCY_MAX = 0.025,
+    PRESS_GAP = 0.1,
+    PRESS_HOLD = 0.03,
+    HOVER_PAD = 0.8,
+    SAFE_MARGIN = 2,
+    MARGIN_WEIGHT = 200,
+    COIN_REWARD = 300,
+    DEATH_COST = 1000000,
+    DEFER_OPTIONS = 6,
+    DECISION_TOLERANCE = 50,
+    STALL_TIMEOUT = 0.25,
+    SAFE_PRESS_GAP = 0.1,
+    SAFE_COIN_REWARD = 300,
+    SAFE_SAFE_MARGIN = 2,
+    RISKY_PRESS_GAP = 0.07,
+    RISKY_COIN_REWARD = 900,
+    RISKY_SAFE_MARGIN = 1.5,
+    DECISION_INTERVAL = 0.008,
+    DEFER_SPACING = 0.012,
+    TRACK_GAIN = 0.15,
+    TRACK_THRESHOLD = 0.25,
+    TRACK_THRESHOLD_SPEED = 0.004,
+    TRACK_JUMP_DV = 30,
+    BOX_SLOP = 0.03,
+    NARROW_FISH_HALF = 0.45,
+    NARROW_PAD_SCALE = 0.08,
+    NARROW_PAD_MIN = 0.05,
+    NARROW_MARGIN_SCALE = 0.35,
+    NARROW_MARGIN_MIN = 0.4,
+    track = { y = nil, v = 0, t = 0 },
+    lastDecision = 0,
+    lastPress = 0,
+    obstacleSignature = nil,
+    lastMotion = 0,
+    focusWarned = false,
+}
+BARNABY.LATENCY_NOMINAL = (BARNABY.LATENCY_MIN + BARNABY.LATENCY_MAX) * 0.5
+BARNABY.sortByX = function(a, b)
+    return a.x < b.x
+end
+
+local SWIMMER = {Ready = false, Busy = false, Patches = {}, NextScan = 0, Attempts = 0}
+
+local SQUIRM = {
+    VK_LEFT = 0x41,
+    VK_RIGHT = 0x44,
+    HOLD = 0.02,
+    MIN_GAP = 0.06,
+    nextPressAt = 0,
+    lastSide = nil,
+    WARN_TEXT = "Squirm is preparing to attack you.",
+    WARN_STATES = { ALERT = true, DESCENDING = true, STRIKE = true },
+    WARN_RANGE = 35,
+    WARN_POLL = 0.05,
+    WARN_FIND = 1,
+    WARN_SIZE = 28,
+    warnModel = nil,
+    warnFindAt = 0,
+    warnPollAt = 0,
+    warnOn = false,
+    warnDrawing = nil,
+    ALERT_DELAY = 1.5,
+    alertAt = 0,
+    warnState = nil,
+    warnTenths = nil,
+    warnTimerText = nil,
+    warnShown = nil,
+}
+
+local ABILITY = {
+    COOLDOWNS = {
+        GoobMonster = 12,
+        ScrapsMonster = 15,
+        GigiMonster = 12,
+        SproutMonster = 10,
+        SquirmMonster = 8,
+        VeeMonster = 10,
+        AstroMonster = 15,
+    },
+    SQUIRM_MONSTER = "SquirmMonster",
+    DEBUFF_ABILITIES = {
+        VeeMonster = { debuff = "Slow", source = "Slow_2", seen = {}, checkedAt = 0, firedAt = 0 },
+        AstroMonster = { debuff = "Tired", source = "Tired_3", seen = {}, checkedAt = 0, firedAt = 0 },
+    },
+    SPROUT_MONSTER = "SproutMonster",
+    SPROUT_TENDRIL = "SproutTendril",
+    SPROUT_DELAY = 0.5,
+    TEXT_SIZE = 20,
+    POLL_INTERVAL = 0.05,
+    READY_TEXT = "ABILITY",
+    WINDUP_SOUND = "_RangedWindupSound",
+    REARM_AFTER = 3,
+    ICONS = {
+        GoobMonster = 17268662964,
+        ScrapsMonster = 17572307852,
+        GigiMonster = 131330279221224,
+        SproutMonster = 18688072034,
+        SquirmMonster = 108443751963686,
+        VeeMonster = 17320166218,
+        AstroMonster = 17615948235,
+    },
+    THUMB_URL = "https://thumbnails.roblox.com/v1/assets?returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false&assetIds=",
+    ICON_RETRY = 10,
+    ICON_FOLDER = "DW/cacheIcons",
+    LOADED_TIMEOUT = 20,
+    MISSING_TEXT = "?",
+    MISSING_SIZE = 44,
+    downloadEnabled = false,
+    loadedNotified = false,
+    cacheStartedAt = 0,
+    prompt = nil,
+    PROMPT = {
+        SIZE = Vector2.new(420, 204),
+        TITLE = "Would you like to cache Twisted icons?",
+        SUBTITLE = "May take some time.",
+    },
+    PNG_SIGNATURE = string.char(137, 80, 78, 71),
+    SCAN_INTERVAL = 0.5,
+    PANEL = {
+        WIDTH = 260,
+        HEIGHT = 72,
+        GAP = 10,
+        ICON = 58,
+        PAD = 8,
+        RIGHT = 24,
+        TOP = 0.32,
+        NAME_SIZE = 18,
+        TIMER_SIZE = 26,
+        NAME_Y = 10,
+        TIMER_Y = 34,
+    },
+    entries = {},
+    list = {},
+    seen = {},
+    seq = 0,
+    scanAt = 0,
+    dirty = false,
+    panelShown = false,
+    iconData = {},
+    iconState = {},
+    iconsReady = false,
+    precacheAt = 0,
+    PRECACHE_DELAY = 0.5,
+}
+
+local LABEL_LINES = 5
+local LABEL_LINE_HEIGHT = 13
+local LABEL_GAP = 18
+
+local lineScratch = {}
+
+local NO_RARITY_CATEGORIES = { Tapes = true }
+
+local COMPLETION_TTL = 0.5
+
+local STRINGS = {
+    OFFSET = 0xA8,
+}
+
+local NAME_RETRY_INTERVAL = 5
+
+local MACHINE_TYPE_LABELS = {
+    Original = "Bar",
+    Circle = "Circle",
+    Treadmill = "Treadmill",
+    TreadmillTap = "Treadmill",
+    MovementTreadmill = "Treadmill",
+}
+
+local PLAYERS = {
+    entries = {},
+    seen = {},
+    TEXT_SIZE = 13,
+    FOOT_DROP = 3.2,
+    LABEL_GAP = 6,
+    LOW_HEALTH = 1,
+    PRUNE_INTERVAL = 2,
+    WHITE = Color3.fromRGB(255, 255, 255),
+    LOW = Color3.fromRGB(255, 120, 120),
+    pruneAt = 0,
+}
+
+local FARM = {
+    prompt = nil,
+    banner = nil,
+    acknowledged = false,
+    active = false,
+    PAUSE_KEY = 0x50,
+    paused = false,
+    pauseWanted = false,
+    pauseDown = false,
+    pausedAt = 0,
+    TOGGLE_ID = "dw_farm_aggressive",
+    BANNER = {
+        TITLE_SIZE = 40,
+        BODY_SIZE = 30,
+        STATUS_SIZE = 40,
+        LINE_GAP = 8,
+        STATUS_GAP = 18,
+        LIMIT = 0.10,
+        HOLD = 30,
+        STARTUP = 15,
+    },
+    status = nil,
+    armedAt = 0,
+    forceOffUntil = 0,
+    RESUME_MAX_AGE = 300,
+    resumeWritten = false,
+    resumePending = false,
+    FORCE_OFF_WINDOW = 3,
+    RUN = {
+        PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
+        ARRIVE = 3,
+        ELEV_ARRIVE = 6,
+        LOST = 14,
+        STAND_Y = 3,
+        E_KEY = 0x45,
+        REPRESS = 3,
+        DANGER = 55,
+        DIVE_BUFFER = 8,
+        CLOSE_RADIUS = 12,
+        CLEAR_TIME = 0.4,
+        clearSince = nil,
+        SURFACE_BUFFER = 10,
+        RAY_RECHECK = 5,
+        FREEZE_EVERY = 0.1,
+        ATTR_EVERY = 1 / 30,
+        RAY_DOWN = 50,
+        RAY_HOPS = 6,
+        rayWorks = false,
+        rayCheckAt = 0,
+        CHASER_DEFAULTS = { InstantRadius = 30, VisionRadius = 70, LineOfSight = 0.4 },
+        DEPTH = 12,
+        DIVE_SPEED = 50,
+        HIDE_MAX = 30,
+        GAIN = 5.5,
+        MAX_STEP = 40,
+        TOL = 6,
+        AIM_MAX = 2.5,
+        SACRIFICE_TOUCH = 5,
+        WANT_ITEMS = { Bandage = "farmHealItems", HealthKit = "farmHealItems", JumperCable = "farmExtractionItems" },
+        HEAL_ORDER = { "HealthKit", "Bandage" },
+        HEAL_AT = 1,
+        KEEP_ITEMS = { bandage = true, healthkit = true, jumpercable = true, valve = true, tape = true, instructions = true, extractionspeedcandy = true, bonbon = true, stopwatch = true, skillcheckcandy = true },
+        MACHINE_ORDER = { "Instructions", "ExtractionSpeedCandy", "BonBon", "Stopwatch", "SkillCheckCandy" },
+        STAMINA_ITEMS = { pop = true, popbottle = true },
+        STAMINA_RAZZLE_RANGE = 60,
+        staminaSprint = false,
+        SPRINT_OFF_EVERY = 0.8,
+        SHIFT_HOLD = 0.1,
+        sprintOffAt = 0,
+        CABLE_MAX_FILL = 0.67,
+        USE_COOLDOWN = 1.5,
+        KEY_HOLD = 0.12,
+        itemKey = nil,
+        COLLECT_ARRIVE = 2,
+        COLLECT_Y = 2.3,
+        COLLECT_RETRY = 1.5,
+        COLLECT_TRIES = 3,
+        COLLECT_GRACE = 3,
+        RESEARCH_NEAR = { WaxwellMonster = 5, ConnieMonster = 8, GlistenMonster = 8 },
+        RESEARCH_GRAB_ARRIVE = 6,
+        RESEARCH_GRAB_WAIT = 10,
+        RESEARCH_BLOT_ARRIVE = 3,
+        RESEARCH_SEEN_SCALE = 0.5,
+        RESEARCH_TRAVEL_MAX = 30,
+        RESEARCH_BLOT_ZONES = 10,
+        RODGER_LINK = 10,
+        RESEARCH_FACE_MAX = 50,
+        RESEARCH_FACE_MIN = 10,
+        RESEARCH_FACE_GAP = 3,
+        RESEARCH_FACE_ARRIVE = 4,
+        RESEARCH_FACE_REFRESH = 0.25,
+        RESEARCH_RAZZLE_ARRIVE = 15,
+        RESEARCH_RAZZLE_WAIT = 8,
+        BLOT_HAND_RANGE = 12,
+        BLOT_HAND_RECHECK = 0.25,
+        SPROUT_RANGE = 18,
+        RODGER_ACTIVE_RANGE = 34,
+        RODGER_RISE = 3,
+        SPROUT_FLEE_MARGIN = 4,
+        SPROUT_RECHECK = 0.2,
+        sproutAt = 0,
+        sprouts = {},
+        FLOOR_UP = 8,
+        FLOOR_DOWN = 40,
+        SURFACE_TOLERANCE = 6,
+        FACE_FLOOR_TOLERANCE = 4,
+        AT_MACHINE = 6,
+        hipOffset = 3,
+        PASSIVE_RANGE = { RodgerMonster = 40 },
+        IGNORE_BODY = { BlottMonster = true },
+        researched = {},
+        researchMap = nil,
+        research = nil,
+        BUY_ORDER = { "Valve", "HealthKit", "Bandage", "JumperCable" },
+        BUY_SETTING = { Valve = "farmExtractionItems", HealthKit = "farmHealItems", Bandage = "farmHealItems", JumperCable = "farmExtractionItems" },
+        PRICES = { Valve = 150, HealthKit = 100, Bandage = 60, JumperCable = 65 },
+        BUY_ARRIVE = 4,
+        bought = {},
+        buyTapes = 0,
+        BUY_RANGE = 45,
+        roomUntil = 0,
+        targetKind = "machine",
+        collect = nil,
+        collectTries = 0,
+        useAt = 0,
+        skip = {},
+        skipMap = nil,
+        capsuleNames = {},
+        dead = false,
+        skipped = false,
+        BUTTON_WAIT = 1.5,
+        sacrificeY = 0,
+        phase = "idle",
+        at = 0,
+        current = nil,
+        goalPos = nil,
+        goalY = 0,
+        startY = 0,
+        travelStart = nil,
+        hideY = 0,
+        surfaceY = 0,
+        hideUntil = 0,
+        rmbDown = false,
+        W_KEY = 0x57,
+        noCollide = false,
+        deathClick = {stage = 0, at = 0},
+        readyClick = {stage = 0, at = 0},
+        voteClick = {stage = 0, at = 0},
+        readyClicked = false,
+        readyWidth = 0,
+        readySteady = 0,
+        READY_STEADY = 0.8,
+        CARD_STEADY = 0.8,
+        HIDE_RETARGET = 1,
+        hideGoal = nil,
+        hideGoalAt = 0,
+        hideGoalRadius = 0,
+        hideGoalLabel = "",
+        elevatorHold = "armed",
+        voteClicked = false,
+        voteSignature = 0,
+        voteSteady = 0,
+        startLabel = nil,
+    },
+    LOBBY = {
+        THRESHOLD = 0.38,
+        ARRIVE = 5,
+        STALL_SAMPLE = 1.2,
+        STALL_DIST = 2,
+        TIMEOUT = 5,
+        RESET_WAIT = 7,
+        ENTER_TIMEOUT = 10,
+        CLICK_HOLD = 0.32,
+        POLL = 1,
+        VK = { W = 0x57, A = 0x41, S = 0x53, D = 0x44, ESC = 0x1B, R = 0x52, ENTER = 0x0D },
+        SHIFT = 0xA0,
+        SPRINT_PROBE = 0.6,
+        SPRINT_RETAP = 2,
+        sprintMode = nil,
+        sprintStage = 0,
+        sprintAt = 0,
+        sprintNextAt = 0,
+        RING = { "Hub", "NE", "Right", "SE", "Center", "SW", "Left", "NW" },
+        GATES = { "Right", "Left", "Center" },
+        GATE_OF = { Right = "RightGate", Left = "LeftGate", Center = "CenterGate" },
+        NODES = {
+            Hub = Vector3.new(14.6, 23.5, -44.2),
+            NE = Vector3.new(53.9, 23.5, -57.7),
+            Right = Vector3.new(71.3, 23.5, -91.2),
+            SE = Vector3.new(56.1, 23.5, -131.5),
+            Center = Vector3.new(16.5, 23.5, -149.3),
+            SW = Vector3.new(-27.3, 23.5, -131.9),
+            Left = Vector3.new(-43.1, 23.5, -88.9),
+            NW = Vector3.new(-24.6, 23.5, -57.0),
+        },
+        edges = nil,
+        phase = "idle",
+        atNode = "Hub",
+        target = nil,
+        path = nil,
+        legIndex = 1,
+        at = 0,
+        resetStage = 1,
+        lastPos = nil,
+        lastCheck = 0,
+        stallUntil = 0,
+        stallFrom = nil,
+        stallTick = -1,
+        leaveClick = {stage = 0, at = 0},
+    },
+    PROMPT = {
+        SIZE = Vector2.new(640, 296),
+        TITLE = "WARNING",
+        BODY = {
+            "Auto-farm is still in early access, so it may not be 100% ideal.",
+            "This was stress-tested on my alt for 7 days and didn't cause any harm.",
+            "DEVS CAN BE UNPREDICTABLE WITH THEIR UPDATES, SO STAY CAREFUL!",
+            "Tested on version ALPHA 0.28.3.",
+            "",
+            "Unsafe LuaU and Raycast (at least 1500 ms) are recommended for the best results.",
+        },
+        CHECK_LABEL = "I understand everything written above. Remember my choice.",
+    },
+}
+
+FARM.GUI = {positionOffset = 0xFC}
+
+FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled = false }
+
+FARM.MASTERY = {
+    VISIBLE = 0x59D,
+    TEXT = 0xB88,
+    STATE = 0x568,
+    QUESTS = {
+        { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
+        { "PassiveAbilityActivate", "passive", "Passive Ability", "Activate Passive Ability %s times" },
+        { "TravelDistance", true, "^Travel %d+ Meters", "Travel %s Meters" },
+        { "PickUpCapsule", true, "Research Capsules", "Pick up %s Research Capsules" },
+        { "PickUpItem", true, "^Pick up %d+ Items", "Pick up %s Items" },
+        { "UseItem", true, "^Use %d+ Items", "Use %s Items" },
+        { "UseItemSpecific", true, "^Use %d+ ", "Use %s specific items" },
+        { "SurviveFloorWithParty", false, "other Players", "Survive %s Floors with a party" },
+        { "SurviveFloorWithToon", false, "Floors with .+ in your round", "Survive %s Floors with a toon" },
+        { "SurviveFloor", true, "^Survive %d+ Floors", "Survive %s Floors" },
+        { "CompleteDuoGenerator", false, "Duo Machines", "Complete %s Duo Machines" },
+        { "CompleteFloorWithTrinket", false, "equipped", "Complete Floor %s with a trinket" },
+        { "CompleteGenerator", true, "Machines", "Finish %s Machines" },
+        { "ReachFloor", true, "^Reach Floor", "Reach Floor %s" },
+        { "BuyDandyStoreItem", true, "Elevator Shop", "Buy %s items from Dandy's Shop" },
+        { "CollectResearch", true, "Twisted Research", "Collect %s%% Twisted Research" },
+        { "EncounterMonster", true, "^Encounter", "Encounter %s Twisteds" },
+        { "BlackOut", true, "Blackouts", "Experience %s Blackouts" },
+        { "IchorSpill", true, "Ichor Spills", "Experience %s Ichor Spills" },
+        { "EatBookshelfOnCooldown", false, "Bookshelves", "Eat from %s Bookshelves" },
+        { "IcedOver", false, "Iced", "Get Iced Over %s times" },
+    },
+    SPECIFIC = { Cocoa = "BonBon", Waxwell = "Instructions" },
+    PASSIVE = { Eggson = "machines", Poppy = "damage", Looey = "damage" },
+    PASSIVE_DOABLE = { machines = true, damage = true },
+    RUN_POLL = 2,
+    TRAVEL_SPEED = 50,
+    runAt = 0,
+    runState = nil,
+    running = false,
+    done = false,
+    stop = false,
+}
+
+FARM.MASTERY.AUTO = {}
+FARM.MASTERY.LABELS = {}
+for _, quest in ipairs(FARM.MASTERY.QUESTS) do
+    FARM.MASTERY.AUTO[quest[1]] = quest[2]
+    FARM.MASTERY.LABELS[quest[1]] = quest[4]
+end
+
+FARM.TREADMILL_RECOVER = 30
+
+FARM.TWISTED = {}
+FARM.TWISTED_PRUNE = 0
+FARM.RESEARCH = {}
+
+FARM.whitelist = {}
+
+local TOON = {KEY = 0x46, POLL = 0.25, RETRY = 10, SECOND_PRESS = 0.4, CONFIRM = 3, nextAt = 0, usedFloor = {}}
+
+TOON.RULES = {
+    Vee = {},
+    Gourdy = {},
+    Tisha = {},
+    Connie = {},
+    Astro = {},
+    Flyte = {},
+    Coal = {},
+    Toodles = {machine = true},
+    Gigi = {offMachine = true, freeSlot = true},
+    Flutter = {offMachine = true},
+    Cocoa = {offMachine = true},
+    Rudie = {offMachine = true},
+    Waxwell = {offMachine = true},
+    Brightney = {blackout = true},
+    Pebble = {offMachine = true, perFloor = true},
+    Bobette = {offMachine = true, perFloor = true},
+    Blott = {offMachine = true, perFloor = true, tapes = true},
+    Teagan = {perFloor = true, tapes = true, hurt = true},
+    Bassie = {perFloor = true, presses = 2, instant = true},
+}
+TOON.RULES.Blot = TOON.RULES.Blott
+
+TOON.UNSUPPORTED = {Shelly = true, Sprout = true, Goob = true, Glisten = true, Cosmo = true, Scraps = true, Brusha = true, Squirm = true, Ginger = true}
+
+local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>", Mastery = "<:Mastery:1537206041085747331>"}, nextAt = 0, beatAt = 0}
+
+local RENDER = {Offset = 0x190, CheckOffset = 0x1D8, Applied = false, Wanted = false, NextAt = 0}
+RENDER.Clear = {Global = 0x851BF08, VisualEngine = 0x6D092F0, Holder = 0xBC0, Color = 0x1A4, Saved = nil}
+
+local UI_REFRESH_INTERVAL = 0.1
+local lastUiRefresh = 0
+
+local UI = {
+    Frame = 0,
+    Found = {},
+    Roster = {At = 0, Names = {}, Models = {}},
+    MapAt = 0,
+    PlayerMapAt = 0,
+    PlayerMissAt = 0,
+    SkillIdleAt = 0,
+    SkillBusy = false,
+    InfoCache = {},
+    Binds = {},
+    GetValue = function(id)
+        local Option = VantaUI.Options[id]
+        return Option and Option.Value
+    end,
+    SetValue = function(id, value)
+        local Option = VantaUI.Options[id]
+        if Option then Option:Set(value) end
+    end,
+}
+
+UI.ValueKinds = {BoolValue = "byte", IntValue = "int64", NumberValue = "double"}
+
+function UI.read(holder)
+    if not holder then return nil end
+    local Kind = UI.ValueKinds[holder.ClassName]
+    if Kind and VantaUI.MemoryAccess() then
+        local ok, value = pcall(memory_read, Kind, tonumber(holder.Address) + 0xA8)
+        if ok and type(value) == "number" then
+            if Kind == "byte" then return value ~= 0 end
+            return value
+        end
+    end
+    return holder.Value
+end
+
+function UI.fill(current, required)
+    return type(current) == "number" and type(required) == "number" and required >= 1 and required < 1e6 and current >= 0 and current <= required * 2
+end
+
+
+function UI.find(key, resolve)
+    local Found = UI.Found[key]
+    if Found and Found.Parent then return Found end
+    Found = resolve()
+    UI.Found[key] = Found
+    return Found
+end
+
+function UI.info()
+    return UI.find("Info", function() return Workspace:FindFirstChild("Info") end)
+end
+
+function UI.infoValue(name, ttl)
+    local now = tick()
+    local Cache = UI.InfoCache[name]
+    if Cache and now < Cache.At then return Cache.Value end
+    local info = UI.info()
+    local holder = info and UI.find("Info." .. name, function() return info:FindFirstChild(name) end)
+    local ok, value = pcall(UI.read, holder)
+    value = ok and value or nil
+    UI.InfoCache[name] = {At = now + ttl, Value = value}
+    return value
+end
+
+function UI.folder(path)
+    pcall(function()
+        local current = nil
+        for part in path:gmatch("[^/]+") do
+            current = current and (current .. "/" .. part) or part
+            if not isfolder(current) then makefolder(current) end
+        end
+    end)
+end
+
+function UI.clock()
+    local ok, value = pcall(os.time)
+    return (ok and type(value) == "number") and value or math.floor(tick())
+end
+
+function UI.elevators()
+    return UI.find("Elevators", function() return Workspace:FindFirstChild("Elevators") end)
+end
+
+function UI.playerGui()
+    return UI.find("PlayerGui", function() return LocalPlayer:FindFirstChild("PlayerGui") end)
+end
+
+function UI.map()
+    local now = tick()
+    local Map = UI.MapNow
+    if Map and now < UI.MapAt and Map.Parent then return Map end
+    local room = Workspace:FindFirstChild("CurrentRoom")
+    UI.MapNow = room and room:GetChildren()[1]
+    UI.MapAt = now + 0.5
+    return UI.MapNow
+end
+
+function UI.roster()
+    local Roster = UI.Roster
+    local now = tick()
+    if now < Roster.At then return Roster end
+    Roster.At = now + 0.5
+    local map = UI.map()
+    local folder = map and map:FindFirstChild("Monsters")
+    Roster.Models = folder and folder:GetChildren() or {}
+    Roster.Names = {}
+    for _, Model in ipairs(Roster.Models) do Roster.Names[Model.Name] = true end
+    return Roster
+end
+
+function UI.me()
+    local char = LocalPlayer.Character
+    if not char then
+        UI.Me = nil
+        return nil
+    end
+    local address = char.Address
+    if not (UI.Me and UI.Me.Address == address) then UI.Me = {Address = address, Char = char, Parts = {}, Stats = {}} end
+    return UI.Me
+end
+
+function UI.myPart(name)
+    local Me = UI.me()
+    if not Me then return nil end
+    local Part = Me.Parts[name]
+    if Part and Part.Parent then return Part end
+    Part = Me.Char:FindFirstChild(name)
+    Me.Parts[name] = Part
+    return Part
+end
+
+function UI.myStat(name)
+    local Me = UI.me()
+    local Stats = Me and UI.myPart("Stats")
+    if not Stats then return nil end
+    local Stat = Me.Stats[name]
+    if Stat and Stat.Parent then return Stat end
+    Stat = Stats:FindFirstChild(name)
+    Me.Stats[name] = Stat
+    return Stat
+end
+
+function UI.playerAt(address)
+    local now = tick()
+    local Map = UI.PlayerMap
+    if not Map or now >= UI.PlayerMapAt or (Map[address] == nil and now >= UI.PlayerMissAt) then
+        Map = {}
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local char = plr.Character
+            if char then Map[tonumber(char.Address)] = plr.Name end
+        end
+        UI.PlayerMap = Map
+        UI.PlayerMapAt = now + 1
+        UI.PlayerMissAt = now + 0.25
+    end
+    return Map[address]
+end
+
+function UI.valuePlayer(holder)
+    if not holder then return nil end
+    local ok, target = false, nil
+    if VantaUI.MemoryAccess() then ok, target = pcall(memory_read, "uintptr_t", tonumber(holder.Address) + 0xA8) end
+    if ok and type(target) == "number" then
+        if target <= 4096 then return nil end
+        return UI.playerAt(target)
+    end
+    local okValue, Value = pcall(function() return holder.Value end)
+    if not (okValue and Value and Value.ClassName == "Model") then return nil end
+    local address = tonumber(Value.Address)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char = plr.Character
+        if char and (tonumber(char.Address) == address or char.Name == Value.Name) then return plr.Name end
+    end
+    return nil
+end
+
+function UI.dialog(title, subtitle, heading, size, onClose)
+    local camera = Workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+    local position = Vector2.new(math.floor(viewport.X / 2 - size.X / 2), math.floor(viewport.Y / 2 - size.Y / 2))
+    local Dialog = VantaUI:CreateWindow({Title = title, SubTitle = subtitle, Size = size, Position = position, MenuKey = false, Sidebar = false, StayOpen = true, Resizable = false, Layer = 40, OnClose = onClose})
+    return Dialog, Dialog:AddTab(title):AddSection(heading, "Full")
+end
+
+local function gameTyping()
+    local ok, typing = pcall(function()
+        return VantaUI.GameTyping and VantaUI.GameTyping()
+    end)
+    return ok and typing == true
+end
+
+local function robloxFocused()
+    if type(isrbxactive) ~= "function" then
+        return true
+    end
+
+    local ok, active = pcall(isrbxactive)
+    return not ok or active ~= false
+end
+
+function KEYS.allowed()
+    return robloxFocused() and not VantaUI.Blocked and not gameTyping()
+end
+
+function KEYS.set(code, down)
+    local Held = KEYS.Held
+    if down then
+        if Held[code] then return true end
+        if not KEYS.allowed() then return false end
+        Held[code] = true
+        pcall(keypress, code)
+        return true
+    end
+    KEYS.Timed[code] = nil
+    if Held[code] then
+        Held[code] = nil
+        pcall(keyrelease, code)
+    end
+    return false
+end
+
+function KEYS.tap(code)
+    if not KEYS.allowed() then return false end
+    pcall(keypress, code)
+    pcall(keyrelease, code)
+    return true
+end
+
+function KEYS.hold(code, seconds)
+    KEYS.set(code, false)
+    if not KEYS.set(code, true) then return false end
+    KEYS.Timed[code] = tick() + seconds
+    return true
+end
+
+function KEYS.update(now)
+    for code, at in pairs(KEYS.Timed) do
+        if now >= at then KEYS.set(code, false) end
+    end
+end
+
+function KEYS.releaseAll()
+    for code in pairs(KEYS.Held) do KEYS.set(code, false) end
+end
+
+function KEYS.mouse(action, ...)
+    if not (robloxFocused() and not VantaUI.Blocked) then return false end
+    pcall(action, ...)
+    return true
+end
+
+local function getIdentity(instance)
+    if instance.Address then
+        return tostring(instance.Address)
+    end
+
+    return instance:GetFullName()
+end
+
+local function isVector3(value)
+    return typeof and typeof(value) == "Vector3"
+end
+
+local function isCFrame(value)
+    return typeof and typeof(value) == "CFrame"
+end
+
+local function safeSet(object, property, value)
+    pcall(function()
+        object[property] = value
+    end)
+end
+
+local function makeDrawing(kind, color)
+    local object = Drawing.new(kind)
+    safeSet(object, "Color", color)
+    safeSet(object, "Visible", false)
+    safeSet(object, "ZIndex", 50)
+    return object
+end
+
+local function makeText(size, color, center)
+    local text = makeDrawing("Text", color or Color3.fromRGB(255, 255, 255))
+    if center ~= false then safeSet(text, "Center", true) end
+    safeSet(text, "Outline", true)
+    safeSet(text, "Font", Drawing.Fonts.SystemBold)
+    safeSet(text, "Size", size)
+    safeSet(text, "FontSize", size)
+    return text
+end
+
+function STRINGS.clean(text)
+    if type(text) ~= "string" then
+        return nil
+    end
+    text = text:match("^%s*(.-)%s*$")
+    if #text > 0 and #text < 64 and text:match("^[%w%s'%-%.]+$") then
+        return text
+    end
+    return nil
+end
+
+function STRINGS.memory(address)
+    local ok, text = pcall(function()
+        if memory_read("int", address + 24) > 15 then
+            return memory_read("string", memory_read("uintptr_t", address))
+        end
+        return memory_read("string", address)
+    end)
+    return ok and type(text) == "string" and text or nil
+end
+
+function STRINGS.read(instance)
+    if not instance then
+        return ""
+    end
+
+    if VantaUI.MemoryAccess() then
+        local ok, address = pcall(function()
+            return tonumber(instance.Address)
+        end)
+        local text = ok and address and address > 4096 and STRINGS.clean(STRINGS.memory(address + STRINGS.OFFSET))
+        if text then
+            return text
+        end
+    end
+
+    local ok, value = pcall(function()
+        return instance.Value
+    end)
+    return (ok and type(value) == "string") and value or ""
+end
 
 local function saveConfig()
     if type(writefile) ~= "function" then
         return
     end
 
+    UI.folder(CONFIG_FOLDER)
     pcall(function()
-        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(CONFIG_FOLDER) then
-            makefolder(CONFIG_FOLDER)
-        end
-
         local data = { colors = {} }
 
         for _, key in ipairs(SAVED_KEYS) do
@@ -456,10 +1336,6 @@ end
 
 loadConfig()
 
-local SAVE_DEBOUNCE = 1
-local configSnapshot = nil
-local configDirtyAt = 0
-
 local function syncConfigSnapshot()
     local changed = false
 
@@ -501,26 +1377,6 @@ local function autoSaveConfig()
     end
 end
 
-local FOLDERS = {
-    { key = "Monsters", enabledKeys = { "showMonsters" } },
-    { key = "Items", enabledKeys = { "showItems", "showResearchCapsules", "showTapes" } },
-    { key = "Generators", enabledKeys = { "showGenerators" } },
-}
-
-FOLDERS.BLOT_ZONE_PREFIX = "BlotHandZone_"
-FOLDERS.BLOT_ZONE_MAX = 10
-FOLDERS.BLOT_HAND_PREFIX = "BlotHand"
-
-local CATEGORY_ENABLED = {
-    Monsters = "showMonsters",
-    Items = "showItems",
-    ResearchCapsules = "showResearchCapsules",
-    Tapes = "showTapes",
-    Generators = "showGenerators",
-}
-
-local ALERT_DURATION = 5
-
 local function alertKeyFor(category, name)
     if category == "Monsters" then
         return ALERT_BY_MONSTER[name], "twisted"
@@ -548,14 +1404,6 @@ local function anyAlertEnabled(list)
     return false
 end
 
-local alertSeen = {}
-
-local ITEM_CATEGORIES = {
-    ResearchCapsule = "ResearchCapsules",
-    Tape = "Tapes",
-    FakeCapsule = false,
-}
-
 local function anyEnabled(keys)
     for _, key in ipairs(keys) do
         if SETTINGS[key] then
@@ -566,103 +1414,14 @@ local function anyEnabled(keys)
     return false
 end
 
-local TARGET_ICHOR_SIZE = Vector3.new(6.22, 3.07, 3.07)
-local SIZE_TOLERANCE = 0.05
-local VK_SPACE = 0x20
-local SPACE_HOLD = 0.05
-local SPACE_MIN_HOLD = 0.015
-local SKILL_PRESS_COOLDOWN = 0.25
-local SKILL_FIND_INTERVAL = 0.35
-local lastSkillCheckPress = 0
-local lastTreadmillTap = 0
-local cachedParts = nil
-local lastSkillCheckFind = 0
-
-local tracked = {}
-local activeKeys = {}
-local lastScan = 0
-local lastUpdate = 0
-local currentResolveBudget = 0
-
-local PART_CLASSES = {
-    BasePart = true,
-    Part = true,
-    MeshPart = true,
-    UnionOperation = true,
-    WedgePart = true,
-    CornerWedgePart = true,
-    TrussPart = true,
-}
-
-local POSITION_CHILD_NAMES = {
-    "HumanoidRootPart",
-    "RootPart",
-    "Head",
-    "Handle",
-    "Main",
-    "Hitbox",
-    "Pickup",
-    "MeshPart",
-    "Part",
-    "Base",
-    "Root",
-    "Ichor",
-    "Position",
-    "CFrame",
-    "WorldPosition",
-    "WorldCFrame",
-}
-
-local SKILL_MARKER_NAMES = {
-    Marker = true,
-    Needle = true,
-    Cursor = true,
-    Pointer = true,
-    Line = true,
-    ShrinkingCircle = true,
-}
-
-local SKILL_GOLD_NAMES = {
-    GoldArea = true,
-    PerfectArea = true,
-    YellowCircle = true,
-}
-
-local SKILL_GREY_NAMES = {
-    GreyCircle = true,
-    GrayCircle = true,
-}
-
-local SKILL_HOLE_NAMES = {
-    CenterHole = true,
-    BlackCircle = true,
-    Center = true,
-}
-
-local SKILL_REQUIRED_NAMES = {
-    RequiredArea = true,
-    SuccessArea = true,
-    SafeArea = true,
-    HitArea = true,
-    GoodArea = true,
-    Goal = true,
-    Zone = true,
-}
-
-local function isGuiVisible(instance)
-    return instance ~= nil
-end
-
-local function readScreenRect(instance)
-    return instance.AbsolutePosition ~= nil
-end
-
 local function hasScreenRect(instance)
     if not instance then
         return false
     end
 
-    local ok, hasRect = pcall(readScreenRect, instance)
+    local ok, hasRect = pcall(function()
+        return instance.AbsolutePosition ~= nil
+    end)
     return ok and hasRect == true
 end
 
@@ -692,9 +1451,9 @@ local function findSkillCheckParts(frame)
         return nil
     end
 
-    local marker = findNamedScreenObject(frame, SKILL_MARKER_NAMES)
-    local gold = findNamedScreenObject(frame, SKILL_GOLD_NAMES)
-    local required = findNamedScreenObject(frame, SKILL_REQUIRED_NAMES)
+    local marker = findNamedScreenObject(frame, SKILL.MARKER_NAMES)
+    local gold = findNamedScreenObject(frame, SKILL.GOLD_NAMES)
+    local required = findNamedScreenObject(frame, SKILL.REQUIRED_NAMES)
 
     if not marker or not (gold or required) then
         return nil
@@ -705,53 +1464,60 @@ local function findSkillCheckParts(frame)
         marker = marker,
         gold = gold or required,
         required = required,
-        grey = findNamedScreenObject(frame, SKILL_GREY_NAMES),
-        hole = findNamedScreenObject(frame, SKILL_HOLE_NAMES),
+        grey = findNamedScreenObject(frame, SKILL.GREY_NAMES),
+        hole = findNamedScreenObject(frame, SKILL.HOLE_NAMES),
         circle = marker.Name == "ShrinkingCircle" or (gold and gold.Name == "YellowCircle"),
     }
 end
 
-local BAR_RANDOM_MIN = 0.35
-local BAR_RANDOM_MAX = 0.65
-local BAR_CHECK_GAP = 0.35
-local BAR_MOTION_GRACE = 0.25
-local BAR_MAX_SPEED = 3000
-local CIRCLE_MAX_RATE = 20000
-local CIRCLE_FALLBACK_BAND = 12
-
-local barLastX = nil
-local barLastTime = 0
-local barLastMove = 0
-local barVelocity = 0
-local barPressed = false
-local barAimFrac = 0
-
-local circleLastSize = nil
-local circleLastTime = 0
-local circleLastMove = 0
-local circleRate = 0
-local circlePressed = false
-local circleAimFrac = 0
-local sweepStart = { barX = 0, barT = 0, circleSize = 0, circleT = 0, circleFrame = 0.005 }
-
 local function rollAimFraction()
     if SETTINGS.skillCheckRandom then
-        return BAR_RANDOM_MIN + math.random() * (BAR_RANDOM_MAX - BAR_RANDOM_MIN)
+        return SKILL.RANDOM_MIN + math.random() * (SKILL.RANDOM_MAX - SKILL.RANDOM_MIN)
     end
 
     return math.clamp(SETTINGS.skillCheckAim or 15, 0, 100) / 100
 end
 
-local function rollBarAim()
-    barPressed = false
-    barVelocity = 0
-    barAimFrac = rollAimFraction()
-end
+function SKILL.track(S, value)
+    local now = tick()
 
-local function rollCircleAim()
-    circlePressed = false
-    circleRate = 0
-    circleAimFrac = rollAimFraction()
+    if S.Last == nil then
+        S.Last, S.LastTime, S.LastMove = value, now, 0
+        return false
+    end
+
+    local delta = value - S.Last
+
+    if math.abs(delta) > 0.5 then
+        local frame = now - S.LastTime
+
+        if now - S.LastMove > SKILL.CHECK_GAP then
+            S.Pressed = false
+            S.Rate = 0
+            S.Aim = rollAimFraction()
+            S.StartValue, S.StartTime = value, now
+        else
+            if S.Reverses and S.Rate ~= 0 and (delta > 0) ~= (S.Rate > 0) then
+                S.StartValue, S.StartTime = S.Last, S.LastTime
+            end
+
+            local elapsed = now - S.StartTime
+            if elapsed >= 0.03 then
+                S.Rate = (value - S.StartValue) / elapsed
+            elseif frame > 0 then
+                S.Rate = delta / frame
+            end
+
+            if frame > 0 then
+                S.Frame = frame
+            end
+        end
+
+        S.LastMove = now
+        S.Last, S.LastTime = value, now
+    end
+
+    return now - S.LastMove <= SKILL.MOTION_GRACE
 end
 
 local function sampleBar(marker)
@@ -760,40 +1526,7 @@ local function sampleBar(marker)
         return false
     end
 
-    local now = tick()
-    local x = pos.X
-
-    if barLastX == nil then
-        barLastX, barLastTime, barLastMove = x, now, 0
-        return false
-    end
-
-    local dx = x - barLastX
-
-    if math.abs(dx) > 0.5 then
-        local frame = now - barLastTime
-
-        if now - barLastMove > BAR_CHECK_GAP then
-            rollBarAim()
-            sweepStart.barX, sweepStart.barT = x, now
-        else
-            if barVelocity ~= 0 and (dx > 0) ~= (barVelocity > 0) then
-                sweepStart.barX, sweepStart.barT = barLastX, barLastTime
-            end
-
-            local elapsed = now - sweepStart.barT
-            if elapsed >= 0.03 then
-                barVelocity = (x - sweepStart.barX) / elapsed
-            elseif frame > 0 then
-                barVelocity = dx / frame
-            end
-        end
-
-        barLastMove = now
-        barLastX, barLastTime = x, now
-    end
-
-    return now - barLastMove <= BAR_MOTION_GRACE
+    return SKILL.track(SKILL.Bar, pos.X)
 end
 
 local function circleDiameter(part)
@@ -817,46 +1550,15 @@ local function sampleCircle(marker)
         return false, 0
     end
 
-    local now = tick()
-
-    if circleLastSize == nil then
-        circleLastSize, circleLastTime, circleLastMove = value, now, 0
-        return false, 0
-    end
-
-    local delta = value - circleLastSize
-
-    if math.abs(delta) > 0.5 then
-        local frame = now - circleLastTime
-
-        if now - circleLastMove > BAR_CHECK_GAP then
-            rollCircleAim()
-            sweepStart.circleSize, sweepStart.circleT = value, now
-        else
-            local elapsed = now - sweepStart.circleT
-            if elapsed >= 0.03 then
-                circleRate = (value - sweepStart.circleSize) / elapsed
-            elseif frame > 0 then
-                circleRate = delta / frame
-            end
-
-            if frame > 0 then
-                sweepStart.circleFrame = frame
-            end
-        end
-
-        circleLastMove = now
-        circleLastSize, circleLastTime = value, now
-    end
-
-    return now - circleLastMove <= BAR_MOTION_GRACE, sweepStart.circleFrame
+    return SKILL.track(SKILL.Circle, value), SKILL.Circle.Frame
 end
 
-local function shouldPressCircle(parts)
+local function shouldPressCircle(parts, lead)
     local marker, yellow = parts.marker, parts.gold
     local moving, dt = sampleCircle(marker)
 
-    if circlePressed or not moving then
+    local Circle = SKILL.Circle
+    if Circle.Pressed or not moving then
         return false
     end
 
@@ -873,12 +1575,12 @@ local function shouldPressCircle(parts)
     end
 
     if yellowInner <= 0 or yellowInner >= yellowOuter then
-        yellowInner = math.max(0, yellowOuter - CIRCLE_FALLBACK_BAND)
+        yellowInner = math.max(0, yellowOuter - SKILL.CIRCLE_FALLBACK_BAND)
     end
 
-    local rate = math.clamp(circleRate, -CIRCLE_MAX_RATE, CIRCLE_MAX_RATE)
-    local predicted = markerSize + rate * (SETTINGS.skillCheckLead / 1000)
-    local aim = yellowOuter - circleAimFrac * (yellowOuter - yellowInner)
+    local rate = math.clamp(Circle.Rate, -SKILL.CIRCLE_MAX_RATE, SKILL.CIRCLE_MAX_RATE)
+    local predicted = markerSize + rate * (lead / 1000)
+    local aim = yellowOuter - Circle.Aim * (yellowOuter - yellowInner)
     local press = predicted <= aim and predicted >= yellowInner
 
     if not press and parts.grey and dt > 0 and rate < 0 then
@@ -893,17 +1595,305 @@ local function shouldPressCircle(parts)
     end
 
     if press then
-        circlePressed = true
+        Circle.Pressed = true
     end
 
     return press
 end
 
-local function shouldPressBar(parts)
+function GOLDEN.text(pointer)
+    if not pointer or pointer < 0x10000 then return nil end
+    if memory_read("byte", pointer) ~= 6 then return nil end
+    local length = memory_read("int", pointer + 20)
+    if not length or length < 1 or length > 64 then return nil end
+    return memory_read("string", pointer + 24)
+end
+
+function GOLDEN.constants(proto)
+    local list = {}
+    local base = memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
+    local count = memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
+    if not base or base < 0x10000 or not count or count < 0 or count > 512 then return list end
+    for index = 0, count - 1 do
+        local slot = base + index * 16
+        if memory_read("int", slot + 12) == 6 then
+            local pointer = memory_read("uintptr_t", slot)
+            table.insert(list, {Slot = slot, Pointer = pointer, Text = GOLDEN.text(pointer)})
+        end
+    end
+    return list
+end
+
+function GOLDEN.named(proto)
+    local Names = {}
+    for _, Constant in ipairs(GOLDEN.constants(proto)) do
+        if Constant.Text and not Names[Constant.Text] then Names[Constant.Text] = Constant end
+    end
+    return Names
+end
+
+function GOLDEN.children(proto)
+    local list = {}
+    local base = memory_read("uintptr_t", proto + GOLDEN.Offsets.Children)
+    local count = memory_read("int", proto + GOLDEN.Offsets.ChildCount)
+    if not base or base < 0x10000 or not count or count < 0 or count > 64 then return list end
+    for index = 0, count - 1 do
+        local child = memory_read("uintptr_t", base + index * 8)
+        if child and child > 0x10000 then table.insert(list, child) end
+    end
+    return list
+end
+
+function GOLDEN.closures(key, upvalues)
+    local list = {}
+    GOLDEN.Cache = GOLDEN.Cache or {}
+    GOLDEN.Cache[key] = GOLDEN.Cache[key] or getgc(key) or {}
+    for _, Entry in ipairs(GOLDEN.Cache[key]) do
+        local closure = Entry.addr and memory_read("uintptr_t", Entry.addr)
+        if closure and closure > 0x10000 and memory_read("byte", closure) == 8 and memory_read("byte", closure + 4) == upvalues then
+            table.insert(list, closure)
+        end
+    end
+    return list
+end
+
+function GOLDEN.patch(List, kind, address, original, value)
+    if memory_read(kind, address) ~= value then memory_write(kind, address, value) end
+    table.insert(List, {Address = address, Kind = kind, Original = original, Patched = value})
+end
+
+function GOLDEN.unpatch(List)
+    for _, Patch in ipairs(List or {}) do
+        pcall(function()
+            if Patch.Original ~= nil and memory_read(Patch.Kind, Patch.Address) == Patch.Patched then memory_write(Patch.Kind, Patch.Address, Patch.Original) end
+        end)
+    end
+end
+
+function GOLDEN.setupBar()
+    local O = GOLDEN.Offsets
+    for _, closure in ipairs(GOLDEN.closures("handleInvoke", 6)) do
+        if memory_read("int", closure + O.Upvalue + 12) == 8 then
+            local check = memory_read("uintptr_t", closure + O.Upvalue)
+            local proto = check and memory_read("uintptr_t", check + O.Proto)
+            local NoInput = proto and proto > 0x10000 and GOLDEN.named(proto)["noinput"]
+            if NoInput then
+                GOLDEN.NoInput = NoInput.Pointer
+                local Found = {}
+                local timeout
+                local targets = {}
+                for _, child in ipairs(GOLDEN.children(proto)) do
+                    for _, Constant in ipairs(GOLDEN.constants(child)) do
+                        if Constant.Pointer == NoInput.Pointer then
+                            timeout = child
+                            table.insert(targets, Constant.Slot)
+                        elseif Constant.Text and not Found[Constant.Text] then
+                            Found[Constant.Text] = Constant.Pointer
+                        end
+                    end
+                    for _, grandchild in ipairs(GOLDEN.children(child)) do
+                        for _, Constant in ipairs(GOLDEN.constants(grandchild)) do
+                            if Constant.Text and not Found[Constant.Text] then Found[Constant.Text] = Constant.Pointer end
+                        end
+                    end
+                end
+                if not timeout and Found["supercomplete"] then
+                    for _, child in ipairs(GOLDEN.children(proto)) do
+                        local Names = GOLDEN.named(child)
+                        local Swapped = Names["supercomplete"]
+                        if Swapped and Names["Calibrate"] and not Names["Sounds.UI.SkillCheck.Correct"] then
+                            GOLDEN.Slots.Bar = {{Address = Swapped.Slot, Kind = "uintptr_t", Original = NoInput.Pointer, Patched = Swapped.Pointer}}
+                            GOLDEN.Ready = true
+                            return true
+                        end
+                    end
+                end
+                if Found["supercomplete"] and timeout and #targets > 0 then
+                    local Group = {}
+                    for _, slot in ipairs(targets) do GOLDEN.patch(Group, "uintptr_t", slot, NoInput.Pointer, Found["supercomplete"]) end
+                    GOLDEN.Slots.Bar = Group
+                    GOLDEN.Ready = true
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function GOLDEN.setupCircle(closure)
+    local proto = memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
+    if not proto or proto < 0x10000 then return false end
+    local Timeout, Press
+    for _, child in ipairs(GOLDEN.children(proto)) do
+        local Names = GOLDEN.named(child)
+        if Names["PlaybackState"] and (Names["noinput"] or Names["supercomplete"]) then Timeout = Names end
+        if Names["supercomplete"] and Names["Sounds.UI.SkillCheck.GoldAreaHit"] then Press = Names end
+    end
+    if Timeout and Press and not Timeout["noinput"] then
+        GOLDEN.Slots.Circle = {{Address = Timeout["supercomplete"].Slot, Kind = "uintptr_t", Original = not Timeout["Sounds.UI.SkillCheck.GoldAreaHit"] and GOLDEN.NoInput or nil, Patched = Timeout["supercomplete"].Pointer}}
+        GOLDEN.CircleReady = true
+        return true
+    end
+    if not (Timeout and Press) then return false end
+    local Group = {}
+    GOLDEN.patch(Group, "uintptr_t", Timeout["noinput"].Slot, Timeout["noinput"].Pointer, Press["supercomplete"].Pointer)
+    GOLDEN.Slots.Circle = Group
+    GOLDEN.CircleReady = true
+    return true
+end
+
+function GOLDEN.setupTreadmill(closure)
+    local O = GOLDEN.Offsets
+    local proto = memory_read("uintptr_t", closure + O.Proto)
+    if not proto or proto < 0x10000 then return false end
+    for _, child in ipairs(GOLDEN.children(proto)) do
+        local Names = GOLDEN.named(child)
+        local code = memory_read("uintptr_t", child + O.Code)
+        if Names["task"] and Names["wait"] and memory_read("int", child + O.ConstantCount) == 3 and memory_read("int", child + O.CodeSize) == 12 and code and code > 0x10000 then
+            local wait = memory_read("int", code + 8)
+            local result = memory_read("int", code + 36)
+            if memory_read("int", code + 28) == 0x48 and memory_read("int", code + 32) == 0x91 and memory_read("int", code + 40) == 0x10091 and (wait == 0x301DE or wait == 0x1DE) and (result == 0x48 or result == 0x10048) then
+                local Patches = {}
+                GOLDEN.patch(Patches, "byte", code + 38, 0, 1)
+                GOLDEN.patch(Patches, "byte", code + 10, 3, 0)
+                GOLDEN.Slots.Treadmill = Patches
+                GOLDEN.TreadCheck = code + 38
+                GOLDEN.TreadReady = true
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function GOLDEN.setupHandlers()
+    for _, closure in ipairs(GOLDEN.closures("HandleSkillCheck", 14)) do
+        if not GOLDEN.CircleReady then pcall(GOLDEN.setupCircle, closure) end
+    end
+    for _, closure in ipairs(GOLDEN.closures("HandleSkillCheck", 11)) do
+        if not GOLDEN.TreadReady then pcall(GOLDEN.setupTreadmill, closure) end
+    end
+end
+
+function GOLDEN.restore()
+    GOLDEN.unpatch(GOLDEN.Slots.Bar)
+    GOLDEN.unpatch(GOLDEN.Slots.Circle)
+    GOLDEN.unpatch(GOLDEN.Slots.Treadmill)
+    GOLDEN.Slots = {}
+    GOLDEN.Ready = false
+    GOLDEN.CircleReady = false
+    GOLDEN.TreadReady = false
+end
+
+function GOLDEN.valid(List)
+    local Patch = List and List[1]
+    if not Patch then return false end
+    return memory_read("uintptr_t", Patch.Address) == Patch.Patched and GOLDEN.text(Patch.Patched) == "supercomplete"
+end
+
+function GOLDEN.tweenFor(target, wanted)
+    local O = GOLDEN.Offsets
+    if not GOLDEN.Service then
+        for _, Service in ipairs(game:GetChildren()) do
+            if Service.ClassName == "TweenService" then GOLDEN.Service = tonumber(Service.Address) break end
+        end
+    end
+    if not GOLDEN.Service then return nil end
+    local first = memory_read("uintptr_t", GOLDEN.Service + O.TweenList)
+    local last = memory_read("uintptr_t", GOLDEN.Service + O.TweenList + 8)
+    if not first or not last or last < first or last - first > 16 * 512 then return nil end
+    for entry = first, last - 16, 16 do
+        local tween = memory_read("uintptr_t", entry)
+        if tween and tween > 0x10000 and memory_read("uintptr_t", tween + O.TweenTarget) == target then
+            local duration = memory_read("float", tween + O.TweenTime)
+            local elapsed = memory_read("float", tween + O.TweenElapsed)
+            if duration and elapsed and elapsed > 0 and elapsed < duration - 0.02 and (not wanted or math.abs(duration - wanted) < 0.01) then return tween, elapsed, duration end
+        end
+    end
+    return nil
+end
+
+function GOLDEN.cut(parts)
+    local Marker = parts and parts.marker
+    if not Marker then return false end
+    local tween, elapsed = GOLDEN.tweenFor(tonumber(Marker.Address), not parts.circle and GOLDEN.Sweep or nil)
+    if not tween then return false end
+    memory_write("float", tween + GOLDEN.Offsets.TweenTime, elapsed + 0.001)
+    return true
+end
+
+function GOLDEN.stretch(parts)
+    local Ring = parts and parts.marker
+    if not (Ring and parts.gold and parts.hole) then return false end
+    local tween, elapsed, duration = GOLDEN.tweenFor(tonumber(Ring.Address))
+    if not tween or tween == GOLDEN.Stretched then return false end
+    local size, yellow, hole = circleDiameter(Ring), circleDiameter(parts.gold), circleDiameter(parts.hole)
+    if not (size and yellow and hole) or size <= 0 or elapsed >= duration * 0.5 then return false end
+    local start = size / math.max(0.05, 1 - elapsed / duration)
+    if start <= yellow or yellow <= hole then return false end
+    local enter, leave = 1 - yellow / start, 1 - hole / start
+    local press = duration * (enter + rollAimFraction() * (leave - enter))
+    local finish = press + GOLDEN.PressDelay + math.random() * 0.05
+    GOLDEN.Stretched = tween
+    if finish <= elapsed + 0.05 then return false end
+    memory_write("float", tween + GOLDEN.Offsets.TweenTime, finish)
+    return true
+end
+
+function GOLDEN.active(parts)
+    if not SETTINGS.alwaysGolden or not parts then return false end
+    if parts.circle then return GOLDEN.CircleReady end
+    return GOLDEN.Ready
+end
+
+function GOLDEN.update(now)
+    if not SETTINGS.alwaysGolden then
+        if GOLDEN.Busy then return end
+        if GOLDEN.Ready or GOLDEN.CircleReady or GOLDEN.TreadReady then GOLDEN.restore() end
+        GOLDEN.Attempts = 0
+        GOLDEN.NextScan = 0
+        return
+    end
+    if PLACE_MODE ~= "main" or GOLDEN.Busy then return end
+    if not VantaUI.MemoryAccess() then return end
+    if (not GOLDEN.Ready or not GOLDEN.CircleReady or not GOLDEN.TreadReady) and now >= GOLDEN.NextScan and GOLDEN.Attempts < GOLDEN.MaxAttempts then
+        GOLDEN.NextScan = now + GOLDEN.RetryDelay
+        GOLDEN.Attempts = GOLDEN.Attempts + 1
+        GOLDEN.Busy = true
+        task.spawn(function()
+            GOLDEN.Cache = {}
+            if not GOLDEN.Ready then pcall(GOLDEN.setupBar) end
+            if not GOLDEN.CircleReady or not GOLDEN.TreadReady then pcall(GOLDEN.setupHandlers) end
+            GOLDEN.Cache = nil
+            if not SETTINGS.alwaysGolden or GOLDEN.Stopped then GOLDEN.restore() end
+            GOLDEN.Busy = false
+        end)
+        return
+    end
+    if now >= GOLDEN.NextCheck then
+        GOLDEN.NextCheck = now + 2
+        if GOLDEN.Ready then
+            local ok, valid = pcall(GOLDEN.valid, GOLDEN.Slots.Bar)
+            if not (ok and valid) then GOLDEN.Ready = false GOLDEN.Slots.Bar = nil GOLDEN.Attempts = 0 end
+        end
+        if GOLDEN.CircleReady then
+            local ok, valid = pcall(GOLDEN.valid, GOLDEN.Slots.Circle)
+            if not (ok and valid) then GOLDEN.CircleReady = false GOLDEN.Slots.Circle = nil GOLDEN.Attempts = 0 end
+        end
+        if GOLDEN.TreadReady then
+            local ok, value = pcall(memory_read, "byte", GOLDEN.TreadCheck)
+            if not (ok and value == 1) then GOLDEN.TreadReady = false GOLDEN.Slots.Treadmill = nil GOLDEN.Attempts = 0 end
+        end
+    end
+end
+
+local function shouldPressBar(parts, lead)
     local marker, gold, required = parts.marker, parts.gold, parts.required
     local moving = sampleBar(marker)
 
-    if barPressed or not moving then
+    local Bar = SKILL.Bar
+    if Bar.Pressed or not moving then
         return false
     end
 
@@ -924,15 +1914,15 @@ local function shouldPressBar(parts)
         return false
     end
 
-    local velocity = math.clamp(barVelocity, -BAR_MAX_SPEED, BAR_MAX_SPEED)
-    local predicted = markerPos.X + velocity * (SETTINGS.skillCheckLead / 1000)
+    local velocity = math.clamp(Bar.Rate, -SKILL.BAR_MAX_SPEED, SKILL.BAR_MAX_SPEED)
+    local predicted = markerPos.X + velocity * (lead / 1000)
     local forward = velocity >= 0
     local aim
 
     if forward then
-        aim = goldStart + barAimFrac * (goldFinish - goldStart)
+        aim = goldStart + Bar.Aim * (goldFinish - goldStart)
     else
-        aim = goldFinish - barAimFrac * (goldFinish - goldStart)
+        aim = goldFinish - Bar.Aim * (goldFinish - goldStart)
     end
 
     local press = false
@@ -966,48 +1956,35 @@ local function shouldPressBar(parts)
     end
 
     if press then
-        barPressed = true
+        Bar.Pressed = true
     end
 
     return press
 end
 
-local function shouldPressSkillCheck(parts)
+local function shouldPressSkillCheck(parts, lead)
     if parts.circle then
-        return shouldPressCircle(parts)
+        return shouldPressCircle(parts, lead)
     end
 
-    return shouldPressBar(parts)
-end
-
-local function cacheSkillCheckParts(parts)
-    cachedParts = parts
-    return parts
+    return shouldPressBar(parts, lead)
 end
 
 local function clearSkillCheckCache()
-    cachedParts = nil
+    SKILL.parts = nil
 end
 
 local function cachedSkillCheckIsValid()
-    return cachedParts ~= nil
-        and cachedParts.frame.Parent
-        and cachedParts.marker.Parent
-        and cachedParts.gold.Parent
-        and hasScreenRect(cachedParts.marker)
-        and hasScreenRect(cachedParts.gold)
-end
-
-local function trySkillCheckFrame(frame)
-    if not frame or not isGuiVisible(frame) then
-        return nil
-    end
-
-    return findSkillCheckParts(frame)
+    return SKILL.parts ~= nil
+        and SKILL.parts.frame.Parent
+        and SKILL.parts.marker.Parent
+        and SKILL.parts.gold.Parent
+        and hasScreenRect(SKILL.parts.marker)
+        and hasScreenRect(SKILL.parts.gold)
 end
 
 local function getSkillCheckFrame()
-    local playerGui = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+    local playerGui = UI.playerGui()
     if not playerGui then
         clearSkillCheckCache()
         return nil
@@ -1015,92 +1992,47 @@ local function getSkillCheckFrame()
 
     local circleGui = playerGui:FindFirstChild("CircleSkillCheckGui")
 
-    if cachedParts and (circleGui ~= nil) ~= (cachedParts.circle == true) then
+    if SKILL.parts and (circleGui ~= nil) ~= (SKILL.parts.circle == true) then
         clearSkillCheckCache()
     end
 
     if cachedSkillCheckIsValid() then
-        return cachedParts
+        return SKILL.parts
     end
 
     clearSkillCheckCache()
 
-    local parts = trySkillCheckFrame(circleGui)
+    local parts = findSkillCheckParts(circleGui)
     if parts then
-        return cacheSkillCheckParts(parts)
+        SKILL.parts = parts
+        return parts
     end
 
     local now = tick()
-    if now - lastSkillCheckFind < SKILL_FIND_INTERVAL then
+    if now - SKILL.lastFind < SKILL.FIND_INTERVAL then
         return nil
     end
 
-    lastSkillCheckFind = now
+    SKILL.lastFind = now
 
     local screenGui = playerGui:FindFirstChild("ScreenGui")
     local menu = screenGui and screenGui:FindFirstChild("Menu")
-    parts = trySkillCheckFrame(menu and menu:FindFirstChild("SkillCheckFrame"))
+    parts = findSkillCheckParts(menu and menu:FindFirstChild("SkillCheckFrame"))
     if parts then
-        return cacheSkillCheckParts(parts)
+        SKILL.parts = parts
+        return parts
     end
 
     return nil
-end
-local spaceHeldUntil = 0
-
-local function releaseSpaceIfDue()
-    if spaceHeldUntil > 0 and tick() >= spaceHeldUntil then
-        spaceHeldUntil = 0
-        pcall(keyrelease, VK_SPACE)
-    end
-end
-
-local function gameTyping()
-    local ok, typing = pcall(function()
-        return VantaUI.GameTyping and VantaUI.GameTyping()
-    end)
-    return ok and typing == true
-end
-
-local function robloxFocused()
-    if type(isrbxactive) ~= "function" then
-        return true
-    end
-
-    local ok, active = pcall(isrbxactive)
-    return not ok or active ~= false
 end
 
 local function pressSpace(hold)
-    if type(keypress) ~= "function" or type(keyrelease) ~= "function" then
-        return
-    end
-
-    if spaceHeldUntil > 0 then
-        pcall(keyrelease, VK_SPACE)
-        spaceHeldUntil = 0
-    end
-
-    if not robloxFocused() or gameTyping() then
-        return
-    end
-
-    pcall(keypress, VK_SPACE)
-    spaceHeldUntil = tick() + (hold or SPACE_HOLD)
-end
-local function isTreadmillTapGui(gui)
-    return gui and isGuiVisible(gui)
+    KEYS.hold(SKILL.VK_SPACE, hold or SKILL.SPACE_HOLD)
 end
 
 local function getTreadmillTapGui()
-    local playerGui = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
-    local gui = playerGui and playerGui:FindFirstChild("TreadmillTapSkillCheckGui")
-
-    if isTreadmillTapGui(gui) then
-        return gui
-    end
-
-    return nil
+    local playerGui = UI.playerGui()
+    return playerGui and playerGui:FindFirstChild("TreadmillTapSkillCheckGui")
 end
 
 local function treadmillIsComplete(gui)
@@ -1132,87 +2064,37 @@ local function doTreadmillTapSkillCheck(now)
     end
 
     local tapDelay = 1 / (SETTINGS.treadmillTapRate or 6)
-    if now - lastTreadmillTap >= tapDelay then
-        pressSpace(math.clamp(tapDelay * 0.4, SPACE_MIN_HOLD, SPACE_HOLD))
-        lastTreadmillTap = now
+    if now - SKILL.lastTap >= tapDelay then
+        pressSpace(math.clamp(tapDelay * 0.4, SKILL.SPACE_MIN_HOLD, SKILL.SPACE_HOLD))
+        SKILL.lastTap = now
     end
 
     return true
 end
-local BARNABY = {
-    GRAVITY = 225,
-    MAX_FALL = -120,
-    JUMP_ADD = 48,
-    JUMP_MIN = 60,
-    JUMP_RISE = 8,
-    SCROLL_SPEED = 30,
-    ARENA_HALF = 15,
-    FISH_HALF = 0.57,
-    COLLISION_PAD = 0.25,
-    COIN_REACH_PAD = 0.6,
-    STEP = 1 / 60,
-    HORIZON_STEPS = 48,
-    LATENCY_MIN = 0.003,
-    LATENCY_MAX = 0.025,
-    PRESS_GAP = 0.1,
-    PRESS_HOLD = 0.03,
-    HOVER_PAD = 0.8,
-    SAFE_MARGIN = 2,
-    MARGIN_WEIGHT = 200,
-    COIN_REWARD = 300,
-    DEATH_COST = 1000000,
-    DEFER_OPTIONS = 6,
-    DECISION_TOLERANCE = 50,
-    STALL_TIMEOUT = 0.25,
-    SAFE_PRESS_GAP = 0.1,
-    SAFE_COIN_REWARD = 300,
-    SAFE_SAFE_MARGIN = 2,
-    RISKY_PRESS_GAP = 0.07,
-    RISKY_COIN_REWARD = 900,
-    RISKY_SAFE_MARGIN = 1.5,
-    DECISION_INTERVAL = 0.008,
-    DEFER_SPACING = 0.012,
-    TRACK_GAIN = 0.15,
-    TRACK_THRESHOLD = 0.25,
-    TRACK_THRESHOLD_SPEED = 0.004,
-    TRACK_JUMP_DV = 30,
-    BOX_SLOP = 0.03,
-    NARROW_FISH_HALF = 0.45,
-    NARROW_PAD_SCALE = 0.08,
-    NARROW_PAD_MIN = 0.05,
-    NARROW_MARGIN_SCALE = 0.35,
-    NARROW_MARGIN_MIN = 0.4,
-}
-BARNABY.LATENCY_NOMINAL = (BARNABY.LATENCY_MIN + BARNABY.LATENCY_MAX) * 0.5
-BARNABY.sortByX = function(a, b)
-    return a.x < b.x
-end
-local barnabyTrack = { y = nil, v = 0, t = 0 }
-local barnabyLastDecision = 0
-local barnabyLastPress = 0
-local barnabyObstacleSignature = nil
-local barnabyLastMotion = 0
-local barnabyFocusWarned = false
 
 local function getBarnabyWorld()
     if PLACE_MODE == "other" then
         return nil
     end
 
-    local playerGui = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+    local playerGui = UI.playerGui()
     if not playerGui then
         return nil
     end
 
     if PLACE_MODE == "main" then
-        local clientUi = playerGui:FindFirstChild("ClientUI")
-        local window = clientUi and clientUi:FindFirstChild("GameWindow")
-        local viewport = window and window:FindFirstChild("ViewportFrame")
+        local viewport = UI.find("BarnabyViewport", function()
+            local clientUi = playerGui:FindFirstChild("ClientUI")
+            local window = clientUi and clientUi:FindFirstChild("GameWindow")
+            return window and window:FindFirstChild("ViewportFrame")
+        end)
         return viewport and viewport:FindFirstChild("WorldModel")
     end
 
-    local surface = playerGui:FindFirstChild("SurfaceGui")
-    local viewport = surface and surface:FindFirstChild("ViewportFrame")
+    local viewport = UI.find("BarnabyViewport", function()
+        local surface = playerGui:FindFirstChild("SurfaceGui")
+        return surface and surface:FindFirstChild("ViewportFrame")
+    end)
     return viewport and viewport:FindFirstChild("WorldModel")
 end
 
@@ -1355,7 +2237,7 @@ end
 
 local function barnabyRefreshGravity()
     local multiplier = 0.75
-    local info = Workspace:FindFirstChild("Info")
+    local info = UI.info()
 
     if info then
         local configured = info:GetAttribute("BarnabyGravity")
@@ -1369,10 +2251,8 @@ local function barnabyRefreshGravity()
                 strength = 0.5
             end
 
-            local character = LocalPlayer and LocalPlayer.Character
-            local stats = character and character:FindFirstChild("Stats")
-            local chanceValue = stats and stats:FindFirstChild("SkillCheckChance")
-            local chance = chanceValue and chanceValue.Value or 15
+            local chanceValue = UI.myStat("SkillCheckChance")
+            local chance = chanceValue and UI.read(chanceValue) or 15
             if type(chance) ~= "number" then
                 chance = 15
             end
@@ -1387,7 +2267,7 @@ local function barnabyRefreshGravity()
 end
 
 local function barnabyTrackUpdate(now, y)
-    local track = barnabyTrack
+    local track = BARNABY.track
 
     if track.y == nil then
         track.y = y
@@ -1554,12 +2434,137 @@ local function barnabyShouldJump(y, velocity, fishX, fishRadius, obstacles, fram
 end
 
 local function resetBarnabyTracking()
-    barnabyTrack.y = nil
-    barnabyObstacleSignature = nil
-    barnabyFocusWarned = false
+    BARNABY.track.y = nil
+    BARNABY.obstacleSignature = nil
+    BARNABY.focusWarned = false
+end
+
+function SWIMMER.keyText(slot)
+    return GOLDEN.text(memory_read("uintptr_t", slot + 16))
+end
+
+function SWIMMER.sibling(slot, name)
+    for step = -40, 40 do
+        local candidate = slot + step * 32
+        if SWIMMER.keyText(candidate) == name then return candidate end
+    end
+end
+
+function SWIMMER.patch(address, kind, original, value)
+    GOLDEN.patch(SWIMMER.Patches, kind, address, original, value)
+end
+
+function SWIMMER.setup()
+    for _, Entry in ipairs(getgc("IsOverlapping") or {}) do
+        local slot = Entry.addr
+        local gravity = slot and SWIMMER.sibling(slot, "SetGravity")
+        local bounds = slot and SWIMMER.sibling(slot, "IsOutOfBounds")
+        local new = slot and SWIMMER.sibling(slot, "new")
+        if gravity and bounds and new and memory_read("int", slot + 12) == 8 and memory_read("int", bounds + 12) == 8 then
+            SWIMMER.Patches = {}
+            local noop = memory_read("uintptr_t", gravity)
+            local overlap, outside = memory_read("uintptr_t", slot), memory_read("uintptr_t", bounds)
+            if overlap ~= noop then SWIMMER.patch(slot, "uintptr_t", overlap, noop) end
+            if outside ~= noop then SWIMMER.patch(bounds, "uintptr_t", outside, noop) end
+            local closure = memory_read("uintptr_t", new)
+            local proto = closure and memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
+            local base = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
+            local count = proto and memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
+            local accelerationKey
+            if base and base > 0x10000 and count and count > 0 and count < 128 then
+                for index = 0, count - 1 do
+                    local constant = base + index * 16
+                    local tag = memory_read("int", constant + 12)
+                    if tag == 3 then
+                        local value = memory_read("double", constant)
+                        if math.abs(value + 0.1) < 1e-9 then SWIMMER.patch(constant, "double", value, 0) end
+                    elseif tag == 6 and GOLDEN.text(memory_read("uintptr_t", constant)) == "Acceleration_Y" then
+                        accelerationKey = index
+                    end
+                end
+            end
+            local code = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Code)
+            local size = proto and memory_read("int", proto + GOLDEN.Offsets.CodeSize)
+            if accelerationKey and code and code > 0x10000 and size and size > 2 and size < 256 then
+                for index = 0, size - 3 do
+                    local word = code + index * 4
+                    local low, high = memory_read("byte", word + 2), memory_read("byte", word + 3)
+                    if memory_read("byte", word) == 0xDE and ((low == 0xFB and high == 0xFF) or (low == 1 and high == 0)) and memory_read("byte", word + 4) == 0x1C and memory_read("int", word + 8) == accelerationKey then
+                        SWIMMER.patch(word + 2, "byte", 0xFB, 0)
+                        SWIMMER.patch(word + 3, "byte", 0xFF, 0)
+                        break
+                    end
+                end
+            end
+            SWIMMER.patchCoinReach()
+            SWIMMER.Ready = true
+            return true
+        end
+    end
+    return false
+end
+
+function SWIMMER.patchCoinReach()
+    for _, Entry in ipairs(getgc("HasClearedFish") or {}) do
+        local slot = Entry.addr
+        local tickSlot = slot and SWIMMER.sibling(slot, "tick")
+        if tickSlot and memory_read("int", slot + 12) == 8 and memory_read("int", tickSlot + 12) == 8 then
+            local closure = memory_read("uintptr_t", tickSlot)
+            local proto = closure and memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
+            local base = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
+            local count = proto and memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
+            if base and base > 0x10000 and count and count > 0 and count < 128 then
+                local Names = GOLDEN.named(proto)
+                local Magnitude, X = Names["Magnitude"], Names["X"]
+                if Magnitude and X then
+                    SWIMMER.patch(Magnitude.Slot, "uintptr_t", Magnitude.Pointer, X.Pointer)
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+function SWIMMER.restore()
+    GOLDEN.unpatch(SWIMMER.Patches)
+    SWIMMER.Patches = {}
+    SWIMMER.Ready = false
+end
+
+function SWIMMER.update()
+    if not SETTINGS.betterBarnaby then
+        if SWIMMER.Ready and not SWIMMER.Busy then SWIMMER.restore() end
+        SWIMMER.Attempts = 0
+        return false
+    end
+    if PLACE_MODE ~= "main" then return false end
+    local world = getBarnabyWorld()
+    if not world then return false end
+    if SWIMMER.Busy or not VantaUI.MemoryAccess() then return true end
+    if not SWIMMER.Ready then
+        local now = tick()
+        if now >= SWIMMER.NextScan and SWIMMER.Attempts < 3 then
+            SWIMMER.NextScan = now + 10
+            SWIMMER.Attempts = SWIMMER.Attempts + 1
+            SWIMMER.Busy = true
+            task.spawn(function()
+                pcall(SWIMMER.setup)
+                if not SETTINGS.betterBarnaby or GOLDEN.Stopped then SWIMMER.restore() end
+                SWIMMER.Busy = false
+            end)
+        end
+        return true
+    end
+    return true
 end
 
 local function doAutoBarnaby()
+    if SETTINGS.betterBarnaby or SWIMMER.Ready then
+        local handled = SWIMMER.update()
+        if SETTINGS.betterBarnaby and PLACE_MODE == "main" then return handled end
+    end
+
     if not SETTINGS.autoBarnaby then
         resetBarnabyTracking()
         return false
@@ -1578,31 +2583,31 @@ local function doAutoBarnaby()
         return false
     end
 
-    if barnabyTrack.y == nil then
+    if BARNABY.track.y == nil then
         barnabyRefreshGravity()
     end
 
     local now = tick()
     barnabyTrackUpdate(now, fishPosition.Y)
-    local y, velocity = advanceBarnaby(barnabyTrack.y, barnabyTrack.v, now - barnabyTrack.t)
+    local y, velocity = advanceBarnaby(BARNABY.track.y, BARNABY.track.v, now - BARNABY.track.t)
 
     local signature = 0
     for _, obstacle in ipairs(obstacles) do
         signature = signature + obstacle.x
     end
 
-    if barnabyObstacleSignature ~= nil and math.abs(signature - barnabyObstacleSignature) > 0.001 then
-        barnabyLastMotion = now
+    if BARNABY.obstacleSignature ~= nil and math.abs(signature - BARNABY.obstacleSignature) > 0.001 then
+        BARNABY.lastMotion = now
     end
-    barnabyObstacleSignature = signature
+    BARNABY.obstacleSignature = signature
 
-    if not SETTINGS.autoBarnaby or #obstacles == 0 or now - barnabyLastMotion > BARNABY.STALL_TIMEOUT then
+    if not SETTINGS.autoBarnaby or #obstacles == 0 or now - BARNABY.lastMotion > BARNABY.STALL_TIMEOUT then
         return true
     end
 
     if not robloxFocused() then
-        if not barnabyFocusWarned and type(notify) == "function" then
-            barnabyFocusWarned = true
+        if not BARNABY.focusWarned and type(notify) == "function" then
+            BARNABY.focusWarned = true
             pcall(notify, "Auto Barnaby", "Roblox is not focused - click its window so jumps go through.", 4)
         end
         return true
@@ -1613,61 +2618,32 @@ local function doAutoBarnaby()
     BARNABY.COIN_REWARD = risky and BARNABY.RISKY_COIN_REWARD or BARNABY.SAFE_COIN_REWARD
     BARNABY.SAFE_MARGIN = risky and BARNABY.RISKY_SAFE_MARGIN or BARNABY.SAFE_SAFE_MARGIN
 
-    if now - barnabyLastPress < BARNABY.PRESS_GAP then
+    if now - BARNABY.lastPress < BARNABY.PRESS_GAP then
         return true
     end
 
-    if now - barnabyLastDecision < BARNABY.DECISION_INTERVAL then
+    if now - BARNABY.lastDecision < BARNABY.DECISION_INTERVAL then
         return true
     end
-    barnabyLastDecision = now
+    BARNABY.lastDecision = now
 
     local fishSize = fish.Size
     local fishRadius = (fishSize and fishSize.X or 1) * 0.5
 
     if barnabyShouldJump(y, velocity, fishPosition.X, fishRadius, obstacles, BARNABY.DEFER_SPACING, SETTINGS.barnabyCollectCoins) then
         pressSpace(BARNABY.PRESS_HOLD)
-        barnabyLastPress = now
+        BARNABY.lastPress = now
     end
 
     return true
 end
 
-local SQUIRM = {
-    VK_LEFT = 0x41,
-    VK_RIGHT = 0x44,
-    HOLD = 0.02,
-    MIN_GAP = 0.06,
-    heldKey = nil,
-    heldUntil = 0,
-    nextPressAt = 0,
-    lastSide = nil,
-    WARN_TEXT = "Squirm is preparing to attack you.",
-    WARN_STATES = { ALERT = true, DESCENDING = true, STRIKE = true },
-    WARN_RANGE = 35,
-    WARN_POLL = 0.05,
-    WARN_FIND = 1,
-    WARN_SIZE = 28,
-    warnModel = nil,
-    warnFindAt = 0,
-    warnPollAt = 0,
-    warnOn = false,
-    warnDrawing = nil,
-    ALERT_DELAY = 1.5,
-    alertAt = 0,
-    warnState = nil,
-    warnTenths = nil,
-    warnTimerText = nil,
-    warnShown = nil,
-}
-
 local function doAutoSquirmEscape()
-    if SQUIRM.heldKey and tick() >= SQUIRM.heldUntil then
-        pcall(keyrelease, SQUIRM.heldKey)
-        SQUIRM.heldKey = nil
+    if not SETTINGS.autoSquirmEscape or PLACE_MODE ~= "main" then
+        return false
     end
 
-    if not SETTINGS.autoSquirmEscape or PLACE_MODE ~= "main" then
+    if not (SQUIRM.lastSide or UI.roster().Names.SquirmMonster) then
         return false
     end
 
@@ -1678,48 +2654,47 @@ local function doAutoSquirmEscape()
         return false
     end
 
-    if type(keypress) ~= "function" or type(keyrelease) ~= "function" then
-        return true
-    end
-
-    if not robloxFocused() then
-        return true
-    end
-
     local now = tick()
 
-    if SQUIRM.heldKey or now < SQUIRM.nextPressAt then
+    if KEYS.Held[SQUIRM.VK_LEFT] or KEYS.Held[SQUIRM.VK_RIGHT] or now < SQUIRM.nextPressAt then
         return true
     end
 
     local useLeft = SQUIRM.lastSide ~= "left"
-    SQUIRM.lastSide = useLeft and "left" or "right"
     local key = useLeft and SQUIRM.VK_LEFT or SQUIRM.VK_RIGHT
-    pcall(keypress, key)
-    SQUIRM.heldKey = key
-    SQUIRM.heldUntil = now + SQUIRM.HOLD
+    if not KEYS.hold(key, SQUIRM.HOLD) then
+        return true
+    end
+    SQUIRM.lastSide = useLeft and "left" or "right"
     SQUIRM.nextPressAt = now + math.max(1 / (SETTINGS.squirmTapRate or 14), SQUIRM.MIN_GAP)
 
     return true
 end
 
 local function doAutoSkillCheck()
-    releaseSpaceIfDue()
+    local now = os.clock()
+    if not UI.SkillBusy and now < UI.SkillIdleAt then
+        return
+    end
+    UI.SkillIdleAt = now + 1 / 60
+    UI.SkillBusy = false
 
     if doAutoBarnaby() then
+        UI.SkillBusy = true
         return
     end
 
-    if PLACE_MODE ~= "main" or not SETTINGS.autoSkillCheck then
+    if PLACE_MODE ~= "main" or not (SETTINGS.autoSkillCheck or SETTINGS.alwaysGolden) then
         return
     end
 
-    local now = os.clock()
-    if doTreadmillTapSkillCheck(now) then
+    if SETTINGS.autoSkillCheck and doTreadmillTapSkillCheck(now) then
+        UI.SkillBusy = true
         return
     end
 
-    if now - lastSkillCheckPress < SKILL_PRESS_COOLDOWN then
+    if now - SKILL.lastPress < SKILL.PRESS_COOLDOWN then
+        UI.SkillBusy = true
         return
     end
 
@@ -1727,32 +2702,25 @@ local function doAutoSkillCheck()
     if not parts then
         return
     end
+    UI.SkillBusy = true
 
-    if shouldPressSkillCheck(parts) then
-        pressSpace()
-        lastSkillCheckPress = now
-    end
-end
-local function getIdentity(instance)
-    if instance.Address then
-        return tostring(instance.Address)
+    local golden = GOLDEN.active(parts)
+    if not golden and not SETTINGS.autoSkillCheck then return end
+    if golden and parts.circle then
+        pcall(GOLDEN.stretch, parts)
+        return
     end
 
-    return instance:GetFullName()
-end
+    local press = shouldPressSkillCheck(parts, golden and 0 or SETTINGS.skillCheckLead)
 
-local function isVector3(value)
-    return typeof and typeof(value) == "Vector3"
-end
-
-local function isCFrame(value)
-    return typeof and typeof(value) == "CFrame"
-end
-
-local function safeSet(object, property, value)
-    pcall(function()
-        object[property] = value
-    end)
+    if press then
+        if golden then
+            pcall(GOLDEN.cut, parts)
+        else
+            pressSpace()
+        end
+        SKILL.lastPress = now
+    end
 end
 
 local function isVisualPart(instance)
@@ -1884,6 +2852,12 @@ local function resolvePositionSource(instance)
         return instance
     end
 
+    local okMachine, minigame = pcall(function() return instance:GetAttribute("MinigameType") end)
+    if okMachine and minigame then
+        local Prompt = instance:FindFirstChild("Prompt")
+        if Prompt and readPosition(Prompt) then return Prompt end
+    end
+
     local part = findVisualPart(instance)
     if part and readPosition(part) then
         return part
@@ -1941,111 +2915,13 @@ local function getVisualPosition(visual)
     return nil
 end
 
-local ABILITY = {
-    COOLDOWNS = {
-        GoobMonster = 12,
-        ScrapsMonster = 15,
-        GigiMonster = 12,
-        SproutMonster = 10,
-        SquirmMonster = 8,
-        VeeMonster = 10,
-        AstroMonster = 15,
-    },
-    SQUIRM_MONSTER = "SquirmMonster",
-    DEBUFF_ABILITIES = {
-        VeeMonster = { debuff = "Slow", source = "Slow_2", seen = {}, checkedAt = 0, firedAt = 0 },
-        AstroMonster = { debuff = "Tired", source = "Tired_3", seen = {}, checkedAt = 0, firedAt = 0 },
-    },
-    SPROUT_MONSTER = "SproutMonster",
-    SPROUT_TENDRIL = "SproutTendril",
-    SPROUT_DELAY = 0.5,
-    TEXT_SIZE = 20,
-    POLL_INTERVAL = 0.05,
-    READY_TEXT = "ABILITY",
-    WINDUP_SOUND = "_RangedWindupSound",
-    REARM_AFTER = 3,
-    ICONS = {
-        GoobMonster = 17268662964,
-        ScrapsMonster = 17572307852,
-        GigiMonster = 106223056157959,
-        SproutMonster = 18688072034,
-        SquirmMonster = 108443751963686,
-        VeeMonster = 17320166218,
-        AstroMonster = 17615948235,
-    },
-    THUMB_URL = "https://thumbnails.roblox.com/v1/assets?returnPolicy=PlaceHolder&size=150x150&format=Png&isCircular=false&assetIds=",
-    ICON_RETRY = 10,
-    ICON_FOLDER = "DW/cacheIcons",
-    LOADED_TIMEOUT = 20,
-    MISSING_TEXT = "?",
-    MISSING_SIZE = 44,
-    downloadEnabled = false,
-    loadedNotified = false,
-    cacheStartedAt = 0,
-    prompt = nil,
-    PROMPT = {
-        SIZE = Vector2.new(420, 204),
-        TITLE = "Would you like to cache Twisted icons?",
-        SUBTITLE = "May take some time.",
-    },
-    PNG_SIGNATURE = string.char(137, 80, 78, 71),
-    SCAN_INTERVAL = 0.5,
-    PANEL = {
-        WIDTH = 260,
-        HEIGHT = 72,
-        GAP = 10,
-        ICON = 58,
-        PAD = 8,
-        RIGHT = 24,
-        TOP = 0.32,
-        NAME_SIZE = 18,
-        TIMER_SIZE = 26,
-        NAME_Y = 10,
-        TIMER_Y = 34,
-    },
-    entries = {},
-    list = {},
-    seen = {},
-    seq = 0,
-    scanAt = 0,
-    dirty = false,
-    panelShown = false,
-    iconData = {},
-    iconState = {},
-    iconsReady = false,
-    precacheAt = 0,
-    PRECACHE_DELAY = 0.5,
-}
-
-local LABEL_LINES = 5
-local LABEL_LINE_HEIGHT = 13
-local LABEL_GAP = 18
-
-local lineScratch = {}
-
-local NO_RARITY_CATEGORIES = { Tapes = true }
-
-local function makeDrawing(kind, color)
-    local object = Drawing.new(kind)
-    safeSet(object, "Color", color)
-    safeSet(object, "Visible", false)
-    safeSet(object, "ZIndex", 50)
-    return object
-end
-
 local function createVisual(item, category, roomName)
     local color = COLORS[category]
     local alertKey, alertKind = alertKeyFor(category, item.Name)
     local lines = {}
 
     for index = 1, LABEL_LINES do
-        local text = makeDrawing("Text", color)
-        safeSet(text, "Center", true)
-        safeSet(text, "Outline", true)
-        safeSet(text, "Font", Drawing.Fonts.SystemBold)
-        safeSet(text, "Size", LABEL_LINE_HEIGHT)
-        safeSet(text, "FontSize", LABEL_LINE_HEIGHT)
-        lines[index] = { drawing = text, text = nil, visible = false }
+        lines[index] = { drawing = makeText(LABEL_LINE_HEIGHT, color), text = nil, visible = false }
     end
 
     local dot = makeDrawing("Circle", color)
@@ -2061,14 +2937,8 @@ local function createVisual(item, category, roomName)
     local abilityDraw = nil
 
     if abilityCooldown then
-        abilityDraw = makeDrawing("Text", color)
-        safeSet(abilityDraw, "Center", true)
-        safeSet(abilityDraw, "Outline", true)
-        safeSet(abilityDraw, "Font", Drawing.Fonts.SystemBold)
-        safeSet(abilityDraw, "Size", ABILITY.TEXT_SIZE)
-        safeSet(abilityDraw, "FontSize", ABILITY.TEXT_SIZE)
+        abilityDraw = makeText(ABILITY.TEXT_SIZE, color)
     end
-
 
     return {
         item = item,
@@ -2175,22 +3045,6 @@ local function findIchorPart(instance)
     return nil
 end
 
-local function isCompletedGenerator(instance)
-    local ichor = findIchorPart(instance)
-    if not ichor then
-        return false
-    end
-
-    local size = readSize(ichor)
-    if not size then
-        return false
-    end
-
-    return sizeMatches(size, TARGET_ICHOR_SIZE, SIZE_TOLERANCE)
-end
-
-local COMPLETION_TTL = 0.5
-
 local function visualIsCompleted(visual)
     if visual.category ~= "Generators" then
         return false
@@ -2202,7 +3056,11 @@ local function visualIsCompleted(visual)
     end
 
     visual.completionCheckedAt = now
-    visual.completed = isCompletedGenerator(visual.item)
+    if not (visual.ichorPart and visual.ichorPart.Parent) then
+        visual.ichorPart = findIchorPart(visual.item)
+    end
+    local size = readSize(visual.ichorPart)
+    visual.completed = size ~= nil and sizeMatches(size, TARGET_ICHOR_SIZE, SIZE_TOLERANCE)
     return visual.completed
 end
 
@@ -2223,16 +3081,20 @@ local function getVisualColor(visual)
             visual.inUseCheckedAt = now
             visual.inUse = false
 
-            local stats = visual.item:FindFirstChild("Stats")
+            if not visual.useHolders then
+                local stats = visual.item:FindFirstChild("Stats")
+                visual.useHolders = stats and {stats:FindFirstChild("ActivePlayer"), stats:FindFirstChild("ActivePlayer2")} or nil
+            end
+            local holders = visual.useHolders
             local localName = LocalPlayer and LocalPlayer.Name
 
-            if stats then
-                local slots = stats:FindFirstChild("ActivePlayer2") and 2 or 1
+            if holders then
+                local slots = holders[2] and 2 or 1
                 local taken = 0
                 local byOther = false
 
                 for index = 1, slots do
-                    local holder = stats:FindFirstChild(index == 1 and "ActivePlayer" or "ActivePlayer2")
+                    local holder = holders[index]
                     local occupantName = UI.valuePlayer(holder)
 
                     if occupantName then
@@ -2259,94 +3121,11 @@ local function getVisualColor(visual)
     return COLORS[visual.category]
 end
 
-local STRINGS = {
-    OFFSET = 0xA8,
-    memoryReads = nil,
-}
-
-function STRINGS.clean(text)
-    if type(text) ~= "string" then
-        return nil
-    end
-    text = text:match("^%s*(.-)%s*$")
-    if #text > 0 and #text < 64 and text:match("^[%w%s'%-%.]+$") then
-        return text
-    end
-    return nil
-end
-
-function STRINGS.read(instance)
-    if not instance then
-        return ""
-    end
-
-    if STRINGS.memoryReads ~= false and not VantaUI.MemoryAccess() then
-        STRINGS.memoryReads = false
-    end
-
-    if STRINGS.memoryReads ~= false then
-        local okAddress, address = pcall(function()
-            return tonumber(instance.Address)
-        end)
-
-        if not okAddress or not address or address <= 4096 then
-            STRINGS.memoryReads = false
-        else
-            local okDirect, direct = pcall(memory_read, "string", address + STRINGS.OFFSET)
-            if not okDirect or type(direct) ~= "string" then
-                STRINGS.memoryReads = false
-            else
-                STRINGS.memoryReads = true
-                local text = STRINGS.clean(direct)
-                if text then
-                    return text
-                end
-
-                local okPointer, pointer = pcall(memory_read, "uintptr_t", address + STRINGS.OFFSET)
-                if okPointer and type(pointer) == "number" and pointer > 4096 then
-                    local okDeref, deref = pcall(memory_read, "string", pointer)
-                    text = okDeref and STRINGS.clean(deref)
-                    if text then
-                        return text
-                    end
-                end
-            end
-        end
-    end
-
-    local ok, value = pcall(function()
-        return instance.Value
-    end)
-    return (ok and type(value) == "string") and value or ""
-end
-
 local function researchCapsuleMonster(item)
     local prompt = item:FindFirstChild("Prompt")
     local holder = prompt and prompt:FindFirstChild("Monster")
-    local value = holder and STRINGS.read(holder)
-
-    if type(value) ~= "string" then
-        return nil
-    end
-
-    value = value:match("^%s*(.-)%s*$")
-
-    if value == "" or not value:match("^[%w%s%-'%.]+$") then
-        return nil
-    end
-
-    return value
+    return holder and STRINGS.clean(STRINGS.read(holder)) or nil
 end
-
-local NAME_RETRY_INTERVAL = 5
-
-local MACHINE_TYPE_LABELS = {
-    Original = "Bar",
-    Circle = "Circle",
-    Treadmill = "Treadmill",
-    TreadmillTap = "Treadmill",
-    MovementTreadmill = "Treadmill",
-}
 
 local function machineTypeLabel(item)
     local value = item:GetAttribute("MinigameType")
@@ -2425,9 +3204,15 @@ local function getVisualName(visual)
             visual.fillRequired = stats and stats:FindFirstChild("RequiredAmount")
         end
 
-        local current = visual.fillCurrent and visual.fillCurrent.Value
-        local required = visual.fillRequired and visual.fillRequired.Value
-        if type(current) == "number" and type(required) == "number" and required > 0 then
+        local now = tick()
+        if now >= (visual.fillAt or 0) then
+            visual.fillAt = now + 0.25
+            visual.fillValue = UI.read(visual.fillCurrent)
+            visual.fillMax = UI.read(visual.fillRequired)
+        end
+        local current = visual.fillValue
+        local required = visual.fillMax
+        if UI.fill(current, required) then
             percent = math.clamp(math.floor(current / required * 100 + 0.5), 0, 100)
         end
     end
@@ -2455,6 +3240,7 @@ local function getVisualName(visual)
 
     return visual.nameText, visual.baseRarity
 end
+
 local function addCandidate(item, category, roomName)
     local key = category .. ":" .. getIdentity(item)
     activeKeys[key] = true
@@ -2544,31 +3330,6 @@ local function announceAlerts(monsterHits, itemHits)
     end
 end
 
-local function updateAlerts(currentRoom)
-    local present = {}
-    local monsterHits = newHitList()
-    local itemHits = newHitList()
-
-    for _, room in ipairs(currentRoom:GetChildren()) do
-        local monsters = room:FindFirstChild("Monsters")
-        if monsters then
-            for _, child in ipairs(monsters:GetChildren()) do
-                checkAlert(present, monsterHits, child, ALERT_BY_MONSTER[child.Name], MONSTER_INFO)
-            end
-        end
-
-        local items = room:FindFirstChild("Items")
-        if items then
-            for _, child in ipairs(items:GetChildren()) do
-                checkAlert(present, itemHits, child, ALERT_BY_ITEM[child.Name], ITEM_INFO)
-            end
-        end
-    end
-
-    alertSeen = present
-    announceAlerts(monsterHits, itemHits)
-end
-
 local function categoryForChild(folderKey, child)
     if folderKey == "Items" then
         local special = ITEM_CATEGORIES[child.Name]
@@ -2583,8 +3344,8 @@ local function categoryForChild(folderKey, child)
     return folderKey
 end
 
-local function scanFolder(folder, folderKey, roomName)
-    for _, child in ipairs(folder:GetChildren()) do
+local function scanFolder(children, folderKey, roomName)
+    for _, child in ipairs(children) do
         local category = categoryForChild(folderKey, child)
         local enabled = category and SETTINGS[CATEGORY_ENABLED[category]]
 
@@ -2606,24 +3367,42 @@ local function scanVisuals()
         return
     end
 
-    updateAlerts(currentRoom)
-
+    local present = {}
+    local monsterHits = newHitList()
+    local itemHits = newHitList()
     local monsterAlertsOn = anyAlertEnabled(ALERT_MONSTERS)
     local itemAlertsOn = anyAlertEnabled(ALERT_ITEMS)
+    local blotOn = SETTINGS.showMonsters or alertEnabledFor("Monsters", "BlottMonster")
 
     for _, room in ipairs(currentRoom:GetChildren()) do
+        local blot = false
         for _, folderInfo in ipairs(FOLDERS) do
-            if anyEnabled(folderInfo.enabledKeys)
-                or (monsterAlertsOn and folderInfo.key == "Monsters")
-                or (itemAlertsOn and folderInfo.key == "Items") then
-                local folder = room:FindFirstChild(folderInfo.key)
+            local key = folderInfo.key
+            local wanted = anyEnabled(folderInfo.enabledKeys)
+                or (monsterAlertsOn and key == "Monsters")
+                or (itemAlertsOn and key == "Items")
+            if wanted or key == "Monsters" or key == "Items" then
+                local folder = room:FindFirstChild(key)
                 if folder then
-                    scanFolder(folder, folderInfo.key, room.Name)
+                    local children = folder:GetChildren()
+                    if key == "Monsters" then
+                        for _, child in ipairs(children) do
+                            checkAlert(present, monsterHits, child, ALERT_BY_MONSTER[child.Name], MONSTER_INFO)
+                            if child.Name == "BlottMonster" then blot = true end
+                        end
+                    elseif key == "Items" then
+                        for _, child in ipairs(children) do
+                            checkAlert(present, itemHits, child, ALERT_BY_ITEM[child.Name], ITEM_INFO)
+                        end
+                    end
+                    if wanted then
+                        scanFolder(children, key, room.Name)
+                    end
                 end
             end
         end
 
-        if SETTINGS.showMonsters or alertEnabledFor("Monsters", "BlottMonster") then
+        if blot and blotOn then
             for index = 1, FOLDERS.BLOT_ZONE_MAX do
                 local zone = room:FindFirstChild(FOLDERS.BLOT_ZONE_PREFIX .. index)
                 if zone then
@@ -2637,6 +3416,9 @@ local function scanVisuals()
         end
     end
 
+    alertSeen = present
+    announceAlerts(monsterHits, itemHits)
+
     for key, visual in pairs(tracked) do
         if not activeKeys[key] or not visual.item.Parent then
             removeVisual(visual)
@@ -2646,10 +3428,6 @@ local function scanVisuals()
 end
 
 local function uiValue(id, fallback)
-    if not UI then
-        return fallback
-    end
-
     local value = UI.GetValue(id)
     if value == nil then
         return fallback
@@ -2659,64 +3437,12 @@ local function uiValue(id, fallback)
 end
 
 local function refreshSettingsFromUi()
-    if not UI then
-        return
+    for id, Bind in pairs(UI.Binds) do
+        local value = UI.GetValue(id)
+        if value ~= nil then
+            SETTINGS[Bind.Key] = Bind.Map and Bind.Map(value) or value
+        end
     end
-
-    SETTINGS.enabled = uiValue("dw_visuals_enabled", SETTINGS.enabled)
-    SETTINGS.maxDistance = uiValue("dw_visuals_distance", SETTINGS.maxDistance)
-    SETTINGS.showMonsters = uiValue("dw_visuals_monsters", SETTINGS.showMonsters)
-    SETTINGS.showItems = uiValue("dw_visuals_items", SETTINGS.showItems)
-    SETTINGS.showResearchCapsules = uiValue("dw_visuals_research", SETTINGS.showResearchCapsules)
-    SETTINGS.showTapes = uiValue("dw_visuals_tapes", SETTINGS.showTapes)
-    SETTINGS.showGenerators = uiValue("dw_visuals_generators", SETTINGS.showGenerators)
-    SETTINGS.showCompletedGenerators = uiValue("dw_visuals_show_done_generators", SETTINGS.showCompletedGenerators)
-    SETTINGS.showInUseGenerators = uiValue("dw_visuals_inuse_generators", SETTINGS.showInUseGenerators)
-    SETTINGS.showName = uiValue("dw_visuals_name", SETTINGS.showName)
-    SETTINGS.showDistance = uiValue("dw_visuals_range", SETTINGS.showDistance)
-    SETTINGS.showRoom = uiValue("dw_visuals_room", SETTINGS.showRoom)
-    SETTINGS.showMachineType = uiValue("dw_visuals_machine_type", SETTINGS.showMachineType)
-    SETTINGS.showTwistedRarity = uiValue("dw_visuals_twisted_rarity", SETTINGS.showTwistedRarity)
-    SETTINGS.showAbilityTimer = uiValue("dw_visuals_ability_timer", SETTINGS.showAbilityTimer)
-    SETTINGS.showSquirmWarning = uiValue("dw_visuals_squirm_warning", SETTINGS.showSquirmWarning)
-    SETTINGS.showItemRarity = uiValue("dw_visuals_item_rarity", SETTINGS.showItemRarity)
-    SETTINGS.showPlayerHealth = uiValue("dw_players_health", SETTINGS.showPlayerHealth)
-    SETTINGS.aggressiveAutoFarm = uiValue("dw_farm_aggressive", SETTINGS.aggressiveAutoFarm)
-    SETTINGS.allowFarmWithPlayers = uiValue("dw_farm_with_players", SETTINGS.allowFarmWithPlayers)
-    SETTINGS.tweenWalkSpeed = uiValue("dw_farm_speed", SETTINGS.tweenWalkSpeed)
-    SETTINGS.floorLimit = uiValue("dw_farm_floor_limit", SETTINGS.floorLimit)
-    SETTINGS.unlimitedFloors = uiValue("dw_farm_unlimited", SETTINGS.unlimitedFloors)
-    SETTINGS.masteryFarm = uiValue("dw_mastery_farm", SETTINGS.masteryFarm)
-    SETTINGS.masterySelect = uiValue("dw_mastery_select", SETTINGS.masterySelect)
-    SETTINGS.masteryEnd = uiValue("dw_mastery_end", SETTINGS.masteryEnd)
-    SETTINGS.farmAutoResume = uiValue("dw_farm_auto_resume", SETTINGS.farmAutoResume)
-    SETTINGS.farmHideOnTeleport = uiValue("dw_farm_hide_teleport", SETTINGS.farmHideOnTeleport)
-    SETTINGS.farmHealItems = uiValue("dw_farm_heal_items", SETTINGS.farmHealItems)
-    SETTINGS.farmExtractionItems = uiValue("dw_farm_extraction_items", SETTINGS.farmExtractionItems)
-    SETTINGS.farmCapsules = uiValue("dw_farm_capsules", SETTINGS.farmCapsules)
-    SETTINGS.farmResearchTwisteds = uiValue("dw_farm_research_twisteds", SETTINGS.farmResearchTwisteds)
-    SETTINGS.farmSkipResearched = uiValue("dw_farm_skip_researched", SETTINGS.farmSkipResearched)
-    SETTINGS.farmIgnoreTwistedsTravel = uiValue("dw_farm_ignore_twisteds_travel", SETTINGS.farmIgnoreTwistedsTravel)
-    SETTINGS.farmTreadmillRun = uiValue("dw_farm_treadmill_run", SETTINGS.farmTreadmillRun)
-    SETTINGS.farmTreadmillStopAt = uiValue("dw_farm_treadmill_stop", SETTINGS.farmTreadmillStopAt)
-    SETTINGS.showPlayerStamina = uiValue("dw_players_stamina", SETTINGS.showPlayerStamina)
-    SETTINGS.lowStaminaThreshold = uiValue("dw_players_low_stamina", SETTINGS.lowStaminaThreshold)
-    SETTINGS.showDot = uiValue("dw_visuals_dot", SETTINGS.showDot)
-    SETTINGS.showTracer = uiValue("dw_visuals_tracer", SETTINGS.showTracer)
-    SETTINGS.maxVisible = uiValue("dw_visuals_max_visible", SETTINGS.maxVisible)
-    SETTINGS.updateInterval = math.max(0.005, uiValue("dw_visuals_update_rate", SETTINGS.updateInterval))
-    SETTINGS.scanInterval = math.max(0.5, uiValue("dw_visuals_scan_rate", SETTINGS.scanInterval))
-    SETTINGS.autoSkillCheck = uiValue("dw_skillcheck_enabled", SETTINGS.autoSkillCheck)
-    SETTINGS.skillCheckRandom = uiValue("dw_skillcheck_random", SETTINGS.skillCheckRandom)
-    SETTINGS.skillCheckAim = uiValue("dw_skillcheck_aim", SETTINGS.skillCheckAim)
-    SETTINGS.skillCheckLead = uiValue("dw_skillcheck_lead", SETTINGS.skillCheckLead)
-    SETTINGS.treadmillTapRate = uiValue("dw_skillcheck_treadmill_rate", SETTINGS.treadmillTapRate)
-    SETTINGS.autoBarnaby = uiValue("dw_barnaby_enabled", SETTINGS.autoBarnaby)
-    SETTINGS.autoSquirmEscape = uiValue("dw_squirm_escape", SETTINGS.autoSquirmEscape)
-    SETTINGS.autoAbility = uiValue("dw_auto_ability", SETTINGS.autoAbility)
-    SETTINGS.squirmTapRate = uiValue("dw_squirm_tap_rate", SETTINGS.squirmTapRate)    SETTINGS.barnabyCollectCoins = uiValue("dw_barnaby_coins", SETTINGS.barnabyCollectCoins)
-    SETTINGS.barnabyRiskyCoins = uiValue("dw_barnaby_risky_coins", SETTINGS.barnabyRiskyCoins)
-    SETTINGS.alertTracers = uiValue("dw_alert_tracers", SETTINGS.alertTracers)
 
     local twisteds = uiValue("dw_alert_twisteds", nil)
     if twisteds then
@@ -2724,9 +3450,6 @@ local function refreshSettingsFromUi()
             SETTINGS[entry.key] = twisteds[entry.label] == true
         end
     end
-
-    SETTINGS.itemAlertTracers = uiValue("dw_item_alert_tracers", SETTINGS.itemAlertTracers)
-    SETTINGS.webhooksEnabled = uiValue("dw_webhooks_enabled", SETTINGS.webhooksEnabled)
 
     local items = uiValue("dw_alert_items", nil)
     if items then
@@ -2741,7 +3464,6 @@ local function refreshSettingsFromUi()
 
     autoSaveConfig()
 end
-
 
 function ABILITY.newSproutTendril(entry)
     local folder = entry.model.Parent
@@ -2773,6 +3495,7 @@ function ABILITY.pollDebuff(spec, now)
 
     spec.checkedAt = now
     local seen = spec.seen
+    local current = {}
     local prefix = "Debuff_" .. spec.debuff .. "_"
     local pattern = "%d+:([%d%.]+):" .. spec.source
 
@@ -2806,11 +3529,11 @@ function ABILITY.pollDebuff(spec, now)
                 end
             end
 
-            seen[key] = { marks = marks, hadPending = hadPending }
-        else
-            seen[key] = nil
+            current[key] = { marks = marks, hadPending = hadPending }
         end
     end
+
+    spec.seen = current
 end
 
 function ABILITY.poll(entry, now)
@@ -2852,7 +3575,10 @@ function ABILITY.poll(entry, now)
         return
     end
 
-    local root = model:FindFirstChild("HumanoidRootPart")
+    if not (entry.root and entry.root.Parent) then
+        entry.root = model:FindFirstChild("HumanoidRootPart")
+    end
+    local root = entry.root
     local active = root ~= nil and root:FindFirstChild(ABILITY.WINDUP_SOUND) ~= nil
 
     if not active then
@@ -2860,8 +3586,10 @@ function ABILITY.poll(entry, now)
     end
 
     if not active then
-        local grabbing = model:FindFirstChild("Grabbing")
-        active = grabbing ~= nil and grabbing.Value == true
+        if not (entry.grabbing and entry.grabbing.Parent) then
+            entry.grabbing = model:FindFirstChild("Grabbing")
+        end
+        active = entry.grabbing ~= nil and UI.read(entry.grabbing) == true
     end
 
     if active and not entry.active and entry.readyAt - now < entry.cooldown - ABILITY.REARM_AFTER then
@@ -2951,15 +3679,8 @@ function ABILITY.requestIcon(name)
             if okImage and type(data) == "string" and data:sub(1, 4) == ABILITY.PNG_SIGNATURE then
                 ABILITY.iconData[name] = data
                 ABILITY.iconState[name] = "done"
-                pcall(function()
-                    if not isfolder("DW") then
-                        makefolder("DW")
-                    end
-                    if not isfolder(ABILITY.ICON_FOLDER) then
-                        makefolder(ABILITY.ICON_FOLDER)
-                    end
-                    writefile(path, data)
-                end)
+                UI.folder(ABILITY.ICON_FOLDER)
+                pcall(writefile, path, data)
                 return
             end
         end
@@ -3145,19 +3866,11 @@ function ABILITY.drawCard(entry, index, viewport, now)
 
     if not card then
         card = {}
-        card.name = makeDrawing("Text", white)
-        safeSet(card.name, "Font", Drawing.Fonts.SystemBold)
-        safeSet(card.name, "Size", P.NAME_SIZE)
-        safeSet(card.name, "FontSize", P.NAME_SIZE)
-        safeSet(card.name, "Outline", true)
+        card.name = makeText(P.NAME_SIZE, white, false)
         local info = MONSTER_INFO[entry.name]
         safeSet(card.name, "Text", (info and info.name) or entry.name)
 
-        card.timer = makeDrawing("Text", white)
-        safeSet(card.timer, "Font", Drawing.Fonts.SystemBold)
-        safeSet(card.timer, "Size", P.TIMER_SIZE)
-        safeSet(card.timer, "FontSize", P.TIMER_SIZE)
-        safeSet(card.timer, "Outline", true)
+        card.timer = makeText(P.TIMER_SIZE, white, false)
 
         entry.card = card
     end
@@ -3178,12 +3891,7 @@ function ABILITY.drawCard(entry, index, viewport, now)
             card.x = nil
             card.visible = false
         elseif not card.missing then
-            card.missing = makeDrawing("Text", white)
-            safeSet(card.missing, "Font", Drawing.Fonts.SystemBold)
-            safeSet(card.missing, "Size", ABILITY.MISSING_SIZE)
-            safeSet(card.missing, "FontSize", ABILITY.MISSING_SIZE)
-            safeSet(card.missing, "Center", true)
-            safeSet(card.missing, "Outline", true)
+            card.missing = makeText(ABILITY.MISSING_SIZE, white)
             safeSet(card.missing, "Text", ABILITY.MISSING_TEXT)
             card.x = nil
             card.visible = false
@@ -3279,27 +3987,8 @@ function ABILITY.update()
     end
 end
 
-local PLAYERS = {
-    entries = {},
-    seen = {},
-    TEXT_SIZE = 13,
-    FOOT_DROP = 3.2,
-    LABEL_GAP = 6,
-    LOW_HEALTH = 1,
-    PRUNE_INTERVAL = 2,
-    WHITE = Color3.fromRGB(255, 255, 255),
-    LOW = Color3.fromRGB(255, 120, 120),
-    pruneAt = 0,
-}
-
 function PLAYERS.makeLine()
-    local drawing = makeDrawing("Text", PLAYERS.WHITE)
-    safeSet(drawing, "Center", true)
-    safeSet(drawing, "Outline", true)
-    safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
-    safeSet(drawing, "Size", PLAYERS.TEXT_SIZE)
-    safeSet(drawing, "FontSize", PLAYERS.TEXT_SIZE)
-    return { drawing = drawing, text = nil, low = nil, visible = false }
+    return { drawing = makeText(PLAYERS.TEXT_SIZE, PLAYERS.WHITE), text = nil, low = nil, visible = false }
 end
 
 function PLAYERS.entryFor(userId)
@@ -3357,11 +4046,21 @@ end
 function PLAYERS.drawOne(player, cameraPosition)
     local entry = PLAYERS.entryFor(player.UserId)
     local character = player.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChild("Humanoid")
-    local stats = character and character:FindFirstChild("Stats")
-    local current = stats and stats:FindFirstChild("CurrentStamina")
-    local maximum = stats and stats:FindFirstChild("Stamina")
+    if not character then
+        PLAYERS.hide(entry)
+        return
+    end
+
+    local address = character.Address
+    if entry.charAddress ~= address or not (entry.maximum and entry.root and entry.root.Parent) then
+        entry.charAddress = address
+        entry.root = character:FindFirstChild("HumanoidRootPart")
+        entry.humanoid = character:FindFirstChild("Humanoid")
+        local stats = character:FindFirstChild("Stats")
+        entry.current = stats and stats:FindFirstChild("CurrentStamina")
+        entry.maximum = stats and stats:FindFirstChild("Stamina")
+    end
+    local root, humanoid, current, maximum = entry.root, entry.humanoid, entry.current, entry.maximum
 
     if not (root and humanoid and current and maximum) then
         PLAYERS.hide(entry)
@@ -3398,8 +4097,8 @@ function PLAYERS.drawOne(player, cameraPosition)
     end
 
     if SETTINGS.showPlayerStamina then
-        local stamina = current.Value or 0
-        local text = math.floor(stamina + 0.5) .. "/" .. math.floor((maximum.Value or 0) + 0.5) .. " SP"
+        local stamina = UI.read(current) or 0
+        local text = math.floor(stamina + 0.5) .. "/" .. math.floor((UI.read(maximum) or 0) + 0.5) .. " SP"
         PLAYERS.showLine(entry.stamina, text, stamina < SETTINGS.lowStaminaThreshold, screenPosition.X, top)
     else
         PLAYERS.hideLine(entry.stamina)
@@ -3414,6 +4113,11 @@ function PLAYERS.update(now)
 
         return
     end
+
+    if now < (PLAYERS.drawAt or 0) then
+        return
+    end
+    PLAYERS.drawAt = now + SETTINGS.updateInterval
 
     local camera = Workspace.CurrentCamera
     if not camera then
@@ -3460,239 +4164,6 @@ function PLAYERS.cleanup()
         PLAYERS.entries[userId] = nil
     end
 end
-
-local FARM = {
-    entries = {},
-    prompt = nil,
-    banner = nil,
-    acknowledged = false,
-    active = false,
-    PAUSE_KEY = 0x50,
-    paused = false,
-    pauseWanted = false,
-    pauseDown = false,
-    pausedAt = 0,
-    TOGGLE_ID = "dw_farm_aggressive",
-    BANNER = {
-        TITLE_SIZE = 40,
-        BODY_SIZE = 30,
-        STATUS_SIZE = 40,
-        LINE_GAP = 8,
-        STATUS_GAP = 18,
-        LIMIT = 0.10,
-        HOLD = 30,
-        STARTUP = 15,
-    },
-    status = nil,
-    armedAt = 0,
-    forceOffUntil = 0,
-    RESUME_MAX_AGE = 300,
-    resumeWritten = false,
-    resumePending = false,
-    FORCE_OFF_WINDOW = 3,
-    RUN = {
-        PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
-        ARRIVE = 3,
-        ELEV_ARRIVE = 6,
-        LOST = 14,
-        STAND_Y = 3,
-        E_KEY = 0x45,
-        REPRESS = 3,
-        DANGER = 55,
-        DIVE_BUFFER = 8,
-        CLOSE_RADIUS = 12,
-        CLEAR_TIME = 0.4,
-        clearSince = nil,
-        SURFACE_BUFFER = 10,
-        RAY_RECHECK = 5,
-        RAY_DOWN = 50,
-        RAY_HOPS = 6,
-        rayWorks = false,
-        rayCheckAt = 0,
-        CHASER_DEFAULTS = { InstantRadius = 30, VisionRadius = 70, LineOfSight = 0.4 },
-        DEPTH = 12,
-        DIVE_SPEED = 50,
-        HIDE_MAX = 30,
-        GAIN = 5.5,
-        MAX_STEP = 40,
-        TOL = 6,
-        AIM_MAX = 2.5,
-        SACRIFICE_TOUCH = 5,
-        WANT_ITEMS = { Bandage = "farmHealItems", HealthKit = "farmHealItems", JumperCable = "farmExtractionItems" },
-        HEAL_ORDER = { "HealthKit", "Bandage" },
-        HEAL_AT = 1,
-        KEEP_ITEMS = { bandage = true, healthkit = true, jumpercable = true, valve = true, tape = true, instructions = true, extractionspeedcandy = true, bonbon = true, stopwatch = true, skillcheckcandy = true },
-        MACHINE_ORDER = { "Instructions", "ExtractionSpeedCandy", "BonBon", "Stopwatch", "SkillCheckCandy" },
-        STAMINA_ITEMS = { pop = true, popbottle = true },
-        STAMINA_RAZZLE_RANGE = 60,
-        staminaSprint = false,
-        sprinting = false,
-        SPRINT_OFF_EVERY = 0.8,
-        SHIFT_HOLD = 0.1,
-        sprintOffAt = 0,
-        shiftReleaseAt = nil,
-        CABLE_MAX_FILL = 0.67,
-        USE_COOLDOWN = 1.5,
-        KEY_HOLD = 0.12,
-        itemKey = nil,
-        itemKeyUp = 0,
-        COLLECT_ARRIVE = 2,
-        COLLECT_Y = 2.3,
-        COLLECT_RETRY = 1.5,
-        COLLECT_TRIES = 3,
-        COLLECT_GRACE = 3,
-        RESEARCH_NEAR = { WaxwellMonster = 5, ConnieMonster = 8, GlistenMonster = 8 },
-        RESEARCH_GRAB_ARRIVE = 6,
-        RESEARCH_GRAB_WAIT = 10,
-        RESEARCH_BLOT_ARRIVE = 3,
-        RESEARCH_SEEN_SCALE = 0.5,
-        RESEARCH_TRAVEL_MAX = 30,
-        RESEARCH_BLOT_ZONES = 10,
-        RODGER_LINK = 10,
-        RESEARCH_FACE_MAX = 50,
-        RESEARCH_FACE_MIN = 10,
-        RESEARCH_FACE_GAP = 3,
-        RESEARCH_FACE_ARRIVE = 4,
-        RESEARCH_FACE_REFRESH = 0.25,
-        RESEARCH_RAZZLE_ARRIVE = 15,
-        RESEARCH_RAZZLE_WAIT = 8,
-        BLOT_HAND_RANGE = 12,
-        BLOT_HAND_RECHECK = 0.25,
-        SPROUT_RANGE = 18,
-        RODGER_ACTIVE_RANGE = 34,
-        RODGER_RISE = 3,
-        SPROUT_FLEE_MARGIN = 4,
-        SPROUT_RECHECK = 0.2,
-        sproutAt = 0,
-        sprouts = {},
-        FLOOR_UP = 8,
-        FLOOR_DOWN = 40,
-        HIP_DEFAULT = 3,
-        SURFACE_TOLERANCE = 6,
-        FACE_FLOOR_TOLERANCE = 4,
-        AT_MACHINE = 6,
-        hipOffset = 3,
-        PASSIVE_RANGE = { RodgerMonster = 40 },
-        IGNORE_BODY = { BlottMonster = true },
-        researched = {},
-        researchMap = nil,
-        research = nil,
-        BUY_ORDER = { "Valve", "HealthKit", "Bandage", "JumperCable" },
-        BUY_SETTING = { Valve = "farmExtractionItems", HealthKit = "farmHealItems", Bandage = "farmHealItems", JumperCable = "farmExtractionItems" },
-        PRICES = { Valve = 150, HealthKit = 100, Bandage = 60, JumperCable = 65 },
-        BUY_ARRIVE = 4,
-        bought = {},
-        buyTapes = 0,
-        BUY_RANGE = 45,
-        roomUntil = 0,
-        targetKind = "machine",
-        collect = nil,
-        collectTries = 0,
-        useAt = 0,
-        skip = {},
-        skipMap = nil,
-        dead = false,
-        skipped = false,
-        BUTTON_WAIT = 1.5,
-        sacrificeY = 0,
-        phase = "idle",
-        at = 0,
-        current = nil,
-        goalPos = nil,
-        goalY = 0,
-        startY = 0,
-        travelStart = nil,
-        hideY = 0,
-        surfaceY = 0,
-        hideUntil = 0,
-        rmbDown = false,
-        wDown = false,
-        W_KEY = 0x57,
-        noCollide = false,
-        deathStage = 0,
-        readyStage = 0,
-        readyClicked = false,
-        readyWidth = 0,
-        readySteady = 0,
-        READY_STEADY = 0.8,
-        CARD_STEADY = 0.8,
-        HIDE_RETARGET = 1,
-        hideGoal = nil,
-        hideGoalAt = 0,
-        hideGoalRadius = 0,
-        hideGoalLabel = "",
-        elevatorHold = "armed",
-        voteStage = 0,
-        voteAt = 0,
-        voteClicked = false,
-        voteSignature = 0,
-        voteSteady = 0,
-        startLabel = nil,
-    },
-    LOBBY = {
-        THRESHOLD = 0.38,
-        ARRIVE = 5,
-        STALL_SAMPLE = 1.2,
-        STALL_DIST = 2,
-        TIMEOUT = 5,
-        RESET_WAIT = 7,
-        ENTER_TIMEOUT = 10,
-        CLICK_HOLD = 0.32,
-        POLL = 1,
-        VK = { W = 0x57, A = 0x41, S = 0x53, D = 0x44, ESC = 0x1B, R = 0x52, ENTER = 0x0D },
-        SHIFT = 0xA0,
-        SPRINT_PROBE = 0.6,
-        SPRINT_RETAP = 2,
-        sprintMode = nil,
-        sprintStage = 0,
-        sprintAt = 0,
-        sprintNextAt = 0,
-        shiftDown = false,
-        RING = { "Hub", "NE", "Right", "SE", "Center", "SW", "Left", "NW" },
-        GATES = { "Right", "Left", "Center" },
-        GATE_OF = { Right = "RightGate", Left = "LeftGate", Center = "CenterGate" },
-        NODES = {
-            Hub = Vector3.new(14.6, 23.5, -44.2),
-            NE = Vector3.new(53.9, 23.5, -57.7),
-            Right = Vector3.new(71.3, 23.5, -91.2),
-            SE = Vector3.new(56.1, 23.5, -131.5),
-            Center = Vector3.new(16.5, 23.5, -149.3),
-            SW = Vector3.new(-27.3, 23.5, -131.9),
-            Left = Vector3.new(-43.1, 23.5, -88.9),
-            NW = Vector3.new(-24.6, 23.5, -57.0),
-        },
-        edges = nil,
-        held = {},
-        phase = "idle",
-        atNode = "Hub",
-        target = nil,
-        path = nil,
-        legIndex = 1,
-        at = 0,
-        resetStage = 1,
-        lastPos = nil,
-        lastCheck = 0,
-        stallUntil = 0,
-        stallFrom = nil,
-        stallTick = -1,
-        pollAt = 0,
-    },
-    PROMPT = {
-        SIZE = Vector2.new(640, 296),
-        TITLE = "WARNING",
-        BODY = {
-            "Auto-farm is still in early access, so it may not be 100% ideal.",
-            "This was stress-tested on my alt for 7 days and didn't cause any harm.",
-            "DEVS CAN BE UNPREDICTABLE WITH THEIR UPDATES, SO STAY CAREFUL!",
-            "Tested on version ALPHA 0.28.3.",
-            "",
-            "Unsafe LuaU and Raycast (at least 1500 ms) are recommended for the best results.",
-        },
-        CHECK_LABEL = "I understand everything written above. Remember my choice.",
-    },
-}
-
-FARM.GUI = {positionOffset = 0xFC}
 
 function FARM.guiMatches(address, offset, position)
     local x, y = memory_read("float", address + offset), memory_read("float", address + offset + 4)
@@ -3800,12 +4271,7 @@ function FARM.makeBanner()
     local banner = { lines = {}, height = 0, x = 0.5, y = 0.5, moveAt = 0, keyText = nil, statusText = nil }
 
     for index, spec in ipairs(specs) do
-        local drawing = makeDrawing("Text", Color3.fromRGB(255, 255, 255))
-        safeSet(drawing, "Center", true)
-        safeSet(drawing, "Outline", true)
-        safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
-        safeSet(drawing, "Size", spec.size)
-        safeSet(drawing, "FontSize", spec.size)
+        local drawing = makeText(spec.size)
         safeSet(drawing, "ZIndex", 68)
         drawing.Text = spec.text
         banner.lines[index] = { drawing = drawing, size = spec.size, gap = spec.gap or B.LINE_GAP }
@@ -3831,7 +4297,7 @@ function FARM.pollPause()
     end
     local ok, pressed = pcall(iskeypressed, FARM.PAUSE_KEY)
     local down = ok and pressed == true and robloxFocused()
-    if down and not FARM.pauseDown then
+    if down and not FARM.pauseDown and not gameTyping() then
         FARM.pauseWanted = not FARM.pauseWanted
     end
     FARM.pauseDown = down
@@ -3852,6 +4318,9 @@ function FARM.statusText(now)
     if FARM.UNSAFE.missing then
         return "Unsafe LuaU is required."
     end
+    if not robloxFocused() then
+        return "Roblox is not focused"
+    end
 
     local elapsed = now - FARM.armedAt
     if elapsed < FARM.BANNER.STARTUP then
@@ -3861,11 +4330,13 @@ function FARM.statusText(now)
     return FARM.status or "Working"
 end
 
+function FARM.running(now)
+    return FARM.active and not FARM.paused and now - FARM.armedAt >= FARM.BANNER.STARTUP
+end
+
 function FARM.setStatus(text)
     FARM.status = text
 end
-
-FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled = false }
 
 function FARM.unsafeEnabled()
     return VantaUI.MemoryAccess(true)
@@ -3889,54 +4360,6 @@ function FARM.updateUnsafeWarning()
     end
     U.missing = active and not U.enabled
     warning:SetHidden(not U.missing)
-end
-
-FARM.MASTERY = {
-    VISIBLE = 0x59D,
-    TEXT = 0xB88,
-    STATE = 0x568,
-    QUESTS = {
-        { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
-        { "PassiveAbilityActivate", "passive", "Passive Ability", "Activate Passive Ability %s times" },
-        { "TravelDistance", true, "^Travel %d+ Meters", "Travel %s Meters" },
-        { "PickUpCapsule", true, "Research Capsules", "Pick up %s Research Capsules" },
-        { "PickUpItem", true, "^Pick up %d+ Items", "Pick up %s Items" },
-        { "UseItem", true, "^Use %d+ Items", "Use %s Items" },
-        { "UseItemSpecific", true, "^Use %d+ ", "Use %s specific items" },
-        { "SurviveFloorWithParty", false, "other Players", "Survive %s Floors with a party" },
-        { "SurviveFloorWithToon", false, "Floors with .+ in your round", "Survive %s Floors with a toon" },
-        { "SurviveFloor", true, "^Survive %d+ Floors", "Survive %s Floors" },
-        { "CompleteDuoGenerator", false, "Duo Machines", "Complete %s Duo Machines" },
-        { "CompleteFloorWithTrinket", false, "equipped", "Complete Floor %s with a trinket" },
-        { "CompleteGenerator", true, "Machines", "Finish %s Machines" },
-        { "ReachFloor", true, "^Reach Floor", "Reach Floor %s" },
-        { "BuyDandyStoreItem", true, "Elevator Shop", "Buy %s items from Dandy's Shop" },
-        { "CollectResearch", true, "Twisted Research", "Collect %s%% Twisted Research" },
-        { "EncounterMonster", true, "^Encounter", "Encounter %s Twisteds" },
-        { "BlackOut", true, "Blackouts", "Experience %s Blackouts" },
-        { "IchorSpill", true, "Ichor Spills", "Experience %s Ichor Spills" },
-        { "EatBookshelfOnCooldown", false, "Bookshelves", "Eat from %s Bookshelves" },
-        { "IcedOver", false, "Iced", "Get Iced Over %s times" },
-    },
-    SPECIFIC = { Cocoa = "BonBon", Waxwell = "Instructions" },
-    PASSIVE = { Eggson = "machines", Poppy = "damage", Looey = "damage" },
-    PASSIVE_DOABLE = { machines = true, damage = true },
-    RUN_POLL = 2,
-    TRAVEL_SPEED = 50,
-    runAt = 0,
-    runState = nil,
-    target = nil,
-    running = false,
-    done = false,
-    stop = false,
-    results = nil,
-}
-
-FARM.MASTERY.AUTO = {}
-FARM.MASTERY.LABELS = {}
-for _, quest in ipairs(FARM.MASTERY.QUESTS) do
-    FARM.MASTERY.AUTO[quest[1]] = quest[2]
-    FARM.MASTERY.LABELS[quest[1]] = quest[4]
 end
 
 function FARM.MASTERY.questType(name, text)
@@ -4010,8 +4433,8 @@ function FARM.MASTERY.itemInfo(key)
     return M.itemKeys[key]
 end
 
-function FARM.MASTERY.health(character)
-    local humanoid = character and character:FindFirstChild("Humanoid")
+function FARM.health()
+    local humanoid = UI.myPart("Humanoid")
     local ok, health, maxHealth = pcall(function()
         return humanoid.Health, humanoid.MaxHealth
     end)
@@ -4019,10 +4442,18 @@ function FARM.MASTERY.health(character)
     return nil, nil
 end
 
+function FARM.stamina()
+    local ok, current, maximum = pcall(function()
+        return UI.read(UI.myStat("CurrentStamina")), UI.read(UI.myStat("Stamina"))
+    end)
+    if ok and type(current) == "number" and type(maximum) == "number" then return current, maximum end
+    return nil, nil
+end
+
 function FARM.MASTERY.useItems(now, character)
     local M = FARM.MASTERY
     local R = FARM.RUN
-    local health, maxHealth = M.health(character)
+    local health, maxHealth = FARM.health()
     local hurt = health ~= nil and health > 0 and health < maxHealth
     local working = R.phase == "working" and R.current ~= nil and FARM.runEngagedBy(R.current) == LocalPlayer.Name
     local inventory = FARM.runInventory(character)
@@ -4059,7 +4490,7 @@ end
 
 function FARM.MASTERY.itemOnMap()
     local R = FARM.RUN
-    local map = FARM.runMap()
+    local map = UI.map()
     local folder = map and map:FindFirstChild("Items")
     for _, model in ipairs(folder and folder:GetChildren() or {}) do
         local info = ITEM_INFO[model.Name]
@@ -4075,7 +4506,7 @@ end
 function FARM.MASTERY.needHit(now, character)
     local M = FARM.MASTERY
     if not M.itemMode() or now < (M.hitBlockUntil or 0) or FARM.runHasFreeSlot(character) then return false end
-    local health, maxHealth = M.health(character)
+    local health, maxHealth = FARM.health()
     if not health or health <= 0 or health < maxHealth then return false end
     local heals = false
     for _, slot in ipairs(FARM.runInventory(character)) do
@@ -4087,7 +4518,7 @@ end
 
 function FARM.MASTERY.wanderPoint(root)
     local M = FARM.MASTERY
-    local map = FARM.runMap()
+    local map = UI.map()
     local here = root.Position
     local goal = M.wanderGoal
     if goal and M.wanderMap == map and Vector3.new(goal.X - here.X, 0, goal.Z - here.Z).Magnitude > 8 then
@@ -4129,15 +4560,10 @@ function FARM.MASTERY.shown(gui)
 end
 
 function FARM.MASTERY.text(label)
-    if not label then return "" end
-    local ok, text = pcall(function()
-        local address = label.Address + FARM.MASTERY.TEXT
-        if memory_read("int", address + 24) > 15 then
-            return memory_read("string", memory_read("uintptr_t", address))
-        end
-        return memory_read("string", address)
+    local ok, address = pcall(function()
+        return tonumber(label.Address)
     end)
-    return ok and type(text) == "string" and text or ""
+    return ok and address and STRINGS.memory(address + FARM.MASTERY.TEXT) or ""
 end
 
 function FARM.MASTERY.waitFor(check, timeout)
@@ -4248,7 +4674,7 @@ function FARM.MASTERY.closeChat()
 end
 
 function FARM.MASTERY.ui()
-    local MainGui = LocalPlayer.PlayerGui:FindFirstChild("MainGui")
+    local MainGui = UI.playerGui():FindFirstChild("MainGui")
     if not MainGui then return nil end
     local ok, ui = pcall(function()
         return {
@@ -4402,8 +4828,7 @@ function FARM.MASTERY.canDo(questType, toonName)
         return trigger ~= nil and FARM.MASTERY.PASSIVE_DOABLE[trigger] == true
     end
     if auto == "ability" then
-        local rules = FARM.MASTERY.toonRules
-        return rules ~= nil and toonName ~= nil and rules[toonName] ~= nil
+        return toonName ~= nil and TOON.RULES[toonName] ~= nil
     end
     return auto == true
 end
@@ -4487,9 +4912,7 @@ function FARM.MASTERY.scan()
     if M.stop then return end
     if chosen then
         FARM.setStatus("Selecting " .. chosen.label)
-        if M.select(ui, chosen) then
-            M.target = chosen.name
-        end
+        M.select(ui, chosen)
     else
         SETTINGS.masteryFarm = false
         pcall(UI.SetValue, "dw_mastery_farm", false)
@@ -4511,7 +4934,7 @@ function FARM.MASTERY.runUpdate()
     M.runAt = now + M.RUN_POLL
     local ok, state = pcall(function()
         local char = LocalPlayer.Character
-        local toonName = M.toonName and M.toonName(char)
+        local toonName = TOON.character(char)
         if not toonName then return nil end
         local Folder = game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Mastery:FindFirstChild(toonName)
         if not Folder then return nil end
@@ -4521,9 +4944,9 @@ function FARM.MASTERY.runUpdate()
             if Current and Amount then
                 total = total + 1
                 local questType = M.questType(Quest.Name, "")
-                if M.canDo(questType, toonName) and Current.Value < Amount.Value then
+                if M.canDo(questType, toonName) and UI.read(Current) < UI.read(Amount) then
                     types[questType] = true
-                    if questType == "ReachFloor" then reach = Amount.Value end
+                    if questType == "ReachFloor" then reach = UI.read(Amount) end
                     left = left + 1
                 end
             end
@@ -4541,8 +4964,7 @@ end
 
 function FARM.MASTERY.update()
     local M = FARM.MASTERY
-    local wanted = SETTINGS.masteryFarm and PLACE_MODE == "lobby" and FARM.active and not FARM.paused and not FARM.pauseWanted
-        and tick() - FARM.armedAt >= FARM.BANNER.STARTUP
+    local wanted = SETTINGS.masteryFarm and PLACE_MODE == "lobby" and FARM.running(tick()) and not FARM.pauseWanted
     if not wanted then
         M.done = false
         if M.running then M.stop = true end
@@ -4632,21 +5054,13 @@ function FARM.updateBanner(now)
     end
 end
 
-function FARM.resumeClock()
-    local ok, value = pcall(os.time)
-    if ok and type(value) == "number" then
-        return value
-    end
-    return tick()
-end
-
 function FARM.writeResume()
     if FARM.resumeWritten or not SETTINGS.farmAutoResume then
         return
     end
 
     SETTINGS.resumeAutoFarm = true
-    SETTINGS.resumeAutoFarmAt = FARM.resumeClock()
+    SETTINGS.resumeAutoFarmAt = UI.clock()
     saveConfig()
     FARM.resumeWritten = true
 end
@@ -4664,7 +5078,7 @@ end
 
 function FARM.consumeResume()
     local armed = SETTINGS.resumeAutoFarm == true
-    local age = FARM.resumeClock() - (SETTINGS.resumeAutoFarmAt or 0)
+    local age = UI.clock() - (SETTINGS.resumeAutoFarmAt or 0)
 
     if armed then
         SETTINGS.resumeAutoFarm = false
@@ -4681,9 +5095,7 @@ function FARM.update(now)
 
         if SETTINGS.farmAutoResume and SETTINGS.farmWarningAccepted and PLACE_MODE ~= "other" then
             SETTINGS.aggressiveAutoFarm = true
-            if UI then
-                pcall(UI.SetValue, FARM.TOGGLE_ID, true)
-            end
+            pcall(UI.SetValue, FARM.TOGGLE_ID, true)
             if type(notify) == "function" then
                 pcall(notify, "Dandy's World", "Auto-farm resumed after teleport", 3)
             end
@@ -4696,10 +5108,7 @@ function FARM.update(now)
     if now < FARM.forceOffUntil then
         if SETTINGS.aggressiveAutoFarm then
             SETTINGS.aggressiveAutoFarm = false
-
-            if UI then
-                pcall(UI.SetValue, FARM.TOGGLE_ID, false)
-            end
+            pcall(UI.SetValue, FARM.TOGGLE_ID, false)
         end
 
         FARM.acknowledged = false
@@ -4747,7 +5156,7 @@ function FARM.update(now)
 
         FARM.updateBanner(now)
 
-        if not FARM.paused and now - FARM.armedAt >= FARM.BANNER.STARTUP then
+        if FARM.running(now) then
             if PLACE_MODE == "lobby" and (FARM.MASTERY.running or (SETTINGS.masteryFarm and FARM.UNSAFE.enabled and not FARM.MASTERY.done)) then
                 FARM.lobbyStop()
             elseif PLACE_MODE == "lobby" then
@@ -4848,7 +5257,7 @@ function FARM.shortest(from, to)
 end
 
 function FARM.gateLabel(gateName, which)
-    local folder = Workspace:FindFirstChild("Elevators")
+    local folder = UI.elevators()
     local gate = folder and folder:FindFirstChild(gateName)
     local billboard = gate and gate:FindFirstChild("billboardPart")
     local gui = billboard and billboard:FindFirstChild("billboardGui")
@@ -4875,17 +5284,16 @@ function FARM.gateCount(gateName)
 end
 
 function FARM.gateOpen(gateName)
-    local folder = Workspace:FindFirstChild("Elevators")
+    local folder = UI.elevators()
     local gate = folder and folder:FindFirstChild(gateName)
     local elevator = gate and gate:FindFirstChild("Elevator")
     local opened = elevator and elevator:FindFirstChild("Opened")
-    return (opened and opened.Value) or false
+    return (opened and UI.read(opened)) or false
 end
 
 function FARM.gateInside(gateName)
-    local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    local folder = Workspace:FindFirstChild("Elevators")
+    local root = UI.myPart("HumanoidRootPart")
+    local folder = UI.elevators()
     local gate = folder and folder:FindFirstChild(gateName)
     local elevator = gate and gate:FindFirstChild("Elevator")
     local base = elevator and elevator:FindFirstChild("Base")
@@ -4914,29 +5322,11 @@ function FARM.pickGate(from)
     return best
 end
 
-function FARM.setKey(code, want)
-    local held = FARM.LOBBY.held
-    if want and not held[code] then
-        held[code] = true
-        pcall(keypress, code)
-    elseif not want and held[code] then
-        held[code] = nil
-        pcall(keyrelease, code)
-    end
-end
-
 function FARM.releaseKeys()
-    local held = FARM.LOBBY.held
-    for code in pairs(held) do
-        held[code] = nil
-        pcall(keyrelease, code)
+    local VK = FARM.LOBBY.VK
+    for _, code in ipairs({VK.W, VK.A, VK.S, VK.D}) do
+        KEYS.set(code, false)
     end
-end
-
-function FARM.tapKey(code)
-    if gameTyping() then return end
-    pcall(keypress, code)
-    pcall(keyrelease, code)
 end
 
 function FARM.steer(root, camera, targetPosition)
@@ -4960,10 +5350,10 @@ function FARM.steer(root, camera, targetPosition)
     local forward = direction.X * lookFlat.X + direction.Z * lookFlat.Z
     local side = direction.X * right.X + direction.Z * right.Z
 
-    FARM.setKey(L.VK.W, forward > L.THRESHOLD)
-    FARM.setKey(L.VK.S, forward < -L.THRESHOLD)
-    FARM.setKey(L.VK.D, side > L.THRESHOLD)
-    FARM.setKey(L.VK.A, side < -L.THRESHOLD)
+    KEYS.set(L.VK.W, forward > L.THRESHOLD)
+    KEYS.set(L.VK.S, forward < -L.THRESHOLD)
+    KEYS.set(L.VK.D, side > L.THRESHOLD)
+    KEYS.set(L.VK.A, side < -L.THRESHOLD)
     return distance
 end
 
@@ -4987,38 +5377,14 @@ function FARM.lobbyGoHub()
     L.phase = "walk"
 end
 
-function FARM.setShift(down)
-    local L = FARM.LOBBY
-    if down == L.shiftDown then
-        return
-    end
-
-    L.shiftDown = down
-    if down then
-        if gameTyping() then
-            L.shiftDown = false
-            return
-        end
-        pcall(keypress, L.SHIFT)
-    else
-        pcall(keyrelease, L.SHIFT)
-    end
-end
-
 function FARM.isSprinting()
-    local character = LocalPlayer.Character
-    local stats = character and character:FindFirstChild("Stats")
-    if not stats then
-        return false
-    end
-
-    local flag = stats:FindFirstChild("HoldingSprint") or stats:FindFirstChild("Sprinting")
+    local flag = UI.myStat("HoldingSprint") or UI.myStat("Sprinting")
     if not flag then
         return false
     end
 
     local ok, value = pcall(function()
-        return flag.Value
+        return UI.read(flag)
     end)
 
     return ok and value == true
@@ -5026,7 +5392,7 @@ end
 
 function FARM.sprintSetting()
     local ok, value = pcall(function()
-        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].SprintToggle.Value
+        return UI.read(game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].SprintToggle)
     end)
     if ok and type(value) == "boolean" then
         return value and "toggle" or "hold"
@@ -5042,7 +5408,7 @@ function FARM.sprintUpdate(now, want)
 
     if not want then
         if L.sprintMode == "hold" then
-            FARM.setShift(false)
+            KEYS.set(FARM.LOBBY.SHIFT, false)
         end
         return
     end
@@ -5053,11 +5419,11 @@ function FARM.sprintUpdate(now, want)
                 return
             end
 
-            FARM.setShift(true)
+            KEYS.set(FARM.LOBBY.SHIFT, true)
             L.sprintStage = 1
             L.sprintAt = now + L.SPRINT_PROBE
         elseif L.sprintStage == 1 and now >= L.sprintAt then
-            FARM.setShift(false)
+            KEYS.set(FARM.LOBBY.SHIFT, false)
             L.sprintStage = 2
             L.sprintAt = now + L.SPRINT_PROBE
         elseif L.sprintStage == 2 and now >= L.sprintAt then
@@ -5069,13 +5435,13 @@ function FARM.sprintUpdate(now, want)
     end
 
     if L.sprintMode == "hold" then
-        FARM.setShift(true)
+        KEYS.set(FARM.LOBBY.SHIFT, true)
         return
     end
 
     if not FARM.isSprinting() and now >= L.sprintNextAt then
         L.sprintNextAt = now + L.SPRINT_RETAP
-        FARM.tapKey(L.SHIFT)
+        KEYS.tap(L.SHIFT)
     end
 end
 
@@ -5101,7 +5467,7 @@ function FARM.lobbyNext()
     L.phase = "walk"
 end
 
-function FARM.lobbyReset(reason)
+function FARM.lobbyReset()
     local L = FARM.LOBBY
     FARM.releaseKeys()
     L.phase = "reset"
@@ -5141,7 +5507,7 @@ function FARM.moveGuard(root, now, restore)
         if now >= L.stallUntil then
             L.stallFrom = nil
             L.stallTick = -1
-            FARM.lobbyReset("stall")
+            FARM.lobbyReset()
             return true
         end
 
@@ -5162,21 +5528,6 @@ function FARM.moveGuard(root, now, restore)
     return false
 end
 
-function FARM.lobbyClickLeave()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local main = gui and gui:FindFirstChild("MainGui")
-    local button = main and main:FindFirstChild("leaveButton")
-    if not button then
-        return false
-    end
-
-    local p, s = button.AbsolutePosition, FARM.guiSize(button)
-    pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
-    pcall(mousemoverel, 3, 3)
-    pcall(mousemoverel, -3, -3)
-    return true
-end
-
 function FARM.lobbyRespawned(character, root)
     local L = FARM.LOBBY
     if not (character and root and L.resetFrom) then return false end
@@ -5189,14 +5540,14 @@ end
 function FARM.lobbyUpdate(now)
     local L = FARM.LOBBY
 
-    if not Workspace:FindFirstChild("Elevators") then
+    if not UI.elevators() then
         FARM.releaseKeys()
         FARM.setStatus("Not in the lobby")
         return
     end
 
     local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local root = character and UI.myPart("HumanoidRootPart")
     local camera = Workspace.CurrentCamera
 
     if L.phase == "idle" then
@@ -5211,16 +5562,17 @@ function FARM.lobbyUpdate(now)
         FARM.releaseKeys()
         if L.resetStage == 1 then
             FARM.setStatus("Resetting")
-            FARM.tapKey(L.VK.ESC)
-            L.resetStage = 2
-            L.at = now + 0.4
+            if KEYS.tap(L.VK.ESC) then
+                L.resetStage = 2
+                L.at = now + 0.4
+            end
         elseif L.resetStage == 2 and now >= L.at then
-            FARM.tapKey(L.VK.R)
-            L.resetStage = 3
-            L.at = now + 0.4
-        elseif L.resetStage == 3 and now >= L.at then
+            if KEYS.tap(L.VK.R) then
+                L.resetStage = 3
+                L.at = now + 0.4
+            end
+        elseif L.resetStage == 3 and now >= L.at and KEYS.tap(L.VK.ENTER) then
             L.resetFrom = character and getIdentity(character)
-            FARM.tapKey(L.VK.ENTER)
             L.phase = "spawnLeg"
             L.at = now + L.RESET_WAIT
             L.atNode = "Hub"
@@ -5338,7 +5690,7 @@ function FARM.lobbyUpdate(now)
             return
         end
 
-        local folder = Workspace:FindFirstChild("Elevators")
+        local folder = UI.elevators()
         local gate = folder and folder:FindFirstChild(gateName)
         local spawnPart = gate and gate:FindFirstChild("spawn")
         if spawnPart then
@@ -5367,8 +5719,9 @@ function FARM.lobbyUpdate(now)
 
         if count > 1 then
             FARM.clearResume()
-            L.phase = "leaveAim"
+            L.phase = "leave"
             L.at = now
+            L.leaveClick.stage = 0
             FARM.setStatus("Leaving, someone joined")
         elseif count == 0 and not FARM.gateInside(gateName) then
             FARM.lobbyNext()
@@ -5376,36 +5729,30 @@ function FARM.lobbyUpdate(now)
         return
     end
 
-    if L.phase == "leaveAim" and now >= L.at then
-        if FARM.lobbyClickLeave() then
-            L.phase = "leaveDown"
-            L.at = now + 0.1
-        else
+    if L.phase == "leave" and now >= L.at then
+        local gui = UI.playerGui()
+        local main = gui and gui:FindFirstChild("MainGui")
+        local button = main and main:FindFirstChild("leaveButton")
+        if not button then
+            L.leaveClick.stage = 0
             FARM.lobbyGoHub()
+            return
         end
-    elseif L.phase == "leaveDown" and now >= L.at then
-        pcall(mouse1press)
-        L.phase = "leaveUp"
-        L.at = now + L.CLICK_HOLD
-    elseif L.phase == "leaveUp" and now >= L.at then
-        pcall(mouse1release)
-        L.phase = "leaveCheck"
-        L.at = now + 1.2
-    elseif L.phase == "leaveCheck" and now >= L.at then
-        local gateName = L.GATE_OF[L.target]
-        if FARM.gateCount(gateName) == 0 or not FARM.gateInside(gateName) then
-            L.atNode = L.target
-            FARM.lobbyNext()
-        else
-            L.phase = "leaveAim"
-            L.at = now + 0.3
+        if FARM.clickStep(L.leaveClick, now, button, 1.2, 0.1, L.CLICK_HOLD) then
+            local gateName = L.GATE_OF[L.target]
+            if FARM.gateCount(gateName) == 0 or not FARM.gateInside(gateName) then
+                L.atNode = L.target
+                FARM.lobbyNext()
+            else
+                L.at = now + 0.3
+            end
         end
     end
 end
 
 function FARM.lobbyStop()
     local L = FARM.LOBBY
-    FARM.setShift(false)
+    KEYS.set(FARM.LOBBY.SHIFT, false)
     FARM.releaseKeys()
     L.phase = "idle"
     L.stallFrom = nil
@@ -5419,52 +5766,38 @@ function FARM.runRmb(down)
         return
     end
 
-    R.rmbDown = down
     if down then
-        pcall(mouse2press)
+        if KEYS.mouse(mouse2press) then R.rmbDown = true end
     else
+        R.rmbDown = false
         pcall(mouse2release)
     end
 end
 
 function FARM.runHoldW(down)
     local R = FARM.RUN
-    if down and R.wDown and type(iskeypressed) == "function" then
+    if down and KEYS.Held[R.W_KEY] and type(iskeypressed) == "function" then
         local ok, pressed = pcall(iskeypressed, R.W_KEY)
         local now = tick()
-        if ok and pressed == false and now >= (R.wRepressAt or 0) and not gameTyping() then
+        if ok and pressed == false and now >= (R.wRepressAt or 0) and KEYS.allowed() then
             R.wRepressAt = now + 0.2
             pcall(keypress, R.W_KEY)
         end
         return
     end
 
-    if down == R.wDown then
-        return
-    end
-
-    R.wDown = down
-    if down then
-        if gameTyping() then
-            R.wDown = false
-            return
-        end
-        pcall(keypress, R.W_KEY)
-    else
-        pcall(keyrelease, R.W_KEY)
-    end
+    KEYS.set(R.W_KEY, down)
 end
 
 function FARM.runCollide(on)
     local R = FARM.RUN
-    local character = LocalPlayer.Character
-    if not character then
+    if not UI.me() then
         return
     end
 
     R.noCollide = not on
     for _, name in ipairs({ "HumanoidRootPart", "Torso" }) do
-        local part = character:FindFirstChild(name)
+        local part = UI.myPart(name)
         if part then
             pcall(function()
                 part.CanCollide = on
@@ -5474,8 +5807,17 @@ function FARM.runCollide(on)
 end
 
 function FARM.runFreeze(root)
+    local R = FARM.RUN
+    local now = tick()
+    if now < (R.freezeAt or 0) then
+        return
+    end
     pcall(function()
-        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        local v = root.AssemblyLinearVelocity
+        if math.abs(v.X) + math.abs(v.Y) + math.abs(v.Z) > 0.05 then
+            R.freezeAt = now + R.FREEZE_EVERY
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end
     end)
 end
 
@@ -5511,15 +5853,15 @@ function FARM.runFace(camera, root, goal)
     end
 
     FARM.runRmb(true)
-    pcall(mousemoverel, math.floor(math.clamp(err * R.GAIN, -R.MAX_STEP, R.MAX_STEP)), 0)
+    KEYS.mouse(mousemoverel, math.floor(math.clamp(err * R.GAIN, -R.MAX_STEP, R.MAX_STEP)), 0)
     return false, err
 end
 
 function FARM.currentFloor()
-    local info = Workspace:FindFirstChild("Info")
+    local info = UI.info()
     local value = info and info:FindFirstChild("Floor")
     local ok, floor = pcall(function()
-        return value.Value
+        return UI.read(value)
     end)
 
     return (ok and floor) or 0
@@ -5551,13 +5893,18 @@ function FARM.floorLimitHit()
     return floor > 0 and floor >= SETTINGS.floorLimit
 end
 
-function FARM.runMap()
-    local room = Workspace:FindFirstChild("CurrentRoom")
-    return room and room:GetChildren()[1]
+function FARM.runMachines()
+    local map = UI.map()
+    local now = tick()
+    local address = map and tostring(map.Address)
+    local Cache = FARM.MACHINES
+    if Cache and Cache.Address == address and now < Cache.At then return Cache.List end
+    local out = FARM.runMachinesRead(map)
+    FARM.MACHINES = {Address = address, At = now + 3, List = out}
+    return out
 end
 
-function FARM.runMachines()
-    local map = FARM.runMap()
+function FARM.runMachinesRead(map)
     local gens = map and map:FindFirstChild("Generators")
     local out = {}
     if not gens then
@@ -5614,31 +5961,32 @@ end
 
 function FARM.runFill(machine)
     local okCur, cur = pcall(function()
-        return machine.cur.Value
+        return UI.read(machine.cur)
     end)
     local okReq, req = pcall(function()
-        return machine.req.Value
+        return UI.read(machine.req)
     end)
-    return (okCur and cur) or 0, (okReq and req) or 1
+    if not (okCur and okReq and UI.fill(cur, req)) then return 0, 1, false end
+    return cur, req, true
 end
 
 function FARM.runConnie(machine)
     local ok, value = pcall(function()
-        return machine.connie.Value
+        return UI.read(machine.connie)
     end)
     return ok and value == true
 end
 
 function FARM.runDone(machine)
     local ok, value = pcall(function()
-        return machine.done.Value
+        return UI.read(machine.done)
     end)
     if ok and type(value) == "boolean" then
         return value
     end
 
-    local cur, req = FARM.runFill(machine)
-    return cur >= req
+    local cur, req, valid = FARM.runFill(machine)
+    return valid and cur >= req
 end
 
 function FARM.runEngagedBy(machine)
@@ -5658,43 +6006,44 @@ function FARM.runItemKey(value)
     return string.lower((string.gsub(tostring(value or ""), "[^%w]", "")))
 end
 
-function FARM.runStringValue(instance)
-    return STRINGS.read(instance)
-end
-
 function FARM.runInventory(character)
-    local folder = character:FindFirstChild("Inventory")
+    local Last = UI.Me
+    if Last and Last.InventoryFrame == UI.Frame and Last.InventoryFor == character then return Last.Inventory end
+    local Me = UI.me()
+    local mine = Me ~= nil and Me.Address == character.Address
+    if mine and Me.InventoryFrame == UI.Frame then return Me.Inventory end
+    local folder = mine and UI.myPart("Inventory") or character:FindFirstChild("Inventory")
     local slots = {}
-    if not folder then
-        return slots
-    end
-
-    for _, child in ipairs(folder:GetChildren()) do
-        local index = tonumber(string.match(child.Name, "^Slot(%d+)$"))
-        if index then
-            slots[#slots + 1] = { index = index, item = FARM.runStringValue(child) }
+    if folder then
+        for _, child in ipairs(folder:GetChildren()) do
+            local index = tonumber(string.match(child.Name, "^Slot(%d+)$"))
+            if index then
+                slots[#slots + 1] = { index = index, item = STRINGS.read(child) }
+            end
         end
     end
-
+    if mine then
+        Me.InventoryFrame = UI.Frame
+        Me.InventoryFor = character
+        Me.Inventory = slots
+    end
     return slots
 end
 
 function FARM.runPressItem(now, slot)
     local R = FARM.RUN
-    if R.itemKey or not slot then
+    if not slot or (R.itemKey and KEYS.Held[R.itemKey]) then
         return
     end
 
     R.itemKey = 0x30 + slot
-    R.itemKeyUp = now + R.KEY_HOLD
-    pcall(keypress, R.itemKey)
+    KEYS.hold(R.itemKey, R.KEY_HOLD)
 end
 
 function FARM.runReleaseItemKey(now, force)
     local R = FARM.RUN
-    if R.itemKey and (force or now >= R.itemKeyUp) then
-        pcall(keyrelease, R.itemKey)
-        R.itemKey = nil
+    if R.itemKey and force then
+        KEYS.set(R.itemKey, false)
     end
 end
 
@@ -5723,22 +6072,22 @@ function FARM.runSpotKey(position)
 end
 
 function FARM.runTapes()
-    local info = Workspace:FindFirstChild("Info")
+    local info = UI.info()
     local stats = info and info:FindFirstChild("PlayerStats")
     local mine = stats and stats:FindFirstChild(LocalPlayer.Name)
     local points = mine and mine:FindFirstChild("SurvivalPoints")
     local ok, value = pcall(function()
-        return points.Value
+        return UI.read(points)
     end)
     return (ok and type(value) == "number") and value or 0
 end
 
 function FARM.runStoreDiscount()
-    local info = Workspace:FindFirstChild("Info")
+    local info = UI.info()
     local modifiers = info and info:FindFirstChild("CardModifiers")
     local card = modifiers and modifiers:FindFirstChild("DandyDiscount")
     local ok, value = pcall(function()
-        return card.Value
+        return UI.read(card)
     end)
     if ok and type(value) == "number" and value > 0 and value < 1 then
         return value
@@ -5747,7 +6096,7 @@ function FARM.runStoreDiscount()
 end
 
 function FARM.runPromptShows(name)
-    local Gui = LocalPlayer.PlayerGui:FindFirstChild("ProximityPrompts")
+    local Gui = UI.playerGui():FindFirstChild("ProximityPrompts")
     if not Gui then return nil end
     local info = ITEM_INFO[name]
     local wanted = { FARM.runItemKey(name), info and FARM.runItemKey(info.name) or nil }
@@ -5771,13 +6120,9 @@ end
 
 function FARM.runStoreTarget(root, character)
     local R = FARM.RUN
-    local info = Workspace:FindFirstChild("Info")
-    local open = info and info:FindFirstChild("DandyStoreOpen")
-    local okOpen, isOpen = pcall(function()
-        return open.Value
-    end)
+    local isOpen = UI.infoValue("DandyStoreOpen", 0.1)
 
-    if not okOpen or isOpen ~= true then
+    if isOpen ~= true then
         R.bought = {}
         return nil
     end
@@ -5789,7 +6134,7 @@ function FARM.runStoreTarget(root, character)
     local masteryBuy = FARM.MASTERY.wants("BuyDandyStoreItem")
     local specific = FARM.MASTERY.specificItem()
 
-    local folder = Workspace:FindFirstChild("Elevators")
+    local folder = UI.elevators()
     local elevator = folder and folder:FindFirstChild("Elevator")
     local store = elevator and elevator:FindFirstChild("DandyStore")
     if not store then
@@ -5855,7 +6200,7 @@ end
 
 function FARM.runMapItems()
     local R = FARM.RUN
-    local map = FARM.runMap()
+    local map = UI.map()
     local folder = map and map:FindFirstChild("Items")
     local found = {}
     if not folder then
@@ -5883,12 +6228,9 @@ function FARM.runMakeRoom(now, character)
         return false
     end
 
-    local humanoid = character:FindFirstChild("Humanoid")
-    local ok, health, maxHealth = pcall(function()
-        return humanoid.Health, humanoid.MaxHealth
-    end)
+    local health, maxHealth = FARM.health()
 
-    if not ok or type(health) ~= "number" or type(maxHealth) ~= "number" or health <= 0 or health >= maxHealth then
+    if not health or health <= 0 or health >= maxHealth then
         return false
     end
 
@@ -5913,15 +6255,17 @@ end
 
 function FARM.runCollectTarget(root, character, itemsOnly)
     local R = FARM.RUN
-    local map = FARM.runMap()
+    local map = UI.map()
     local folder = map and map:FindFirstChild("Items")
     if not folder then
         return nil
     end
 
-    if R.skipMap ~= map.Name then
-        R.skipMap = map.Name
+    local mapKey = tostring(map.Address)
+    if R.skipMap ~= mapKey then
+        R.skipMap = mapKey
         R.skip = {}
+        R.capsuleNames = {}
     end
 
     local canCarry = FARM.runHasFreeSlot(character)
@@ -5942,7 +6286,7 @@ function FARM.runCollectTarget(root, character, itemsOnly)
             kind = "item"
         elseif masteryTapes and model.Name == "Tape" then
             kind = "item"
-        elseif model.Name == "ResearchCapsule" and (SETTINGS.farmCapsules or masteryCapsules) and not itemsOnly then
+        elseif model.Name == "ResearchCapsule" and not itemsOnly and (SETTINGS.farmCapsules or masteryCapsules or (SETTINGS.farmCapsulesResearch and FARM.capsuleForResearch(model))) then
             kind = "capsule"
         end
 
@@ -5984,12 +6328,9 @@ function FARM.runUseItems(now, character)
         return
     end
 
-    local humanoid = character:FindFirstChild("Humanoid")
-    local okHealth, health = pcall(function()
-        return humanoid.Health
-    end)
+    local health = FARM.health()
 
-    if SETTINGS.farmHealItems and okHealth and type(health) == "number" and health > 0 and health <= R.HEAL_AT then
+    if SETTINGS.farmHealItems and health and health > 0 and health <= R.HEAL_AT then
         for _, name in ipairs(R.HEAL_ORDER) do
             local slot = FARM.runSlotOf(character, name)
             if slot then
@@ -6002,16 +6343,16 @@ function FARM.runUseItems(now, character)
     end
 
     if SETTINGS.farmExtractionItems and R.phase == "working" and R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
-        local cur, req = FARM.runFill(R.current)
+        local cur, req, valid = FARM.runFill(R.current)
         local valve = FARM.runSlotOf(character, "Valve")
-        if valve and req > 0 and cur < req then
+        if valve and valid and cur < req then
             FARM.runPressItem(now, valve)
             R.useAt = now + R.USE_COOLDOWN
             FARM.setStatus("Using Valve")
             return
         end
 
-        if req > 0 and cur / req <= R.CABLE_MAX_FILL then
+        if valid and cur / req <= R.CABLE_MAX_FILL then
             local slot = FARM.runSlotOf(character, "JumperCable")
             if slot then
                 FARM.runPressItem(now, slot)
@@ -6049,57 +6390,51 @@ function FARM.runUseItems(now, character)
 end
 
 function FARM.runStaminaFull(character)
-    local ok, current, maximum = pcall(function()
-        local stats = character.Stats
-        return stats.CurrentStamina.Value, stats.Stamina.Value
-    end)
-    return ok and type(current) == "number" and type(maximum) == "number" and current >= maximum
+    local current, maximum = FARM.stamina()
+    return current ~= nil and current >= maximum
 end
 
 function FARM.runNearRazzle(root)
     local R = FARM.RUN
-    local map = FARM.runMap()
-    local monsters = map and map:FindFirstChild("Monsters")
-    local razzle = monsters and monsters:FindFirstChild("RazzleDazzleMonster")
-    if not razzle then
+    if not UI.roster().Names.RazzleDazzleMonster then
         return false
     end
-    local part = razzle:FindFirstChild("RootPart") or razzle:FindFirstChild("HumanoidRootPart") or razzle.PrimaryPart
+    local map = UI.map()
+    local monsters = map and map:FindFirstChild("Monsters")
+    local razzle = monsters and monsters:FindFirstChild("RazzleDazzleMonster")
+    local T = razzle and FARM.twisted(razzle)
+    if not T then
+        return false
+    end
+    local part = T.Part
     local ok, position = pcall(function()
         return part.Position
     end)
     return not ok or not position or Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Magnitude <= R.STAMINA_RAZZLE_RANGE
 end
 
-FARM.TREADMILL_RECOVER = 30
-
 function FARM.runOnTreadmill(machine)
-    local ok, kind = pcall(function()
-        return machine.model:GetAttribute("MinigameType")
-    end)
-    return ok and kind == "MovementTreadmill"
+    if machine.minigame == nil then
+        local ok, kind = pcall(function()
+            return machine.model:GetAttribute("MinigameType")
+        end)
+        machine.minigame = ok and kind or false
+    end
+    return machine.minigame == "MovementTreadmill"
 end
 
 function FARM.runStaminaSprint(now, root)
     local R = FARM.RUN
     local L = FARM.LOBBY
-    if R.shiftReleaseAt and now >= R.shiftReleaseAt then
-        R.shiftReleaseAt = nil
-        pcall(keyrelease, L.SHIFT)
-    end
 
     local moving = R.phase == "tween" or R.phase == "toElevator" or (R.phase == "research" and R.research and R.research.kind ~= "razzle" and not R.researchArrived)
     if R.phase == "research" and R.research and R.research.kind == "razzle" then
-        R.sprinting = false
         return
     end
 
     if R.phase == "working" and R.current and SETTINGS.farmTreadmillRun and FARM.runOnTreadmill(R.current) then
-        local ok, stamina, maximum = pcall(function()
-            local stats = LocalPlayer.Character.Stats
-            return stats.CurrentStamina.Value, stats.Stamina.Value
-        end)
-        if ok and type(stamina) == "number" and type(maximum) == "number" then
+        local stamina, maximum = FARM.stamina()
+        if stamina then
             if stamina <= SETTINGS.farmTreadmillStopAt then
                 R.treadmillResting = true
             elseif stamina >= math.min(SETTINGS.farmTreadmillStopAt + FARM.TREADMILL_RECOVER, maximum) then
@@ -6107,7 +6442,6 @@ function FARM.runStaminaSprint(now, root)
             end
         end
         if not R.treadmillResting then
-            R.sprinting = true
             FARM.sprintUpdate(now, true)
             return
         end
@@ -6116,14 +6450,12 @@ function FARM.runStaminaSprint(now, root)
     end
 
     if R.staminaSprint and moving and not FARM.runNearRazzle(root) then
-        R.sprinting = true
         FARM.sprintUpdate(now, true)
         return
     end
 
-    R.sprinting = false
-    if L.shiftDown then
-        FARM.setShift(false)
+    if KEYS.Held[L.SHIFT] then
+        KEYS.set(FARM.LOBBY.SHIFT, false)
         return
     end
 
@@ -6131,44 +6463,44 @@ function FARM.runStaminaSprint(now, root)
         L.sprintMode = FARM.sprintSetting()
     end
 
-    if L.sprintMode == "toggle" and not R.shiftReleaseAt and now >= R.sprintOffAt and FARM.isSprinting() then
+    if L.sprintMode == "toggle" and not KEYS.Timed[L.SHIFT] and now >= R.sprintOffAt and FARM.isSprinting() then
         R.sprintOffAt = now + R.SPRINT_OFF_EVERY
-        pcall(keypress, L.SHIFT)
-        R.shiftReleaseAt = now + R.SHIFT_HOLD
+        KEYS.hold(L.SHIFT, R.SHIFT_HOLD)
     end
 end
 
 function FARM.runElevatorBase()
-    local folder = Workspace:FindFirstChild("Elevators")
-    local elevator = folder and folder:FindFirstChild("Elevator")
-    if not elevator then
-        return nil
-    end
-
-    for _, child in ipairs(elevator:GetChildren()) do
-        if child.Name == "Base" and (child.ClassName == "Part" or child.ClassName == "MeshPart") then
-            return child
+    return UI.find("ElevatorBase", function()
+        local folder = UI.elevators()
+        local elevator = folder and folder:FindFirstChild("Elevator")
+        if not elevator then
+            return nil
         end
-    end
 
-    return elevator:FindFirstChild("SpawnZones")
+        for _, child in ipairs(elevator:GetChildren()) do
+            if child.Name == "Base" and (child.ClassName == "Part" or child.ClassName == "MeshPart") then
+                return child
+            end
+        end
+
+        return elevator:FindFirstChild("SpawnZones")
+    end)
 end
 
 function FARM.runElevatorState(character, root)
-    local folder = Workspace:FindFirstChild("Elevators")
+    local folder = UI.elevators()
     local elevator = folder and folder:FindFirstChild("Elevator")
     local opened = elevator and elevator:FindFirstChild("Opened")
     local okOpen, isOpen = pcall(function()
-        return opened.Value
+        return UI.read(opened)
     end)
     if not okOpen or type(isOpen) ~= "boolean" then
         isOpen = nil
     end
 
-    local stats = character:FindFirstChild("Stats")
-    local flag = stats and stats:FindFirstChild("InElevator")
+    local flag = UI.myStat("InElevator")
     local okFlag, flagged = pcall(function()
-        return flag.Value
+        return UI.read(flag)
     end)
 
     if okFlag and flagged == true then
@@ -6191,7 +6523,7 @@ end
 function FARM.runSafeInElevator(character)
     local R = FARM.RUN
     local ok, flagged = pcall(function()
-        return character.Stats.InElevator.Value
+        return character and UI.read(UI.myStat("InElevator"))
     end)
     if ok and flagged == true then
         return true
@@ -6203,12 +6535,16 @@ function FARM.runPassive(monster)
     if FARM.RUN.PASSIVE[monster.Name] then
         return true
     end
-    return monster.Name == "GlistenMonster" and monster:GetAttribute("GlistenActivated") ~= true
+    if monster.Name ~= "GlistenMonster" then
+        return false
+    end
+    local T = FARM.twisted(monster)
+    return T ~= nil and FARM.twistedAttr(T, "GlistenActivated") ~= true
 end
 
 function FARM.runThreat(root, ignore)
     local R = FARM.RUN
-    local map = FARM.runMap()
+    local map = UI.map()
     local monsters = map and map:FindFirstChild("Monsters")
     if not monsters then
         return 9999, false
@@ -6221,8 +6557,11 @@ function FARM.runThreat(root, ignore)
     local walls = FARM.runRayWorks(root, underground)
     local generators = map:FindFirstChild("Generators")
 
+    local myName = LocalPlayer.Name
+    local research = SETTINGS.farmResearchTwisteds or FARM.MASTERY.researchMode()
     for _, monster in ipairs(monsters:GetChildren()) do
-        local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+        local T = FARM.twisted(monster)
+        local part = T and T.Part
         local ok, position = pcall(function()
             return part.Position
         end)
@@ -6231,10 +6570,14 @@ function FARM.runThreat(root, ignore)
             ok = false
         end
 
-        if ok and position and FARM.runSawYou(monster) then
+        if ok and position and research then
             local key = FARM.runKey(monster)
-            if key and not (R.phase == "research" and key == ignore) then
-                R.researched[key] = true
+            local now = tick()
+            if key and not R.researched[key] and (now >= (T.SawAt or 0) or (position - root.Position).Magnitude < R.DANGER) then
+                T.SawAt = now + 0.25
+                if FARM.runSawYou(monster) and not (R.phase == "research" and key == ignore) then
+                    R.researched[key] = true
+                end
             end
         end
 
@@ -6279,38 +6622,17 @@ function FARM.runThreat(root, ignore)
                 end
             end
 
-            if UI.valuePlayer(monster:FindFirstChild("ChasingValue")) == LocalPlayer.Name then
+            if not chasing and FARM.twistedTarget(T) == myName then
                 chasing = true
             end
 
-            if passive then
-                local okAwake, awake = pcall(function()
-                    return monster:GetAttribute("Attacking")
-                end)
-                if okAwake and awake == true then
+            if chasing then
+            elseif passive then
+                if FARM.twistedAttr(T, "Attacking") == true then
                     chasing = true
                 end
-            elseif distance < R.DANGER then
-                local okState, state = pcall(function()
-                    return monster:GetAttribute("ChaseState")
-                end)
-                if okState and (state == "run" or state == "attack") then
-                    chasing = true
-                end
-
-                local okAttack, attacking = pcall(function()
-                    return monster:GetAttribute("Attacking")
-                end)
-                if okAttack and attacking == true then
-                    chasing = true
-                end
-
-                local okChase, hunting = pcall(function()
-                    return monster:GetAttribute("Chasing")
-                end)
-                if okChase and hunting == true then
-                    chasing = true
-                end
+            elseif distance < R.DANGER and FARM.twistedChasing(T) then
+                chasing = true
             end
 
             if distance < nearest and not passive then
@@ -6342,47 +6664,45 @@ function FARM.runIsInside(instance, folder)
         return false
     end
     local ok, result = pcall(function()
-        local target = folder.Address
-        local current = instance
-        for _ = 1, 10 do
-            if not current then
-                return false
-            end
-            if current.Address == target then
-                return true
-            end
-            current = current.Parent
-        end
-        return false
+        return instance:IsDescendantOf(folder) or instance.Address == folder.Address
     end)
     return ok and result == true
 end
 
-function FARM.runRayBlocked(from, to, generators)
-    local R = FARM.RUN
-    local ok, blocked = pcall(function()
-        local point = from
-        for _ = 1, R.RAY_HOPS do
-            local offset = to - point
-            if offset.Magnitude < 1 then
-                return false
-            end
-            local hit = workspace:Raycast(point, offset)
-            if not hit or not hit.Instance then
-                return false
-            end
-            if not FARM.runIsInside(hit.Instance, generators) then
-                return (hit.Position - point).Magnitude < offset.Magnitude - 1
-            end
-            point = hit.Position + offset.Unit * 0.05
+function FARM.rayFirst(from, to, Ignore, gap)
+    local point = from
+    for _ = 1, FARM.RUN.RAY_HOPS do
+        local offset = to - point
+        if offset.Magnitude < (gap or 1) then
+            return nil
         end
-        return false
-    end)
-    return ok and blocked == true
+        local hit = workspace:Raycast(point, offset)
+        if not hit or not hit.Instance then
+            return nil
+        end
+        local ignored = false
+        for _, Folder in pairs(Ignore) do
+            if FARM.runIsInside(hit.Instance, Folder) then
+                ignored = true
+                break
+            end
+        end
+        if not ignored then
+            return hit.Position
+        end
+        point = hit.Position + offset.Unit * 0.05
+    end
+    return nil
+end
+
+function FARM.runRayBlocked(from, to, generators)
+    local ok, hit = pcall(FARM.rayFirst, from, to, {generators})
+    return ok and hit ~= nil and (hit - from).Magnitude < (to - from).Magnitude - 1
 end
 
 function FARM.runWallBetween(monster, part, eye, generators)
-    local origin = monster:FindFirstChild("HumanoidRootPart") or part
+    local T = FARM.twisted(monster)
+    local origin = (T and T.Origin) or part
     local ok, from = pcall(function()
         return origin.Position
     end)
@@ -6401,38 +6721,21 @@ end
 
 function FARM.runResearchCount()
     local ok, value = pcall(function()
-        return Workspace.Info.PlayerStats[LocalPlayer.Name].Monsters.Value
+        return UI.read(UI.info().PlayerStats[LocalPlayer.Name].Monsters)
     end)
     return (ok and type(value) == "number") and value or nil
 end
 
 function FARM.runHandWall(zone, from, eye, generators)
-    local R = FARM.RUN
-    local ok, blocked = pcall(function()
-        local start = from + Vector3.new(0, 2, 0)
-        for _ = 1, R.RAY_HOPS do
-            local offset = eye - start
-            if offset.Magnitude < 1 then
-                return false
-            end
-            local hit = workspace:Raycast(start, offset)
-            if not hit or not hit.Instance then
-                return false
-            end
-            if not (FARM.runIsInside(hit.Instance, zone) or FARM.runIsInside(hit.Instance, generators) or FARM.runIsInside(hit.Instance, LocalPlayer.Character)) then
-                return (hit.Position - start).Magnitude < offset.Magnitude - 1
-            end
-            start = hit.Position + offset.Unit * 0.05
-        end
-        return false
-    end)
-    return ok and blocked == true
+    local start = from + Vector3.new(0, 2, 0)
+    local ok, hit = pcall(FARM.rayFirst, start, eye, {zone, generators, LocalPlayer.Character})
+    return ok and hit ~= nil and (hit - start).Magnitude < (eye - start).Magnitude - 1
 end
 
 function FARM.runBlotHandNear(point, root)
     local R = FARM.RUN
-    local map = FARM.runMap()
-    if not map then
+    local map = UI.map()
+    if not map or not UI.roster().Names.BlottMonster then
         return false
     end
     local generators = map:FindFirstChild("Generators")
@@ -6467,8 +6770,9 @@ function FARM.runHazards(now)
     end
     R.sproutAt = now + R.SPROUT_RECHECK
     local list = {}
-    local map = FARM.runMap()
-    if map then
+    local map = UI.map()
+    local Roster = UI.roster()
+    if map and Roster.Names.SproutMonster then
         local area = map:FindFirstChild("FreeArea")
         for _, folder in ipairs(area and { area, map } or { map }) do
             for _, child in ipairs(folder:GetChildren()) do
@@ -6483,6 +6787,8 @@ function FARM.runHazards(now)
                 end
             end
         end
+    end
+    if map and Roster.Names.RodgerMonster then
         local capsules = {}
         local items = map:FindFirstChild("Items")
         for _, model in ipairs(items and items:GetChildren() or {}) do
@@ -6496,8 +6802,7 @@ function FARM.runHazards(now)
                 end
             end
         end
-        local monsters = map:FindFirstChild("Monsters")
-        for _, monster in ipairs(monsters and monsters:GetChildren() or {}) do
+        for _, monster in ipairs(Roster.Models) do
             if monster.Name == "RodgerMonster" then
                 local part = monster:FindFirstChild("HumanoidRootPart") or monster:FindFirstChild("RootPart")
                 local ok, position = pcall(function()
@@ -6536,7 +6841,7 @@ end
 function FARM.runFlag(model, name)
     local holder = model:FindFirstChild(name)
     local ok, value = pcall(function()
-        return holder.Value
+        return UI.read(holder)
     end)
     return ok and value == true
 end
@@ -6549,15 +6854,16 @@ function FARM.runAttr(model, name)
 end
 
 function FARM.runRazzleSees(point)
-    local map = FARM.runMap()
-    local monsters = map and map:FindFirstChild("Monsters")
-    if not monsters then
+    local map = UI.map()
+    local Roster = UI.roster()
+    if not (map and Roster.Names.RazzleDazzleMonster) then
         return false
     end
     local generators = map:FindFirstChild("Generators")
-    for _, monster in ipairs(monsters:GetChildren()) do
+    for _, monster in ipairs(Roster.Models) do
         if monster.Name == "RazzleDazzleMonster" then
-            local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+            local T = FARM.twisted(monster)
+            local part = T and T.Part
             local ok, position = pcall(function()
                 return part.Position
             end)
@@ -6596,8 +6902,9 @@ end
 
 function FARM.runResearchMap(map)
     local R = FARM.RUN
-    if R.researchMap ~= map.Name then
-        R.researchMap = map.Name
+    local mapKey = tostring(map.Address)
+    if R.researchMap ~= mapKey then
+        R.researchMap = mapKey
         R.researched = {}
     end
 end
@@ -6641,7 +6948,8 @@ end
 function FARM.runFacePoint(target)
     local R = FARM.RUN
     local ok, origin, look = pcall(function()
-        local head = target.model:FindFirstChild("HumanoidRootPart") or target.part
+        local T = FARM.twisted(target.model)
+        local head = (T and T.Origin) or target.part
         return head.Position, head.CFrame.LookVector
     end)
     if not ok or not origin or not look then
@@ -6660,31 +6968,13 @@ function FARM.runFacePoint(target)
         return nil
     end
 
-    local map = FARM.runMap()
+    local map = UI.map()
     local generators = map and map:FindFirstChild("Generators")
-    local free = reach
-    local okRay = pcall(function()
-        local from = origin
-        local finish = origin + facing * reach
-        for _ = 1, R.RAY_HOPS do
-            local offset = finish - from
-            if offset.Magnitude < 0.5 then
-                return
-            end
-            local hit = workspace:Raycast(from, offset)
-            if not hit or not hit.Instance then
-                return
-            end
-            if not FARM.runIsInside(hit.Instance, generators) then
-                free = (hit.Position - origin).Magnitude
-                return
-            end
-            from = hit.Position + offset.Unit * 0.05
-        end
-    end)
+    local okRay, hit = pcall(FARM.rayFirst, origin, origin + facing * reach, {generators}, 0.5)
     if not okRay then
         return nil
     end
+    local free = hit and (hit - origin).Magnitude or reach
 
     local stand = math.min(free - R.RESEARCH_FACE_GAP, reach)
     if stand < R.RESEARCH_FACE_MIN then
@@ -6716,6 +7006,19 @@ function FARM.runRodgerAt(monsters, position)
     return nil
 end
 
+function FARM.researchDone(name)
+    local now = tick()
+    local Cache = FARM.RESEARCH[name]
+    if not Cache or now >= Cache.At then
+        local ok, value = pcall(function()
+            return UI.read(game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Research[name])
+        end)
+        Cache = {At = now + 2, Done = ok and type(value) == "number" and value >= 100}
+        FARM.RESEARCH[name] = Cache
+    end
+    return Cache.Done
+end
+
 function FARM.runFullyResearched(name)
     if FARM.MASTERY.wants("EncounterMonster") then
         return false
@@ -6723,10 +7026,18 @@ function FARM.runFullyResearched(name)
     if not SETTINGS.farmSkipResearched then
         return false
     end
-    local ok, value = pcall(function()
-        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Research[name].Value
-    end)
-    return ok and type(value) == "number" and value >= 100
+    return FARM.researchDone(name)
+end
+
+function FARM.capsuleForResearch(model)
+    local R = FARM.RUN
+    local key = FARM.runKey(model)
+    local name = key and R.capsuleNames[key]
+    if not name then
+        name = researchCapsuleMonster(model)
+        if key and name then R.capsuleNames[key] = name end
+    end
+    return name ~= nil and MONSTER_INFO[name] ~= nil and not FARM.researchDone(name)
 end
 
 function FARM.runResearchTarget(root)
@@ -6735,7 +7046,7 @@ function FARM.runResearchTarget(root)
         return nil
     end
 
-    local map = FARM.runMap()
+    local map = UI.map()
     local monsters = map and map:FindFirstChild("Monsters")
     if not monsters then
         return nil
@@ -6768,8 +7079,9 @@ function FARM.runResearchTarget(root)
                     end
                 end
             else
-                local enraged = monster.Name == "GlistenMonster" and monster:GetAttribute("GlistenActivated") == true
-                local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+                local T = FARM.twisted(monster)
+                local enraged = T ~= nil and monster.Name == "GlistenMonster" and FARM.twistedAttr(T, "GlistenActivated") == true
+                local part = T and T.Part
                 local ok, position = pcall(function()
                     return part.Position
                 end)
@@ -6803,20 +7115,17 @@ function FARM.runResearchTarget(root)
 end
 
 function FARM.runSawYou(monster)
-    if UI.valuePlayer(monster:FindFirstChild("ChasingValue")) == LocalPlayer.Name then
-        return true
+    local T = FARM.twisted(monster)
+    if not T then
+        return false
     end
-
-    local ok, state, chasing, attacking = pcall(function()
-        return monster:GetAttribute("ChaseState"), monster:GetAttribute("Chasing"), monster:GetAttribute("Attacking")
-    end)
-    return ok and (state == "run" or state == "attack" or chasing == true or attacking == true)
+    return FARM.twistedTarget(T) == LocalPlayer.Name or FARM.twistedChasing(T)
 end
 
 function FARM.runSprintOff()
     local L = FARM.LOBBY
-    if L.shiftDown then
-        FARM.setShift(false)
+    if KEYS.Held[L.SHIFT] then
+        KEYS.set(FARM.LOBBY.SHIFT, false)
     end
 end
 
@@ -6844,13 +7153,94 @@ function FARM.runDive(root, now, status)
     FARM.setStatus(status)
 end
 
+function FARM.twisted(monster)
+    local key = FARM.runKey(monster)
+    if not key then
+        return nil
+    end
+    local now = tick()
+    local name = monster.Name
+    local T = FARM.TWISTED[key]
+    if not T or T.Name ~= name then
+        T = {Model = monster, Name = name, ChaserAt = 0}
+        FARM.TWISTED[key] = T
+    end
+    T.Seen = now
+    local okPart, parent = pcall(function()
+        return T.Part.Parent
+    end)
+    if not (okPart and parent) then
+        T.Part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+        T.Origin = monster:FindFirstChild("HumanoidRootPart") or T.Part
+        T.Holder = monster:FindFirstChild("ChasingValue")
+        T.ChaserAt = 0
+    end
+    if now >= T.ChaserAt then
+        T.ChaserAt = now + 1
+        T.Instant, T.Vision, T.Sight = FARM.runChaserRead(monster)
+        T.Holder = T.Holder or monster:FindFirstChild("ChasingValue")
+    end
+    if now >= FARM.TWISTED_PRUNE then
+        FARM.TWISTED_PRUNE = now + 5
+        for other, Entry in pairs(FARM.TWISTED) do
+            if now - Entry.Seen > 10 then FARM.TWISTED[other] = nil end
+        end
+    end
+    return T
+end
+
+function FARM.twistedFresh(T)
+    local now = tick()
+    if now >= (T.ReadUntil or 0) then
+        T.ReadUntil = now + FARM.RUN.ATTR_EVERY
+        T.Read = {}
+        T.TargetRead = false
+    end
+end
+
+function FARM.twistedAttr(T, name)
+    FARM.twistedFresh(T)
+    local value = T.Read[name]
+    if value == nil then
+        local ok, result = pcall(function()
+            return T.Model:GetAttribute(name)
+        end)
+        value = ok and result
+        if value == nil then value = false end
+        T.Read[name] = value
+    end
+    return value
+end
+
+function FARM.twistedTarget(T)
+    FARM.twistedFresh(T)
+    if not T.TargetRead then
+        T.TargetRead = true
+        T.Target = UI.valuePlayer(T.Holder)
+    end
+    return T.Target
+end
+
+function FARM.twistedChasing(T)
+    local state = FARM.twistedAttr(T, "ChaseState")
+    return state == "run" or state == "attack" or FARM.twistedAttr(T, "Chasing") == true or FARM.twistedAttr(T, "Attacking") == true
+end
+
 function FARM.runChaser(monster)
+    local T = FARM.twisted(monster)
+    if T then
+        return T.Instant, T.Vision, T.Sight
+    end
+    return FARM.runChaserRead(monster)
+end
+
+function FARM.runChaserRead(monster)
     local D = FARM.RUN.CHASER_DEFAULTS
     local chaser = monster:FindFirstChild("Chaser")
     local function read(name)
         local value = chaser and chaser:FindFirstChild(name)
         local ok, number = pcall(function()
-            return value.Value
+            return UI.read(value)
         end)
         if ok and type(number) == "number" then
             return number
@@ -6862,7 +7252,7 @@ end
 
 function FARM.runNearestTwisted(root, skipLethal)
     local R = FARM.RUN
-    local map = FARM.runMap()
+    local map = UI.map()
     local monsters = map and map:FindFirstChild("Monsters")
     if not monsters then
         return nil, nil
@@ -6873,7 +7263,8 @@ function FARM.runNearestTwisted(root, skipLethal)
         local info = MONSTER_INFO[monster.Name]
         local lethal = skipLethal and info ~= nil and info.rarity == "Lethal"
         if not FARM.runPassive(monster) and not lethal then
-            local part = monster:FindFirstChild("RootPart") or monster:FindFirstChild("HumanoidRootPart") or monster.PrimaryPart
+            local T = FARM.twisted(monster)
+            local part = T and T.Part
             local ok, position = pcall(function()
                 return part.Position
             end)
@@ -6890,9 +7281,12 @@ function FARM.runNearestTwisted(root, skipLethal)
     return bestMonster, bestPart
 end
 
-FARM.whitelist = {}
-
 function FARM.runOtherPlayers()
+    local now = tick()
+    if now < (FARM.othersAt or 0) then
+        return FARM.others
+    end
+    FARM.othersAt = now + 0.25
     local count = 0
     local myId = LocalPlayer.UserId
     for _, player in ipairs(Players:GetPlayers()) do
@@ -6900,6 +7294,7 @@ function FARM.runOtherPlayers()
             count = count + 1
         end
     end
+    FARM.others = count
     return count
 end
 
@@ -6984,11 +7379,40 @@ function FARM.runTravelTo(root, position, y)
     R.travelStart = root.Position
 end
 
+function FARM.clickStep(State, now, button, settle, aim, hold)
+    if State.stage == 0 then
+        if not FARM.runClick(button) then return false end
+        State.stage, State.at = 1, now + (aim or 0.3)
+    elseif State.stage == 1 and now >= State.at then
+        if not KEYS.mouse(mouse1press) then
+            State.stage = 0
+            return false
+        end
+        State.stage, State.at = 2, now + (hold or 0.32)
+    elseif State.stage == 2 and now >= State.at then
+        pcall(mouse1release)
+        State.stage, State.at = 3, now + settle
+    elseif State.stage == 3 and now >= State.at then
+        State.stage = 0
+        return true
+    end
+    return false
+end
+
+function FARM.runHalt()
+    FARM.runRmb(false)
+    FARM.runHoldW(false)
+    if FARM.RUN.noCollide then
+        FARM.runCollide(true)
+    end
+end
+
 function FARM.runClick(button)
     local p, s = button.AbsolutePosition, FARM.guiSize(button)
-    pcall(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24)
+    if not KEYS.mouse(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24) then return false end
     pcall(mousemoverel, 3, 3)
     pcall(mousemoverel, -3, -3)
+    return true
 end
 
 function FARM.runSized(button)
@@ -7004,9 +7428,11 @@ function FARM.runSized(button)
 end
 
 function FARM.runIsDead(character, root)
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    local death = gui and gui:FindFirstChild("DeathGui")
-    local screen = death and death:FindFirstChild("DeathScreen")
+    local screen = UI.find("DeathScreen", function()
+        local gui = UI.playerGui()
+        local death = gui and gui:FindFirstChild("DeathGui")
+        return death and death:FindFirstChild("DeathScreen")
+    end)
     local okScreen, position = pcall(function()
         return screen.AbsolutePosition
     end)
@@ -7019,17 +7445,16 @@ function FARM.runIsDead(character, root)
         return false
     end
 
-    local stats = character:FindFirstChild("Stats")
-    local hearts = stats and stats:FindFirstChild("Health")
+    local hearts = UI.myStat("Health")
     local okHearts, count = pcall(function()
-        return hearts.Value
+        return UI.read(hearts)
     end)
 
     if okHearts and type(count) == "number" and count <= 0 then
         return true
     end
 
-    local humanoid = character:FindFirstChild("Humanoid")
+    local humanoid = UI.myPart("Humanoid")
     local ok, health = pcall(function()
         return humanoid.Health
     end)
@@ -7057,45 +7482,34 @@ function FARM.runButtonReady(button, now, wait)
     return now - seen.at >= (wait or R.BUTTON_WAIT)
 end
 
-
 function FARM.runDeathClick(now, button, status, settle, wait)
     local R = FARM.RUN
+    local Click = R.deathClick
 
-    if R.deathStage == 0 then
+    if Click.stage == 0 then
         if not FARM.runButtonReady(button, now, wait) then
             FARM.setStatus("Dead, waiting for the button")
             return false
         end
-        R.buttonSeen = nil
         FARM.setStatus(status)
-        FARM.runClick(button)
-        R.deathStage = 1
-        R.at = now + 0.3
-    elseif R.deathStage == 1 and now >= R.at then
-        pcall(mouse1press)
-        R.deathStage = 2
-        R.at = now + 0.32
-    elseif R.deathStage == 2 and now >= R.at then
-        pcall(mouse1release)
-        R.deathStage = 3
-        R.at = now + settle
-    elseif R.deathStage == 3 and now >= R.at then
-        R.deathStage = 0
-        return true
     end
 
-    return false
+    local done = FARM.clickStep(Click, now, button, settle)
+    if Click.stage ~= 0 or done then
+        R.buttonSeen = nil
+    end
+    return done
 end
 
 function FARM.runDeath(now)
     local R = FARM.RUN
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local gui = UI.playerGui()
     local spectator = gui and gui:FindFirstChild("SpectatorGui")
     local bottom = spectator and spectator:FindFirstChild("BottomFrame")
     local leave = bottom and bottom:FindFirstChild("LeaveLobby")
 
     if FARM.runSized(leave) then
-        if R.deathStage == 0 then
+        if R.deathClick.stage == 0 then
             FARM.writeResume()
         end
         FARM.runDeathClick(now, leave, "Leaving to lobby", 3, 0.5)
@@ -7122,7 +7536,7 @@ function FARM.runDeath(now)
 end
 
 function FARM.readyButton()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local gui = UI.playerGui()
     local screen = gui and gui:FindFirstChild("ScreenGui")
     local selection = screen and screen:FindFirstChild("SelectionFrame")
     local margin = selection and selection:FindFirstChild("Margin")
@@ -7149,7 +7563,7 @@ function FARM.roundCountdown()
     local label = R.startLabel
 
     if not (label and label.Parent) then
-        local gui = LocalPlayer:FindFirstChild("PlayerGui")
+        local gui = UI.playerGui()
         local screen = gui and gui:FindFirstChild("ScreenGui")
         local selection = screen and screen:FindFirstChild("SelectionFrame")
         if not selection then
@@ -7181,7 +7595,7 @@ function FARM.roundCountdown()
 end
 
 function FARM.runCards()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui")
+    local gui = UI.playerGui()
     local screen = gui and gui:FindFirstChild("ScreenGui")
     local frame = screen and screen:FindFirstChild("VoteFrame")
     local cards = {}
@@ -7192,7 +7606,7 @@ function FARM.runCards()
     for _, child in ipairs(frame:GetChildren()) do
         if child.ClassName == "TextButton" and child.Name ~= "Template" and child.Name ~= "FancyTemplate" then
             local object = child:FindFirstChild("Object")
-            local module = object and FARM.runStringValue(object) or ""
+            local module = object and STRINGS.read(object) or ""
             local lowered = string.lower(tostring(module))
             if lowered == "" or lowered == "none" then
                 module = child.Name
@@ -7239,19 +7653,13 @@ end
 
 function FARM.runVote(now)
     local R = FARM.RUN
-    local info = Workspace:FindFirstChild("Info")
-    local voting = info and info:FindFirstChild("CardVoting")
-    local okVoting, active = pcall(function()
-        return voting.Value
-    end)
-
-    local cards = (okVoting and active == true) and FARM.runCards() or {}
+    local cards = UI.infoValue("CardVoting", 0.1) == true and FARM.runCards() or {}
 
     if #cards == 0 then
-        if R.voteStage == 2 then
+        if R.voteClick.stage == 2 then
             pcall(mouse1release)
         end
-        R.voteStage = 0
+        R.voteClick.stage = 0
         R.voteClicked = false
         R.voteSignature = 0
         R.voteSteady = 0
@@ -7273,7 +7681,7 @@ function FARM.runVote(now)
 
     local label = best.title ~= "" and best.title or best.module
 
-    if R.voteStage == 0 then
+    if R.voteClick.stage == 0 then
         if math.abs(signature - R.voteSignature) > 1 then
             R.voteSignature = signature
             R.voteSteady = now
@@ -7289,19 +7697,9 @@ function FARM.runVote(now)
         FARM.runRmb(false)
         FARM.runHoldW(false)
         FARM.setStatus("Voting " .. label)
-        FARM.runClick(best.button)
-        R.voteStage = 1
-        R.voteAt = now + 0.3
-    elseif R.voteStage == 1 and now >= R.voteAt then
-        pcall(mouse1press)
-        R.voteStage = 2
-        R.voteAt = now + 0.32
-    elseif R.voteStage == 2 and now >= R.voteAt then
-        pcall(mouse1release)
-        R.voteStage = 3
-        R.voteAt = now + 0.5
-    elseif R.voteStage == 3 and now >= R.voteAt then
-        R.voteStage = 0
+    end
+
+    if FARM.clickStep(R.voteClick, now, best.button, 0.5) then
         R.voteClicked = true
         FARM.setStatus("Voted " .. label)
     end
@@ -7311,17 +7709,11 @@ end
 
 function FARM.runReady(now)
     local R = FARM.RUN
-    local info = Workspace:FindFirstChild("Info")
-    local started = info and info:FindFirstChild("GameStarted")
-    local okStarted, hasStarted = pcall(function()
-        return started.Value
-    end)
-
-    local seconds = (not (okStarted and hasStarted == true)) and FARM.roundCountdown() or nil
+    local seconds = UI.infoValue("GameStarted", 0.1) ~= true and FARM.roundCountdown() or nil
 
     if not seconds or seconds <= 0 then
         R.readyClicked = false
-        R.readyStage = 0
+        R.readyClick.stage = 0
         R.readyWidth = 0
         R.readySteady = 0
         return false
@@ -7331,7 +7723,7 @@ function FARM.runReady(now)
 
     if not button or width <= 0 then
         R.readyClicked = false
-        R.readyStage = 0
+        R.readyClick.stage = 0
         R.readyWidth = 0
         R.readySteady = 0
         return false
@@ -7354,22 +7746,12 @@ function FARM.runReady(now)
         return true
     end
 
-    if R.readyStage == 0 then
+    if R.readyClick.stage == 0 then
         FARM.setStatus("Pressing Ready Up")
-        FARM.runClick(button)
-        R.readyStage = 1
-        R.at = now + 0.3
-    elseif R.readyStage == 1 and now >= R.at then
-        pcall(mouse1press)
-        R.readyStage = 2
-        R.at = now + 0.32
-    elseif R.readyStage == 2 and now >= R.at then
-        pcall(mouse1release)
-        R.readyStage = 3
-        R.at = now + 1.5
-    elseif R.readyStage == 3 and now >= R.at then
+    end
+
+    if FARM.clickStep(R.readyClick, now, button, 1.5) then
         R.readyClicked = true
-        R.readyStage = 0
     end
 
     return true
@@ -7379,16 +7761,12 @@ function FARM.runUpdate(now)
     local R = FARM.RUN
     FARM.runReleaseItemKey(now)
     local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local root = character and UI.myPart("HumanoidRootPart")
     local camera = Workspace.CurrentCamera
 
     if R.dead or FARM.runIsDead(character, root) then
         R.dead = true
-        if R.noCollide then
-            FARM.runCollide(true)
-        end
-        FARM.runRmb(false)
-        FARM.runHoldW(false)
+        FARM.runHalt()
         R.phase = "idle"
         R.current = nil
         FARM.runDeath(now)
@@ -7396,26 +7774,18 @@ function FARM.runUpdate(now)
     end
 
     if not (root and camera) then
-        if R.noCollide then
-            FARM.runCollide(true)
-        end
-        FARM.runRmb(false)
-        FARM.runHoldW(false)
+        FARM.runHalt()
         R.phase = "idle"
         return
     end
 
-    R.deathStage = 0
+    R.deathClick.stage = 0
 
     local underground = R.phase == "dive" or R.phase == "hide" or R.phase == "surface"
     if not SETTINGS.allowFarmWithPlayers and not underground then
         local others = FARM.runOtherPlayers()
         if others > 0 then
-            FARM.runRmb(false)
-            FARM.runHoldW(false)
-            if R.noCollide then
-                FARM.runCollide(true)
-            end
+            FARM.runHalt()
             R.phase = "idle"
             R.current = nil
             FARM.setStatus(string.format("%d non-whitelisted player%s here, waiting", others, others == 1 and "" or "s"))
@@ -7466,11 +7836,7 @@ function FARM.runUpdate(now)
             R.elevatorHold = "none"
         elseif isOpen == false then
             R.elevatorHold = "closed"
-            FARM.runRmb(false)
-            FARM.runHoldW(false)
-            if R.noCollide then
-                FARM.runCollide(true)
-            end
+            FARM.runHalt()
             R.phase = "waitFloor"
             R.current = nil
             FARM.setStatus("Waiting for elevator doors")
@@ -7494,7 +7860,7 @@ function FARM.runUpdate(now)
     if (chasing or panic) and not hiding and not travelIgnore and not grabbing and R.phase ~= "sacrifice" and not FARM.runSafeInElevator(character) then
         FARM.runRmb(false)
         if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
-            FARM.tapKey(R.E_KEY)
+            KEYS.tap(R.E_KEY)
         end
 
         local toElevator = R.phase == "toElevator"
@@ -7511,7 +7877,7 @@ function FARM.runUpdate(now)
         if tendril then
             FARM.runRmb(false)
             if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
-                FARM.tapKey(R.E_KEY)
+                KEYS.tap(R.E_KEY)
             end
             R.current = nil
             R.collect = nil
@@ -7698,11 +8064,7 @@ function FARM.runUpdate(now)
     end
 
     if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runConnie(R.current) then
-        FARM.runRmb(false)
-        FARM.runHoldW(false)
-        if R.noCollide then
-            FARM.runCollide(true)
-        end
+        FARM.runHalt()
         R.current = nil
         R.phase = "pick"
         FARM.setStatus("Connie got into the machine, leaving")
@@ -7710,11 +8072,7 @@ function FARM.runUpdate(now)
     end
 
     if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runTaken(R.current) then
-        FARM.runRmb(false)
-        FARM.runHoldW(false)
-        if R.noCollide then
-            FARM.runCollide(true)
-        end
+        FARM.runHalt()
         R.current = nil
         R.phase = "pick"
         FARM.setStatus("Another player took the machine, leaving")
@@ -7725,7 +8083,7 @@ function FARM.runUpdate(now)
         FARM.runRmb(false)
         FARM.runHoldW(false)
         if R.phase == "working" then
-            FARM.tapKey(R.E_KEY)
+            KEYS.tap(R.E_KEY)
         end
         if R.noCollide then
             FARM.runCollide(true)
@@ -7761,7 +8119,7 @@ function FARM.runUpdate(now)
         if FARM.MASTERY.needHit(now, character) then
             R.current = nil
             R.sacrificeY = root.Position.Y
-            R.hurtFrom = FARM.MASTERY.health(character)
+            R.hurtFrom = FARM.health()
             R.phase = "sacrifice"
             FARM.setStatus("Mastery: inventory full of heals, taking a hit")
             return
@@ -7955,11 +8313,7 @@ function FARM.runUpdate(now)
             R.facePoint = nil
             R.faceAt = 0
             R.research = nil
-            FARM.runHoldW(false)
-            FARM.runRmb(false)
-            if R.noCollide then
-                FARM.runCollide(true)
-            end
+            FARM.runHalt()
             if status then
                 FARM.setStatus(status)
             end
@@ -8091,7 +8445,7 @@ function FARM.runUpdate(now)
     end
 
     if R.phase == "sacrifice" and R.hurtFrom then
-        local health = FARM.MASTERY.health(character)
+        local health = FARM.health()
         local hit = health ~= nil and health < R.hurtFrom
         local monster = FARM.runNearestTwisted(root, true)
         if hit or not monster or not FARM.MASTERY.itemMode() then
@@ -8109,11 +8463,7 @@ function FARM.runUpdate(now)
     if R.phase == "sacrifice" then
         local monster, part = FARM.runNearestTwisted(root, R.hurtFrom ~= nil or FARM.MASTERY.passiveDeath())
         if not part then
-            FARM.runRmb(false)
-            FARM.runHoldW(false)
-            if R.noCollide then
-                FARM.runCollide(true)
-            end
+            FARM.runHalt()
             FARM.setStatus((FARM.MASTERY.runState == "done" and SETTINGS.masteryEnd and "Mastery done" or "Floor limit reached") .. ", no twisted found")
             return
         end
@@ -8217,7 +8567,9 @@ function FARM.runUpdate(now)
                 return
             end
 
-            FARM.tapKey(R.E_KEY)
+            if not KEYS.tap(R.E_KEY) then
+                return
+            end
             if target.kind == "rodger" then
                 R.skip[target.spot] = true
                 if target.key then
@@ -8235,7 +8587,7 @@ function FARM.runUpdate(now)
         local aligned = FARM.runFace(camera, root, R.current.prompt.Position)
         if aligned or now >= R.at then
             FARM.runRmb(false)
-            FARM.tapKey(R.E_KEY)
+            KEYS.tap(R.E_KEY)
             R.phase = "working"
             R.at = now + R.REPRESS
         end
@@ -8244,8 +8596,8 @@ function FARM.runUpdate(now)
 
     if R.phase == "working" then
         FARM.runRmb(false)
-        local cur, req = FARM.runFill(R.current)
-        FARM.setStatus(string.format("Working %d/%d", math.floor(cur), math.floor(req)))
+        local cur, req, valid = FARM.runFill(R.current)
+        FARM.setStatus(valid and string.format("Working %d/%d", math.floor(cur), math.floor(req)) or "Working")
 
         if FARM.runDone(R.current) then
             R.phase = "pick"
@@ -8272,11 +8624,7 @@ function FARM.runStop()
     local R = FARM.RUN
     FARM.runRmb(false)
     FARM.runHoldW(false)
-    FARM.setShift(false)
-    if FARM.RUN.shiftReleaseAt then
-        FARM.RUN.shiftReleaseAt = nil
-        pcall(keyrelease, FARM.LOBBY.SHIFT)
-    end
+    KEYS.set(FARM.LOBBY.SHIFT, false)
     if R.noCollide then
         FARM.runCollide(true)
     end
@@ -8285,7 +8633,7 @@ function FARM.runStop()
     R.current = nil
     R.elevatorDive = nil
     R.elevatorSurface = nil
-    R.deathStage = 0
+    R.deathClick.stage = 0
 end
 
 local function drawVisual(visual, cameraPosition, tracerFrom)
@@ -8519,16 +8867,9 @@ local function drawAll(deltaTime)
 end
 
 function SQUIRM.findModel()
-    local room = Workspace:FindFirstChild("CurrentRoom")
-    if not room then
-        return nil
-    end
-
-    for _, child in ipairs(room:GetChildren()) do
-        local folder = child:FindFirstChild("Monsters")
-        local model = folder and folder:FindFirstChild("SquirmMonster")
-        if model then
-            return model
+    for _, Model in ipairs(UI.roster().Models) do
+        if Model.Name == "SquirmMonster" then
+            return Model
         end
     end
 
@@ -8542,7 +8883,7 @@ function SQUIRM.isTargetingMe(model)
 
     local root = model:FindFirstChild("RootPart") or model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
     local character = LocalPlayer.Character
-    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local myRoot = character and UI.myPart("HumanoidRootPart")
     if not (root and myRoot) or character:GetAttribute("GrabbedBySquirm") then
         return false
     end
@@ -8613,12 +8954,7 @@ function SQUIRM.updateWarning()
         end
 
         if not drawing then
-            drawing = makeDrawing("Text", Color3.fromRGB(255, 255, 255))
-            safeSet(drawing, "Center", true)
-            safeSet(drawing, "Outline", true)
-            safeSet(drawing, "Font", Drawing.Fonts.SystemBold)
-            safeSet(drawing, "Size", SQUIRM.WARN_SIZE)
-            safeSet(drawing, "FontSize", SQUIRM.WARN_SIZE)
+            drawing = makeText(SQUIRM.WARN_SIZE)
             safeSet(drawing, "Text", SQUIRM.WARN_TEXT)
             SQUIRM.warnShown = SQUIRM.WARN_TEXT
             SQUIRM.warnDrawing = drawing
@@ -8648,36 +8984,6 @@ function SQUIRM.updateWarning()
     end
 end
 
-local TOON = {KEY = 0x46, POLL = 0.25, RETRY = 10, SECOND_PRESS = 0.4, CONFIRM = 3, nextAt = 0, usedFloor = {}}
-
-TOON.RULES = {
-    Vee = {},
-    Gourdy = {},
-    Tisha = {},
-    Connie = {},
-    Astro = {},
-    Flyte = {},
-    Coal = {},
-    Toodles = {machine = true},
-    Gigi = {offMachine = true, freeSlot = true},
-    Flutter = {offMachine = true},
-    Cocoa = {offMachine = true},
-    Rudie = {offMachine = true},
-    Waxwell = {offMachine = true},
-    Brightney = {blackout = true},
-    Pebble = {offMachine = true, perFloor = true},
-    Bobette = {offMachine = true, perFloor = true},
-    Blott = {offMachine = true, perFloor = true, tapes = true},
-    Teagan = {perFloor = true, tapes = true, hurt = true},
-    Bassie = {perFloor = true, presses = 2, instant = true},
-}
-TOON.RULES.Blot = TOON.RULES.Blott
-
-TOON.UNSUPPORTED = {Shelly = true, Sprout = true, Goob = true, Glisten = true, Cosmo = true, Scraps = true, Brusha = true, Squirm = true, Ginger = true}
-
-FARM.MASTERY.toonRules = TOON.RULES
-FARM.MASTERY.toonName = function(char) return TOON.character(char) end
-
 function TOON.character(char)
     local Config = char and char:FindFirstChild("Config")
     local Module = Config and Config:FindFirstChild("ModuleName")
@@ -8702,20 +9008,19 @@ end
 
 function TOON.inElevator(char)
     local ok, blocked = pcall(function()
-        local Flag = char:FindFirstChild("Stats") and char.Stats:FindFirstChild("InElevator")
-        if Flag and Flag.Value == true then return true end
-        local Active = Workspace.Info:FindFirstChild("FloorActive")
-        if Active and Active.Value ~= true then return true end
+        if UI.read(UI.myStat("InElevator")) == true then return true end
+        local active = UI.infoValue("FloorActive", 0.25)
+        if active ~= nil and active ~= true then return true end
         return Workspace.CurrentRoom:FindFirstChildOfClass("Model") == nil
     end)
     return not ok or blocked
 end
 
 function TOON.blackout()
-    local Info = Workspace:FindFirstChild("Info")
+    local Info = UI.info()
     local Flag = Info and Info:FindFirstChild("BlackOut")
     local ok, value = pcall(function()
-        return Flag.Value
+        return UI.read(Flag)
     end)
     return ok and value == true
 end
@@ -8732,20 +9037,20 @@ function TOON.ready(char, Rule)
     if TOON.inElevator(char) then return false end
     local Ability = char.Abilities.Ability1
     local Cost = Ability:FindFirstChild("AbilityCost")
-    if Cost and Cost.Value > 0 and not Rule.tapes then return false end
+    if Cost and UI.read(Cost) > 0 and not Rule.tapes then return false end
     if Rule.hurt then
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if not (humanoid and humanoid.Health < humanoid.MaxHealth) then return false end
+        local health, maxHealth = FARM.health()
+        if not (health and health < maxHealth) then return false end
     end
     if Rule.freeSlot and not TOON.freeSlot(char) then return false end
-    return Ability.CurrentCooldown.Value <= 0
+    return UI.read(Ability.CurrentCooldown) <= 0
 end
 
 function TOON.confirm(char, now)
     local Pending = TOON.pending
     if not Pending then return end
     local ok, cooldown = pcall(function()
-        return char.Abilities.Ability1.CurrentCooldown.Value
+        return UI.read(char.Abilities.Ability1.CurrentCooldown)
     end)
     if Pending.Instant or (ok and cooldown > 0) then
         TOON.usedFloor[Pending.Name] = Pending.Floor
@@ -8758,7 +9063,7 @@ end
 function TOON.update(now)
     if TOON.secondAt and now >= TOON.secondAt then
         TOON.secondAt = nil
-        if not VantaUI.Blocked and robloxFocused() then FARM.tapKey(TOON.KEY) end
+        KEYS.tap(TOON.KEY)
     end
     if now < TOON.nextAt then return end
     TOON.nextAt = now + TOON.POLL
@@ -8774,8 +9079,8 @@ function TOON.update(now)
     end
     local Rule = name and TOON.RULES[name]
     local mastery = FARM.MASTERY.abilityMode(name)
-    if not ((SETTINGS.autoAbility or mastery) and Rule and FARM.active and not FARM.paused) then return end
-    if PLACE_MODE ~= "main" or VantaUI.Blocked or not robloxFocused() then return end
+    if not ((SETTINGS.autoAbility or mastery) and Rule and FARM.running(now)) then return end
+    if PLACE_MODE ~= "main" or not KEYS.allowed() then return end
     TOON.confirm(char, now)
     local working = FARM.RUN.phase == "working" and FARM.RUN.current ~= nil
     if Rule.machine and not working then return end
@@ -8786,17 +9091,10 @@ function TOON.update(now)
     if Rule.blackout and not TOON.blackout() then return end
     local okReady, ready = pcall(TOON.ready, char, Rule)
     if not (okReady and ready) then return end
-    FARM.tapKey(TOON.KEY)
+    KEYS.tap(TOON.KEY)
     if Rule.presses == 2 then TOON.secondAt = now + TOON.SECOND_PRESS end
     if perFloor then TOON.pending = {Name = name, Floor = floor, At = now, Instant = Rule.instant} end
     TOON.nextAt = now + TOON.RETRY
-end
-
-local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>", Mastery = "<:Mastery:1537206041085747331>"}, nextAt = 0, beatAt = 0}
-
-function REPORT.clock()
-    local ok, value = pcall(os.time)
-    return (ok and type(value) == "number") and value or math.floor(tick())
 end
 
 function REPORT.fresh(now)
@@ -8804,7 +9102,7 @@ function REPORT.fresh(now)
 end
 
 function REPORT.load()
-    local now = REPORT.clock()
+    local now = UI.clock()
     local ok, Data = pcall(function()
         return HttpService:JSONDecode(readfile(REPORT.FILE))
     end)
@@ -8821,17 +9119,17 @@ end
 function REPORT.save()
     local S = REPORT.session
     if not S then return end
-    S.lastBeat = REPORT.clock()
+    S.lastBeat = UI.clock()
+    UI.folder("DW")
     pcall(function()
-        if not isfolder("DW") then makefolder("DW") end
         writefile(REPORT.FILE, HttpService:JSONEncode(S))
     end)
 end
 
 function REPORT.stats()
     local ok, Stats = pcall(function()
-        local Mine = Workspace.Info.PlayerStats[LocalPlayer.Name]
-        return {ichor = Mine.Ichor.Value, tapes = Mine.SurvivalPoints.Value, machines = Mine.Generators.Value, capsules = Mine.Capsules.Value, research = Mine.Monsters.Value}
+        local Mine = UI.info().PlayerStats[LocalPlayer.Name]
+        return {ichor = UI.read(Mine.Ichor), tapes = UI.read(Mine.SurvivalPoints), machines = UI.read(Mine.Generators), capsules = UI.read(Mine.Capsules), research = UI.read(Mine.Monsters)}
     end)
     return ok and Stats or nil
 end
@@ -8841,7 +9139,7 @@ function REPORT.research()
         local Folder = game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Research
         local out = {}
         for _, Value in ipairs(Folder:GetChildren()) do
-            out[Value.Name] = Value.Value
+            out[Value.Name] = UI.read(Value)
         end
         return out
     end)
@@ -8867,12 +9165,6 @@ end
 
 function REPORT.field(name, value, inline)
     return {name = name, value = tostring(value), inline = inline ~= false}
-end
-
-function REPORT.totals()
-    local S = REPORT.session
-    local live = S.runOpen and S.live or {}
-    return (S.ichor or 0) + (live.ichor or 0), (S.machines or 0) + (live.machines or 0), (S.capsules or 0) + (live.capsules or 0)
 end
 
 function REPORT.researchLines(base)
@@ -8905,7 +9197,7 @@ function REPORT.masteryLines()
     local lines = {}
     for _, Quest in ipairs(ok and Folder and Folder:GetChildren() or {}) do
         local okValues, current, amount = pcall(function()
-            return Quest.Current.Value, Quest.Amount.Value
+            return UI.read(Quest.Current), UI.read(Quest.Amount)
         end)
         if okValues and type(current) == "number" and type(amount) == "number" then
             local questType = FARM.MASTERY.questType(Quest.Name, "")
@@ -8924,7 +9216,7 @@ end
 
 function REPORT.coin()
     local ok, value = pcall(function()
-        return game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Coin.Value
+        return UI.read(game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].Coin)
     end)
     return (ok and type(value) == "number") and value or nil
 end
@@ -8946,10 +9238,8 @@ function REPORT.itemList()
 end
 
 function REPORT.twistedNames()
-    local map = PLACE_MODE == "main" and FARM.runMap()
-    local Monsters = map and map:FindFirstChild("Monsters")
     local names, seen = {}, {}
-    for _, Monster in ipairs(Monsters and Monsters:GetChildren() or {}) do
+    for _, Monster in ipairs(PLACE_MODE == "main" and UI.roster().Models or {}) do
         local info = MONSTER_INFO[Monster.Name]
         local name = info and (info.name:gsub("^Twisted ", "")) or nil
         if name and not seen[name] then
@@ -8961,24 +9251,14 @@ function REPORT.twistedNames()
 end
 
 function REPORT.twistedList()
-    local map = PLACE_MODE == "main" and FARM.runMap()
-    local Monsters = map and map:FindFirstChild("Monsters")
-    if not Monsters then return nil end
-    local names, seen = {}, {}
-    for _, Monster in ipairs(Monsters:GetChildren()) do
-        local info = MONSTER_INFO[Monster.Name]
-        local name = info and info.name:gsub("^Twisted ", "") or nil
-        if name and not seen[name] then
-            seen[name] = true
-            names[#names + 1] = name
-        end
-    end
+    if not (PLACE_MODE == "main" and UI.map()) then return nil end
+    local names = REPORT.twistedNames()
     return #names > 0 and table.concat(names, ", ") or "None"
 end
 
 function REPORT.summary(Options, heading)
     local S = REPORT.session
-    local now = REPORT.clock()
+    local now = UI.clock()
     local Run = (S.runOpen and S.live) or S.lastRun or {}
     local uptime = S.runOpen and (now - (S.runStartedAt or now)) or (S.lastRunTime or 0)
     local floor = PLACE_MODE == "main" and FARM.currentFloor() or 0
@@ -8998,11 +9278,8 @@ function REPORT.summary(Options, heading)
     end
     local character = TOON.character(LocalPlayer.Character)
     if character then
-        local okHearts, hearts, maxHearts = pcall(function()
-            local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-            return humanoid.Health, humanoid.MaxHealth
-        end)
-        local health = (okHearts and type(hearts) == "number" and type(maxHearts) == "number" and maxHearts > 0) and (" (" .. math.floor(hearts + 0.5) .. "/" .. math.floor(maxHearts + 0.5) .. " HP)") or ""
+        local hearts, maxHearts = FARM.health()
+        local health = (hearts and maxHearts > 0) and (" (" .. math.floor(hearts + 0.5) .. "/" .. math.floor(maxHearts + 0.5) .. " HP)") or ""
         lines[#lines + 1] = E.Character .. " Character: " .. character .. health
     end
     if Options.summary.includeItems then
@@ -9036,7 +9313,7 @@ function REPORT.runEnded(died, Run, Options)
     local Fields = {
         REPORT.field("Final Floor:", Run.floor or "-"),
         REPORT.field("Result:", limit and "Floor limit reached" or (died and "Died" or "Left the run")),
-        REPORT.field("Run Time:", REPORT.duration(REPORT.clock() - (S.runStartedAt or REPORT.clock()))),
+        REPORT.field("Run Time:", REPORT.duration(UI.clock() - (S.runStartedAt or UI.clock()))),
         REPORT.field("Ichor:", REPORT.number(Run.coinTotal or 0) .. " (+" .. REPORT.number(Run.coinGain or 0) .. ")"),
         REPORT.field("Machines:", REPORT.number(Run.machines) .. " done"),
     }
@@ -9085,7 +9362,7 @@ function REPORT.finishRun(died)
         return REPORT.runEnded(died, Run, Given)
     end, died)
     S.lastRun = Run
-    S.lastRunTime = REPORT.clock() - (S.runStartedAt or REPORT.clock())
+    S.lastRunTime = UI.clock() - (S.runStartedAt or UI.clock())
     S.live = nil
     S.limitEnd = nil
     REPORT.save()
@@ -9101,7 +9378,7 @@ function REPORT.start()
             S.job = game.JobId
             S.runs = (S.runs or 0) + 1
             S.runOpen = true
-            S.runStartedAt = REPORT.clock()
+            S.runStartedAt = UI.clock()
             S.lastRun = nil
             S.lastRunTime = nil
             S.runCoin = nil
@@ -9124,7 +9401,7 @@ function REPORT.enqueue(Hook, body)
     local Queue = REPORT.queue
     Queue[#Queue + 1] = {Hook = Hook, Body = body}
     if REPORT.queuedAt == 0 then
-        REPORT.queuedAt = REPORT.clock()
+        REPORT.queuedAt = UI.clock()
     end
 end
 
@@ -9139,7 +9416,7 @@ function REPORT.flushQueue()
 end
 
 function REPORT.calm(now)
-    if PLACE_MODE ~= "main" or not FARM.active or FARM.paused then
+    if PLACE_MODE ~= "main" or not FARM.running(tick()) then
         return true
     end
     if FARM.runSafeInElevator(LocalPlayer.Character) or FARM.RUN.phase == "waitFloor" then
@@ -9174,18 +9451,17 @@ function REPORT.update(now)
             if not S.coin then S.coin = coin end
             if not S.runCoin then S.runCoin = coin end
         end
-        local Research = REPORT.research()
-        if Research then
-            if not S.research then S.research = Research end
-            if not S.runResearch then S.runResearch = Research end
-            S.lastResearch = Research
+        if not S.runResearch or now >= (REPORT.researchAt or 0) then
+            REPORT.researchAt = now + 10
+            local Research = REPORT.research()
+            if Research then
+                if not S.research then S.research = Research end
+                if not S.runResearch then S.runResearch = Research end
+                S.lastResearch = Research
+            end
         end
-        local char = LocalPlayer.Character
-        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-        local okHealth, health = pcall(function()
-            return humanoid.Health
-        end)
-        if okHealth and type(health) == "number" and health <= 0 then
+        local health = FARM.health()
+        if health and health <= 0 then
             REPORT.finishRun(true)
         end
     end
@@ -9201,7 +9477,7 @@ function REPORT.update(now)
     end
     if REPORT.pendingSummary and PLACE_MODE == "main" and S.runOpen and REPORT.webhooks and SETTINGS.webhooksEnabled then
         REPORT.pendingSummary = nil
-        local clock = REPORT.clock()
+        local clock = UI.clock()
         for name, Hook in pairs(REPORT.webhooks()) do
             if Hook.Options.summary.enabled then
                 S.summaryAt[name] = clock
@@ -9216,7 +9492,7 @@ function REPORT.update(now)
             return {embeds = {{title = "Connection Lost", color = REPORT.DEATH_COLOR, description = floor > 0 and ("Disconnected on Floor " .. floor) or "Disconnected in the lobby", timestamp = REPORT.stamp()}}}
         end)
     end
-    local clock = REPORT.clock()
+    local clock = UI.clock()
     if REPORT.webhooks and SETTINGS.webhooksEnabled and PLACE_MODE == "main" then
         for name, Hook in pairs(REPORT.webhooks()) do
             local Summary = Hook.Options.summary
@@ -9238,6 +9514,83 @@ function REPORT.update(now)
     end
 end
 
+function RENDER.address()
+    if not RENDER.Service then
+        for _, Child in ipairs(game:GetChildren()) do
+            if Child.ClassName == "RunService" then RENDER.Service = tonumber(Child.Address) break end
+        end
+    end
+    local address = RENDER.Service
+    if not address then return nil end
+    if memory_read("double", address + RENDER.CheckOffset) ~= 0.05 then return nil end
+    local value = memory_read("byte", address + RENDER.Offset)
+    if value ~= 0 and value ~= 1 then return nil end
+    return address
+end
+
+function RENDER.set(enabled)
+    local address = RENDER.address()
+    if not address then return false end
+    local value = enabled and 1 or 0
+    if memory_read("byte", address + RENDER.Offset) ~= value then
+        memory_write("byte", address + RENDER.Offset, value)
+    end
+    return true
+end
+
+function RENDER.clearAddress()
+    local base = getbase()
+    local engine = memory_read("uintptr_t", base + RENDER.Clear.Global)
+    if not engine or engine < 0x10000 then return nil end
+    if memory_read("uintptr_t", engine) - base ~= RENDER.Clear.VisualEngine then return nil end
+    local holder = memory_read("uintptr_t", engine + RENDER.Clear.Holder)
+    if not holder or holder < 0x10000 then return nil end
+    local address = holder + RENDER.Clear.Color
+    for index = 0, 3 do
+        local value = memory_read("float", address + index * 4)
+        if not value or value < 0 or value > 1 then return nil end
+    end
+    return address
+end
+
+function RENDER.setClear(black)
+    local address = RENDER.clearAddress()
+    if not address then return end
+    if black then
+        if not RENDER.Clear.Saved then
+            RENDER.Clear.Saved = {}
+            for index = 0, 3 do RENDER.Clear.Saved[index] = memory_read("float", address + index * 4) end
+        end
+        for index = 0, 2 do
+            if memory_read("float", address + index * 4) ~= 0 then memory_write("float", address + index * 4, 0) end
+        end
+    elseif RENDER.Clear.Saved then
+        for index = 0, 3 do memory_write("float", address + index * 4, RENDER.Clear.Saved[index]) end
+        RENDER.Clear.Saved = nil
+    end
+end
+
+function RENDER.update(now)
+    if SETTINGS.disable3d ~= RENDER.Wanted then
+        RENDER.Wanted = SETTINGS.disable3d
+        RENDER.NextAt = 0
+    end
+    if now < RENDER.NextAt then return end
+    RENDER.NextAt = now + 1
+    if not SETTINGS.disable3d and not RENDER.Applied then return end
+    if not VantaUI.MemoryAccess() then return end
+    local ok, done = pcall(RENDER.set, not SETTINGS.disable3d)
+    if ok and done then RENDER.Applied = SETTINGS.disable3d end
+    pcall(RENDER.setClear, SETTINGS.disable3d)
+end
+
+function RENDER.cleanup()
+    pcall(RENDER.setClear, false)
+    if not RENDER.Applied then return end
+    pcall(RENDER.set, true)
+    RENDER.Applied = false
+end
+
 local function buildMenu()
     local Options = VantaUI.Options
     local Window = VantaUI:CreateWindow({Title = "VantaH", SubTitle = "Dandy's World", Size = Vector2.new(700, 500), MenuKey = SETTINGS.menuKey})
@@ -9250,11 +9603,13 @@ local function buildMenu()
     local WebhookTab = Window:AddTab("Webhook")
     local SettingsTab = Window:AddTab("Settings")
 
-    local function toggle(Section, id, title, key)
-        return Section:AddToggle({Id = id, Title = title, Default = SETTINGS[key]})
+    local function toggle(Section, id, title, key, color)
+        UI.Binds[id] = {Key = key}
+        return Section:AddToggle({Id = id, Title = title, Default = SETTINGS[key], TextColor = color})
     end
 
-    local function slider(Section, id, title, key, minimum, maximum, decimals, suffix)
+    local function slider(Section, id, title, key, minimum, maximum, decimals, suffix, map)
+        UI.Binds[id] = {Key = key, Map = map}
         return Section:AddSlider({Id = id, Title = title, Min = minimum, Max = maximum, Default = SETTINGS[key], Decimals = decimals, Suffix = suffix})
     end
 
@@ -9304,8 +9659,9 @@ local function buildMenu()
 
     local Performance = VisualsTab:AddSection("Performance", "Right")
     slider(Performance, "dw_visuals_max_visible", "Max Visible", "maxVisible", 0, 1000, 0)
-    slider(Performance, "dw_visuals_update_rate", "Update Delay", "updateInterval", 0.005, 0.2, 3, "s")
-    slider(Performance, "dw_visuals_scan_rate", "Scan Delay", "scanInterval", 0.5, 5, 1, "s")
+    slider(Performance, "dw_visuals_update_rate", "Update Delay", "updateInterval", 0.005, 0.2, 3, "s", function(value) return math.max(0.005, value) end)
+    slider(Performance, "dw_visuals_scan_rate", "Scan Delay", "scanInterval", 0.5, 5, 1, "s", function(value) return math.max(0.5, value) end)
+    toggle(Performance, "dw_disable_3d", "Disable 3D Rendering", "disable3d")
 
     local SkillCheck = AutomationTab:AddSection("Skill Check", "Left")
     toggle(SkillCheck, "dw_skillcheck_enabled", "Auto Skill Check", "autoSkillCheck")
@@ -9314,10 +9670,16 @@ local function buildMenu()
     slider(SkillCheck, "dw_skillcheck_lead", "Press Lead", "skillCheckLead", 0, 120, 0, " ms")
     slider(SkillCheck, "dw_skillcheck_treadmill_rate", "Treadmill Tap Rate", "treadmillTapRate", 1, 30, 0, " cps")
 
+    local Experimental = AutomationTab:AddSection("Experimental", "Left")
+    toggle(Experimental, "dw_always_golden", "Always hit Golden", "alwaysGolden", Color3.fromRGB(45, 200, 235))
+    Experimental:AddParagraph({Title = "", Content = "This will always hit Golden no matter what. Does not use inputs. Allows you to minimize Roblox."})
+    toggle(Experimental, "dw_better_barnaby", "Better Auto Barnaby", "betterBarnaby", Color3.fromRGB(45, 200, 235))
+    Experimental:AddParagraph({Title = "", Content = "Does not use inputs. Allows you to minimize Roblox."})
+
     local Barnaby = AutomationTab:AddSection("Barnaby", "Right")
     toggle(Barnaby, "dw_barnaby_enabled", "Auto Barnaby", "autoBarnaby")
     toggle(Barnaby, "dw_barnaby_coins", "Collect Barnaby Coins", "barnabyCollectCoins")
-    Barnaby:AddToggle({Id = "dw_barnaby_risky_coins", Title = "Risk for more coins (Not recommended)", Default = SETTINGS.barnabyRiskyCoins, TextColor = Color3.fromRGB(204, 170, 62)})
+    toggle(Barnaby, "dw_barnaby_risky_coins", "Risk for more coins (Not recommended)", "barnabyRiskyCoins", Color3.fromRGB(204, 170, 62))
     Barnaby:AddLabel("Also plays the Swimmy Barnaby arcade in the lobby.")
 
     local Squirm = AutomationTab:AddSection("Squirm", "Right")
@@ -9325,7 +9687,7 @@ local function buildMenu()
     slider(Squirm, "dw_squirm_tap_rate", "Squirm Tap Rate", "squirmTapRate", 1, 16, 0, " cps")
 
     local Farm = FarmTab:AddSection("Autofarm", "Left")
-    Farm:AddToggle({Id = FARM.TOGGLE_ID, Title = "Aggressive Auto-farm", Default = false, TextColor = Color3.fromRGB(204, 170, 62)})
+    toggle(Farm, FARM.TOGGLE_ID, "Aggressive Auto-farm", "aggressiveAutoFarm", Color3.fromRGB(204, 170, 62))
     slider(Farm, "dw_farm_speed", "Tween Walk Speed", "tweenWalkSpeed", 20, 200, 0, " studs")
     slider(Farm, "dw_farm_floor_limit", "Floor Limit", "floorLimit", 5, 50, 0, " floors")
     toggle(Farm, "dw_farm_unlimited", "Unlimited Floors", "unlimitedFloors")
@@ -9333,7 +9695,7 @@ local function buildMenu()
     toggle(Farm, "dw_farm_hide_teleport", "Hide the interface post-teleporting", "farmHideOnTeleport")
 
     local FarmPlayers = FarmTab:AddSection("Players", "Left")
-    FarmPlayers:AddToggle({Id = "dw_farm_with_players", Title = "Allow everyone (Ignore Whitelist)", Default = SETTINGS.allowFarmWithPlayers, TextColor = Color3.fromRGB(214, 84, 72)})
+    toggle(FarmPlayers, "dw_farm_with_players", "Allow everyone (Ignore Whitelist)", "allowFarmWithPlayers", Color3.fromRGB(214, 84, 72))
 
     local whitelistPath = "DW/autofarmWhitelist.json"
     local Whitelist = VantaUI:CreateWindow({Title = "Players Whitelist", SubTitle = "Auto-farm", Size = Vector2.new(560, 380), MinSize = Vector2.new(420, 240), Position = Window.Position + Vector2.new(80, 60), MenuKey = false, Sidebar = false, Visible = false, Layer = 30})
@@ -9417,7 +9779,15 @@ local function buildMenu()
     local Collecting = FarmTab:AddSection("Collecting", "Right")
     toggle(Collecting, "dw_farm_heal_items", "Collect & Use healing items", "farmHealItems")
     toggle(Collecting, "dw_farm_extraction_items", "Collect & Use extraction items", "farmExtractionItems")
-    toggle(Collecting, "dw_farm_capsules", "Collect Research Capsules", "farmCapsules")
+    local CapsulesIchor = toggle(Collecting, "dw_farm_capsules", "Collect Research Capsules [For Ichor]", "farmCapsules")
+    local CapsulesResearch = toggle(Collecting, "dw_farm_capsules_research", "Collect Research Capsules [For Research]", "farmCapsulesResearch")
+    Collecting:AddParagraph({Title = "", Content = "For Ichor: Collects every capsules\nFor Research: Collects only for Research"})
+    CapsulesIchor:OnChanged(function(value)
+        if value and CapsulesResearch.Value then CapsulesResearch:Set(false) end
+    end)
+    CapsulesResearch:OnChanged(function(value)
+        if value and CapsulesIchor.Value then CapsulesIchor:Set(false) end
+    end)
 
     local FarmTwisteds = FarmTab:AddSection("Twisteds", "Right")
     toggle(FarmTwisteds, "dw_farm_research_twisteds", "Let Twisteds see you first [For Research]", "farmResearchTwisteds")
@@ -9559,10 +9929,7 @@ local function buildMenu()
 
     local function scanWebhooks()
         Webhooks = {}
-        pcall(function()
-            if not isfolder("DW") then makefolder("DW") end
-            if not isfolder(webhookFolder) then makefolder(webhookFolder) end
-        end)
+        UI.folder(webhookFolder)
         local ok, Files = pcall(listfiles, webhookFolder)
         local found = {}
         for _, path in ipairs(ok and Files or {}) do
@@ -9707,10 +10074,7 @@ local function buildMenu()
     local ConfigStatus = Config:AddLabel("Settings also save automatically.")
 
     local function listConfigs()
-        pcall(function()
-            if not isfolder("DW") then makefolder("DW") end
-            if not isfolder(configFolder) then makefolder(configFolder) end
-        end)
+        UI.folder(configFolder)
         local ok, Files = pcall(listfiles, configFolder)
         local names = {}
         for _, path in ipairs(ok and Files or {}) do
@@ -9805,12 +10169,11 @@ FARM.forceOffUntil = tick() + FARM.FORCE_OFF_WINDOW
 FARM.resumePending = FARM.consumeResume()
 pcall(UI.SetValue, FARM.TOGGLE_ID, false)
 
-local UI_REFRESH_INTERVAL = 0.1
-local lastUiRefresh = 0
-
 ABILITY.startIconCache()
 
 local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+    UI.Frame = UI.Frame + 1
+    KEYS.update(tick())
     lastUiRefresh = lastUiRefresh + deltaTime
     if lastUiRefresh >= UI_REFRESH_INTERVAL then
         lastUiRefresh = 0
@@ -9837,18 +10200,20 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     FARM.update(tick())
     TOON.update(tick())
     REPORT.update(tick())
+    RENDER.update(tick())
+    GOLDEN.update(tick())
 end)
 
 _G.DW_CLEANUP = function()
-    if spaceHeldUntil > 0 then
-        spaceHeldUntil = 0
-        pcall(keyrelease, VK_SPACE)
+    if renderConnection then
+        pcall(function()
+            renderConnection:Disconnect()
+        end)
+        renderConnection = nil
     end
 
-    if SQUIRM.heldKey then
-        pcall(keyrelease, SQUIRM.heldKey)
-        SQUIRM.heldKey = nil
-    end
+    KEYS.releaseAll()
+    pcall(mouse2release)
 
     if SQUIRM.warnDrawing then
         pcall(function()
@@ -9865,13 +10230,10 @@ _G.DW_CLEANUP = function()
     ABILITY.removePrompt()
     PLAYERS.cleanup()
     FARM.cleanup()
-
-    if renderConnection then
-        pcall(function()
-            renderConnection:Disconnect()
-        end)
-        renderConnection = nil
-    end
+    RENDER.cleanup()
+    GOLDEN.Stopped = true
+    GOLDEN.restore()
+    SWIMMER.restore()
 
     for key, visual in pairs(tracked) do
         pcall(removeVisual, visual)
