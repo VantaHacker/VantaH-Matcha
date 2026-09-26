@@ -322,8 +322,6 @@ local ITEM_CATEGORIES = {
     FakeCapsule = false,
 }
 
-local TARGET_ICHOR_SIZE = Vector3.new(6.22, 3.07, 3.07)
-local SIZE_TOLERANCE = 0.05
 
 local tracked = {}
 local activeKeys = {}
@@ -755,6 +753,7 @@ local FARM = {
         hideY = 0,
         surfaceY = 0,
         hideUntil = 0,
+        leaveAt = 0,
         rmbDown = false,
         W_KEY = 0x57,
         noCollide = false,
@@ -965,6 +964,33 @@ function UI.read(holder)
         end
     end
     return holder.Value
+end
+
+function UI.bool(holder)
+    if not holder then return nil end
+    if VantaUI.MemoryAccess() then
+        local ok, value = pcall(memory_read, "byte", tonumber(holder.Address) + 0xA8)
+        if ok and (value == 0 or value == 1) then return value == 1 end
+    end
+    local ok, value = pcall(function() return holder.Value end)
+    if ok and type(value) == "boolean" then return value end
+    return nil
+end
+
+UI.StatNames = {StopInteracting = true, RewardAmount = true, CurrentAmount = true, RequiredAmount = true, ForceStop = true, SkillCheck = true, ActivePlayer = true, ActivePlayer2 = true, Connie = true}
+
+function UI.completed(stats)
+    if not stats then return nil end
+    local found = stats:FindFirstChild("Completed")
+    if found then return found end
+    local pick
+    for _, child in ipairs(stats:GetChildren()) do
+        if not UI.StatNames[child.Name] then
+            if pick then return nil end
+            pick = child
+        end
+    end
+    return pick
 end
 
 function UI.fill(current, required)
@@ -3020,31 +3046,6 @@ local function cameraWorldToScreen(worldPosition)
     return WorldToScreen(worldPosition)
 end
 
-local function almostEqual(a, b, tolerance)
-    return math.abs(a - b) <= tolerance
-end
-
-local function sizeMatches(v1, v2, tolerance)
-    return almostEqual(v1.X, v2.X, tolerance)
-        and almostEqual(v1.Y, v2.Y, tolerance)
-        and almostEqual(v1.Z, v2.Z, tolerance)
-end
-
-local function findIchorPart(instance)
-    local direct = instance:FindFirstChild("Ichor")
-    if direct and readSize(direct) then
-        return direct
-    end
-
-    for _, descendant in ipairs(instance:GetDescendants()) do
-        if descendant.Name == "Ichor" and readSize(descendant) then
-            return descendant
-        end
-    end
-
-    return nil
-end
-
 local function visualIsCompleted(visual)
     if visual.category ~= "Generators" then
         return false
@@ -3056,11 +3057,12 @@ local function visualIsCompleted(visual)
     end
 
     visual.completionCheckedAt = now
-    if not (visual.ichorPart and visual.ichorPart.Parent) then
-        visual.ichorPart = findIchorPart(visual.item)
+    if not (visual.doneHolder and visual.doneHolder.Parent) then
+        local stats = visual.item:FindFirstChild("Stats")
+        visual.doneHolder = UI.completed(stats)
     end
-    local size = readSize(visual.ichorPart)
-    visual.completed = size ~= nil and sizeMatches(size, TARGET_ICHOR_SIZE, SIZE_TOLERANCE)
+    local ok, value = pcall(UI.bool, visual.doneHolder)
+    visual.completed = ok and value == true
     return visual.completed
 end
 
@@ -3589,7 +3591,7 @@ function ABILITY.poll(entry, now)
         if not (entry.grabbing and entry.grabbing.Parent) then
             entry.grabbing = model:FindFirstChild("Grabbing")
         end
-        active = entry.grabbing ~= nil and UI.read(entry.grabbing) == true
+        active = entry.grabbing ~= nil and UI.bool(entry.grabbing) == true
     end
 
     if active and not entry.active and entry.readyAt - now < entry.cooldown - ABILITY.REARM_AFTER then
@@ -5288,7 +5290,7 @@ function FARM.gateOpen(gateName)
     local gate = folder and folder:FindFirstChild(gateName)
     local elevator = gate and gate:FindFirstChild("Elevator")
     local opened = elevator and elevator:FindFirstChild("Opened")
-    return (opened and UI.read(opened)) or false
+    return (opened and UI.bool(opened)) or false
 end
 
 function FARM.gateInside(gateName)
@@ -5384,7 +5386,7 @@ function FARM.isSprinting()
     end
 
     local ok, value = pcall(function()
-        return UI.read(flag)
+        return UI.bool(flag)
     end)
 
     return ok and value == true
@@ -5392,7 +5394,7 @@ end
 
 function FARM.sprintSetting()
     local ok, value = pcall(function()
-        return UI.read(game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].SprintToggle)
+        return UI.bool(game:GetService("ReplicatedStorage").PlayerData[tostring(LocalPlayer.UserId)].SprintToggle)
     end)
     if ok and type(value) == "boolean" then
         return value and "toggle" or "hold"
@@ -5920,7 +5922,7 @@ function FARM.runMachinesRead(map)
         if prompt and stats then
             local cur = stats:FindFirstChild("CurrentAmount")
             local req = stats:FindFirstChild("RequiredAmount")
-            local done = stats:FindFirstChild("Completed")
+            local done = UI.completed(stats)
             local connie = stats:FindFirstChild("Connie")
 
             out[#out + 1] = {
@@ -5972,21 +5974,23 @@ end
 
 function FARM.runConnie(machine)
     local ok, value = pcall(function()
-        return UI.read(machine.connie)
+        return UI.bool(machine.connie)
     end)
     return ok and value == true
 end
 
-function FARM.runDone(machine)
-    local ok, value = pcall(function()
-        return UI.read(machine.done)
-    end)
-    if ok and type(value) == "boolean" then
-        return value
-    end
+function FARM.floorDone()
+    local need = UI.infoValue("RequiredGenerators", 0.25)
+    local done = UI.infoValue("GeneratorsCompleted", 0.25)
+    return type(need) == "number" and type(done) == "number" and need >= 1 and need < 100 and done >= need
+end
 
-    local cur, req, valid = FARM.runFill(machine)
-    return valid and cur >= req
+function FARM.runDone(machine)
+    if FARM.floorDone() then return true end
+    local ok, value = pcall(function()
+        return UI.bool(machine.done)
+    end)
+    return ok and value == true
 end
 
 function FARM.runEngagedBy(machine)
@@ -6492,7 +6496,7 @@ function FARM.runElevatorState(character, root)
     local elevator = folder and folder:FindFirstChild("Elevator")
     local opened = elevator and elevator:FindFirstChild("Opened")
     local okOpen, isOpen = pcall(function()
-        return UI.read(opened)
+        return UI.bool(opened)
     end)
     if not okOpen or type(isOpen) ~= "boolean" then
         isOpen = nil
@@ -6500,7 +6504,7 @@ function FARM.runElevatorState(character, root)
 
     local flag = UI.myStat("InElevator")
     local okFlag, flagged = pcall(function()
-        return UI.read(flag)
+        return UI.bool(flag)
     end)
 
     if okFlag and flagged == true then
@@ -6523,7 +6527,7 @@ end
 function FARM.runSafeInElevator(character)
     local R = FARM.RUN
     local ok, flagged = pcall(function()
-        return character and UI.read(UI.myStat("InElevator"))
+        return character and UI.bool(UI.myStat("InElevator"))
     end)
     if ok and flagged == true then
         return true
@@ -6622,11 +6626,17 @@ function FARM.runThreat(root, ignore)
                 end
             end
 
-            if not chasing and FARM.twistedTarget(T) == myName then
+            local razzle = monster.Name == "RazzleDazzleMonster"
+            if razzle then
+                if FARM.runRazzleSees(eye) then
+                    panic = true
+                    seen = true
+                end
+            elseif not chasing and FARM.twistedTarget(T) == myName then
                 chasing = true
             end
 
-            if chasing then
+            if chasing or razzle then
             elseif passive then
                 if FARM.twistedAttr(T, "Attacking") == true then
                     chasing = true
@@ -6841,7 +6851,7 @@ end
 function FARM.runFlag(model, name)
     local holder = model:FindFirstChild(name)
     local ok, value = pcall(function()
-        return UI.read(holder)
+        return UI.bool(holder)
     end)
     return ok and value == true
 end
@@ -7129,6 +7139,18 @@ function FARM.runSprintOff()
     end
 end
 
+function FARM.runLeaveMachine(now)
+    local R = FARM.RUN
+    if now < R.leaveAt then return end
+    R.leaveAt = now + 0.2
+    for _, machine in ipairs(FARM.runMachines()) do
+        if FARM.runEngagedBy(machine) == LocalPlayer.Name then
+            if KEYS.tap(R.E_KEY) then R.leaveAt = now + 1 end
+            return
+        end
+    end
+end
+
 function FARM.runDive(root, now, status)
     local R = FARM.RUN
     local floor = FARM.runFloorY(root.Position.X, root.Position.Y, root.Position.Z)
@@ -7142,6 +7164,8 @@ function FARM.runDive(root, now, status)
         R.hideY = math.min(R.hideY, ground + R.hipOffset - R.DEPTH)
     end
     R.hideUntil = now + R.HIDE_MAX
+    R.surfaceAt = nil
+    R.leaveAt = 0
     R.clearSince = nil
     R.elevatorDive = nil
     R.elevatorSurface = nil
@@ -7889,6 +7913,10 @@ function FARM.runUpdate(now)
         end
     end
 
+    if hiding or R.phase == "flee" then
+        FARM.runLeaveMachine(now)
+    end
+
     if R.phase == "flee" then
         local p = root.Position
         local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
@@ -8032,10 +8060,15 @@ function FARM.runUpdate(now)
         FARM.runFreeze(root)
         FARM.runHoldW(false)
         local p = root.Position
-        local y = math.min(p.Y + math.max(SETTINGS.tweenWalkSpeed, R.DIVE_SPEED) * 0.016, R.surfaceY)
+        if not R.surfaceAt then
+            R.surfaceAt = now
+            R.surfaceFrom = math.min(p.Y, R.surfaceY)
+        end
+        local y = math.min(R.surfaceFrom + math.max(SETTINGS.tweenWalkSpeed, R.DIVE_SPEED) * (now - R.surfaceAt), R.surfaceY)
         root.Position = Vector3.new(p.X, y, p.Z)
 
         if y >= R.surfaceY - 0.5 then
+            R.surfaceAt = nil
             FARM.runCollide(true)
             if R.elevatorSurface then
                 R.elevatorSurface = nil
@@ -8633,6 +8666,7 @@ function FARM.runStop()
     R.current = nil
     R.elevatorDive = nil
     R.elevatorSurface = nil
+    R.surfaceAt = nil
     R.deathClick.stage = 0
 end
 
@@ -9008,7 +9042,7 @@ end
 
 function TOON.inElevator(char)
     local ok, blocked = pcall(function()
-        if UI.read(UI.myStat("InElevator")) == true then return true end
+        if UI.bool(UI.myStat("InElevator")) == true then return true end
         local active = UI.infoValue("FloorActive", 0.25)
         if active ~= nil and active ~= true then return true end
         return Workspace.CurrentRoom:FindFirstChildOfClass("Model") == nil
@@ -9020,7 +9054,7 @@ function TOON.blackout()
     local Info = UI.info()
     local Flag = Info and Info:FindFirstChild("BlackOut")
     local ok, value = pcall(function()
-        return UI.read(Flag)
+        return UI.bool(Flag)
     end)
     return ok and value == true
 end
