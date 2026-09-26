@@ -1056,6 +1056,43 @@ function UI.map()
     return UI.MapNow
 end
 
+UI.Sprout = {At = 0, Key = nil, Area = nil, Count = 0, List = {}}
+
+function UI.sproutTendrils(map)
+    local S = UI.Sprout
+    local now = tick()
+    local key = map and tostring(map.Address)
+    if key == S.Key and now < S.At then return S.List end
+    S.At = now + 0.2
+    if key ~= S.Key then
+        S.Key, S.Area, S.Count, S.List = key, map and map:FindFirstChild("FreeArea"), 0, {}
+    end
+    local Alive = {}
+    local Known = {}
+    for _, Tendril in ipairs(S.List) do
+        if Tendril.Parent then
+            Alive[#Alive + 1] = Tendril
+            Known[tostring(Tendril.Address)] = true
+        end
+    end
+    local function take(Child)
+        if Child and Child.Name == "SproutTendril" and not Known[tostring(Child.Address)] then
+            Known[tostring(Child.Address)] = true
+            Alive[#Alive + 1] = Child
+        end
+    end
+    if S.Area then
+        local Kids = S.Area:GetChildren()
+        local count = #Kids
+        local from = count > S.Count and S.Count + 1 or math.max(count - 1, 1)
+        for index = from, count do take(Kids[index]) end
+        S.Count = count
+    end
+    take(map and map:FindFirstChild("SproutTendril"))
+    S.List = Alive
+    return Alive
+end
+
 function UI.roster()
     local Roster = UI.Roster
     local now = tick()
@@ -2913,8 +2950,23 @@ local function resolvePositionSource(instance)
     return nil
 end
 
+local function sourceBelongs(source, item)
+    local ok, inside = pcall(function()
+        return tostring(source.Address) == tostring(item.Address) or source:IsDescendantOf(item)
+    end)
+    return ok and inside == true
+end
+
 local function getVisualPosition(visual)
     local source = visual.positionSource
+    if source and tick() >= (visual.sourceCheckAt or 0) then
+        visual.sourceCheckAt = tick() + 2.5 + math.random()
+        if not sourceBelongs(source, visual.item) then
+            source = nil
+            visual.positionSource = nil
+            visual.nextResolveAt = nil
+        end
+    end
     if source then
         local position
 
@@ -3482,20 +3534,15 @@ function ABILITY.newSproutTendril(entry)
         return false
     end
 
-    local area = map:FindFirstChild("FreeArea")
-    local tendril = (area and area:FindFirstChild(ABILITY.SPROUT_TENDRIL)) or map:FindFirstChild(ABILITY.SPROUT_TENDRIL)
-    if not tendril then
-        entry.tendrilAddress = nil
-        return false
+    local Seen = {}
+    local fresh = false
+    for _, Tendril in ipairs(UI.sproutTendrils(map)) do
+        local address = tostring(Tendril.Address)
+        Seen[address] = true
+        if not (entry.tendrils and entry.tendrils[address]) then fresh = true end
     end
-
-    local address = tostring(tendril.Address)
-    if entry.tendrilAddress == address then
-        return false
-    end
-
-    entry.tendrilAddress = address
-    return true
+    entry.tendrils = Seen
+    return fresh
 end
 
 function ABILITY.pollDebuff(spec, now)
@@ -3579,7 +3626,7 @@ function ABILITY.poll(entry, now)
 
     if entry.name == ABILITY.SPROUT_MONSTER then
         if ABILITY.newSproutTendril(entry) then
-            entry.readyAt = now + entry.cooldown - ABILITY.SPROUT_DELAY
+            entry.readyAt = now + entry.cooldown - ABILITY.SPROUT_DELAY - 0.1
         end
 
         return
@@ -6799,18 +6846,13 @@ function FARM.runHazards(now)
     local map = UI.map()
     local Roster = UI.roster()
     if map and Roster.Names.SproutMonster then
-        local area = map:FindFirstChild("FreeArea")
-        for _, folder in ipairs(area and { area, map } or { map }) do
-            for _, child in ipairs(folder:GetChildren()) do
-                if child.Name == "SproutTendril" then
-                    local part = child:FindFirstChild("Puddle") or child:FindFirstChild("HumanoidRootPart")
-                    local ok, position = pcall(function()
-                        return part.Position
-                    end)
-                    if ok and position then
-                        list[#list + 1] = { position = position, range = R.SPROUT_RANGE }
-                    end
-                end
+        for _, child in ipairs(UI.sproutTendrils(map)) do
+            local part = child:FindFirstChild("Puddle") or child:FindFirstChild("HumanoidRootPart")
+            local ok, position = pcall(function()
+                return part.Position
+            end)
+            if ok and position then
+                list[#list + 1] = { position = position, range = R.SPROUT_RANGE }
             end
         end
     end
