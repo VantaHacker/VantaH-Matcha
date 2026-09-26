@@ -705,6 +705,7 @@ local FARM = {
         RESEARCH_RAZZLE_ARRIVE = 15,
         RESEARCH_RAZZLE_WAIT = 8,
         BLOT_HAND_RANGE = 12,
+        BLOT_HAND_MARGIN = 4,
         BLOT_HAND_RECHECK = 0.25,
         SPROUT_RANGE = 18,
         RODGER_ACTIVE_RANGE = 34,
@@ -2054,6 +2055,13 @@ end
 
 local function pressSpace(hold)
     KEYS.hold(SKILL.VK_SPACE, hold or SKILL.SPACE_HOLD)
+end
+
+function SKILL.showing()
+    local parts = getSkillCheckFrame()
+    if not parts then return false end
+    local State = parts.circle and SKILL.Circle or SKILL.Bar
+    return State.LastMove ~= nil and tick() - State.LastMove <= SKILL.MOTION_GRACE
 end
 
 local function getTreadmillTapGui()
@@ -6742,6 +6750,17 @@ function FARM.runHandWall(zone, from, eye, generators)
     return ok and hit ~= nil and (hit - start).Magnitude < (eye - start).Magnitude - 1
 end
 
+function FARM.runInHandZone(zone, position, point)
+    local R = FARM.RUN
+    local ok, offset, size = pcall(function()
+        return zone.CFrame:PointToObjectSpace(point), zone.Size
+    end)
+    if ok and offset and size then
+        return math.abs(offset.X) <= size.X / 2 + R.BLOT_HAND_MARGIN and math.abs(offset.Z) <= size.Z / 2 + R.BLOT_HAND_MARGIN
+    end
+    return Vector3.new(point.X - position.X, 0, point.Z - position.Z).Magnitude <= R.BLOT_HAND_RANGE
+end
+
 function FARM.runBlotHandNear(point, root)
     local R = FARM.RUN
     local map = UI.map()
@@ -6762,11 +6781,8 @@ function FARM.runBlotHandNear(point, root)
             local ok, position = pcall(function()
                 return zone.Position
             end)
-            if hand and ok and position then
-                local reach = Vector3.new(point.X - position.X, 0, point.Z - position.Z).Magnitude
-                if reach <= R.BLOT_HAND_RANGE and not (walls and FARM.runHandWall(zone, position, point, generators)) then
-                    return true
-                end
+            if hand and ok and position and FARM.runInHandZone(zone, position, point) and not (walls and FARM.runHandWall(zone, position, point, generators)) then
+                return true
             end
         end
     end
@@ -7145,7 +7161,13 @@ function FARM.runLeaveMachine(now)
     R.leaveAt = now + 0.2
     for _, machine in ipairs(FARM.runMachines()) do
         if FARM.runEngagedBy(machine) == LocalPlayer.Name then
-            if KEYS.tap(R.E_KEY) then R.leaveAt = now + 1 end
+            if SKILL.showing() then
+                pressSpace()
+                SKILL.lastPress = os.clock()
+                R.leaveAt = now + 0.15
+                return
+            end
+            if KEYS.hold(R.E_KEY, R.KEY_HOLD) then R.leaveAt = now + 0.5 end
             return
         end
     end
