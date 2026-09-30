@@ -222,6 +222,7 @@ local SETTINGS = {
     treadmillTapRate = 24,
     alwaysGolden = false,
     betterBarnaby = false,
+    autoRemap = false,
     autoBarnaby = true,
     barnabyCollectCoins = true,
     barnabyRiskyCoins = false,
@@ -411,7 +412,9 @@ local SKILL = {
 }
 
 local GOLDEN = {PressDelay = 0.65, Ready = false, CircleReady = false, TreadReady = false, Busy = false, Slots = {}, NextScan = 0, NextCheck = 0, Sweep = 2, Attempts = 0, MaxAttempts = 3, RetryDelay = 30}
-GOLDEN.Offsets = {Code = 0x48, CodeSize = 0x94, Upvalue = 0x70, Proto = 0x18, Constants = 0x40, ConstantCount = 0xAC, Children = 0x28, ChildCount = 0x9C, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
+GOLDEN.Offsets = {Tag = 1, Nups = 4, ValueTag = 12, StringTag = 6, FunctionTag = 8, NumberTag = 3, ProtoTag = 15, StringLength = 20, StringText = 24, Upvalues = 0x20, Upvalue = 0x70, Proto = 0x18, Code = 0x50, CodeSize = 0xAC, Constants = 0x48, ConstantCount = 0xA4, Children = 0x28, ChildCount = 0xA0, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
+GOLDEN.Offsets.Encoding = {Proto = 0, Code = 0, Constants = 0, Children = 0}
+GOLDEN.Map = {File = CONFIG_FOLDER .. "/Offsets.json", Loaded = false, Luau = false, Tween = false, Tries = 0, Waits = 0, NextTry = nil, TweenNext = 0, TweenBusy = false, StatusAt = 0}
 
 local KEYS = {Held = {}, Timed = {}}
 
@@ -839,6 +842,7 @@ local FARM = {
 }
 
 FARM.GUI = {positionOffset = 0xFC}
+FARM.CURSOR = {Map = nil, At = -math.huge, Viewport = nil, Busy = false, Failures = 0, RetryAt = 0, GuiScale = nil}
 
 FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled = false }
 
@@ -926,7 +930,7 @@ TOON.UNSUPPORTED = {Shelly = true, Sprout = true, Goob = true, Glisten = true, C
 local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>", Mastery = "<:Mastery:1537206041085747331>"}, nextAt = 0, beatAt = 0}
 
 local RENDER = {Offset = 0x190, CheckOffset = 0x1D8, Applied = false, Wanted = false, NextAt = 0}
-RENDER.Clear = {Global = 0x851BF08, VisualEngine = 0x6D092F0, Holder = 0xBC0, Color = 0x1A4, Saved = nil}
+RENDER.Clear = {Global = 0x858D208, VisualEngine = 0x6D58DD0, Holder = 0xBC0, Color = 0x1A4, Saved = nil}
 
 local UI_REFRESH_INTERVAL = 0.1
 local lastUiRefresh = 0
@@ -1665,22 +1669,50 @@ local function shouldPressCircle(parts, lead)
     return press
 end
 
+function GOLDEN.heap(pointer)
+    return pointer ~= nil and pointer > 0x10000 and pointer < 0x7FF000000000
+end
+
+function GOLDEN.pointer(address, mode)
+    if not mode or mode == 0 then return memory_read("uintptr_t", address) end
+    local low, high = memory_read("int", address) % 4294967296, memory_read("int", address + 4) % 4294967296
+    local addressLow, addressHigh = address % 4294967296, math.floor(address / 4294967296)
+    if mode == 1 then
+        low, high = low + addressLow, high + addressHigh
+    elseif mode == 2 then
+        low, high = low - addressLow, high - addressHigh
+    else
+        low, high = addressLow - low, addressHigh - high
+    end
+    if low >= 4294967296 then
+        low, high = low - 4294967296, high + 1
+    elseif low < 0 then
+        low, high = low + 4294967296, high - 1
+    end
+    return (high % 4294967296) * 4294967296 + low
+end
+
+function GOLDEN.read(object, field)
+    return GOLDEN.pointer(object + GOLDEN.Offsets[field], GOLDEN.Offsets.Encoding[field])
+end
+
 function GOLDEN.text(pointer)
+    local O = GOLDEN.Offsets
     if not pointer or pointer < 0x10000 then return nil end
-    if memory_read("byte", pointer) ~= 6 then return nil end
-    local length = memory_read("int", pointer + 20)
+    if memory_read("byte", pointer + O.Tag) ~= O.StringTag then return nil end
+    local length = memory_read("int", pointer + O.StringLength)
     if not length or length < 1 or length > 64 then return nil end
-    return memory_read("string", pointer + 24)
+    return memory_read("string", pointer + O.StringText)
 end
 
 function GOLDEN.constants(proto)
     local list = {}
-    local base = memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
+    local base = GOLDEN.read(proto, "Constants")
     local count = memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
     if not base or base < 0x10000 or not count or count < 0 or count > 512 then return list end
     for index = 0, count - 1 do
         local slot = base + index * 16
-        if memory_read("int", slot + 12) == 6 then
+        if memory_read("int", slot + GOLDEN.Offsets.ValueTag) == GOLDEN.Offsets.StringTag then
             local pointer = memory_read("uintptr_t", slot)
             table.insert(list, {Slot = slot, Pointer = pointer, Text = GOLDEN.text(pointer)})
         end
@@ -1698,7 +1730,7 @@ end
 
 function GOLDEN.children(proto)
     local list = {}
-    local base = memory_read("uintptr_t", proto + GOLDEN.Offsets.Children)
+    local base = GOLDEN.read(proto, "Children")
     local count = memory_read("int", proto + GOLDEN.Offsets.ChildCount)
     if not base or base < 0x10000 or not count or count < 0 or count > 64 then return list end
     for index = 0, count - 1 do
@@ -1714,7 +1746,7 @@ function GOLDEN.closures(key, upvalues)
     GOLDEN.Cache[key] = GOLDEN.Cache[key] or getgc(key) or {}
     for _, Entry in ipairs(GOLDEN.Cache[key]) do
         local closure = Entry.addr and memory_read("uintptr_t", Entry.addr)
-        if closure and closure > 0x10000 and memory_read("byte", closure) == 8 and memory_read("byte", closure + 4) == upvalues then
+        if closure and closure > 0x10000 and memory_read("byte", closure + GOLDEN.Offsets.Tag) == GOLDEN.Offsets.FunctionTag and memory_read("byte", closure + GOLDEN.Offsets.Nups) == upvalues then
             table.insert(list, closure)
         end
     end
@@ -1737,9 +1769,9 @@ end
 function GOLDEN.setupBar()
     local O = GOLDEN.Offsets
     for _, closure in ipairs(GOLDEN.closures("handleInvoke", 6)) do
-        if memory_read("int", closure + O.Upvalue + 12) == 8 then
+        if memory_read("int", closure + O.Upvalue + O.ValueTag) == O.FunctionTag then
             local check = memory_read("uintptr_t", closure + O.Upvalue)
-            local proto = check and memory_read("uintptr_t", check + O.Proto)
+            local proto = GOLDEN.heap(check) and GOLDEN.read(check, "Proto")
             local NoInput = proto and proto > 0x10000 and GOLDEN.named(proto)["noinput"]
             if NoInput then
                 GOLDEN.NoInput = NoInput.Pointer
@@ -1786,7 +1818,7 @@ function GOLDEN.setupBar()
 end
 
 function GOLDEN.setupCircle(closure)
-    local proto = memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
+    local proto = GOLDEN.read(closure, "Proto")
     if not proto or proto < 0x10000 then return false end
     local Timeout, Press
     for _, child in ipairs(GOLDEN.children(proto)) do
@@ -1809,15 +1841,17 @@ end
 
 function GOLDEN.setupTreadmill(closure)
     local O = GOLDEN.Offsets
-    local proto = memory_read("uintptr_t", closure + O.Proto)
+    local proto = GOLDEN.read(closure, "Proto")
     if not proto or proto < 0x10000 then return false end
     for _, child in ipairs(GOLDEN.children(proto)) do
         local Names = GOLDEN.named(child)
-        local code = memory_read("uintptr_t", child + O.Code)
+        local code = GOLDEN.read(child, "Code")
         if Names["task"] and Names["wait"] and memory_read("int", child + O.ConstantCount) == 3 and memory_read("int", child + O.CodeSize) == 12 and code and code > 0x10000 then
-            local wait = memory_read("int", code + 8)
-            local result = memory_read("int", code + 36)
-            if memory_read("int", code + 28) == 0x48 and memory_read("int", code + 32) == 0x91 and memory_read("int", code + 40) == 0x10091 and (wait == 0x301DE or wait == 0x1DE) and (result == 0x48 or result == 0x10048) then
+            local function byte(offset) return memory_read("byte", code + offset) end
+            local loads = byte(28) == byte(36) and byte(29) == 0 and byte(30) == 0 and byte(31) == 0 and byte(37) == 0 and (byte(38) == 0 or byte(38) == 1) and byte(39) == 0
+            local stores = byte(32) == byte(40) and byte(28) ~= byte(32) and byte(33) == 0 and byte(34) == 0 and byte(35) == 0 and byte(41) == 0 and byte(42) == 1 and byte(43) == 0
+            local wait = byte(9) == 1 and (byte(10) == 3 or byte(10) == 0) and byte(11) == 0
+            if loads and stores and wait then
                 local Patches = {}
                 GOLDEN.patch(Patches, "byte", code + 38, 0, 1)
                 GOLDEN.patch(Patches, "byte", code + 10, 3, 0)
@@ -1858,12 +1892,8 @@ end
 
 function GOLDEN.tweenFor(target, wanted)
     local O = GOLDEN.Offsets
-    if not GOLDEN.Service then
-        for _, Service in ipairs(game:GetChildren()) do
-            if Service.ClassName == "TweenService" then GOLDEN.Service = tonumber(Service.Address) break end
-        end
-    end
-    if not GOLDEN.Service then return nil end
+    if not GOLDEN.Map.Tween then GOLDEN.queueTween() return nil end
+    if not GOLDEN.service() then return nil end
     local first = memory_read("uintptr_t", GOLDEN.Service + O.TweenList)
     local last = memory_read("uintptr_t", GOLDEN.Service + O.TweenList + 8)
     if not first or not last or last < first or last - first > 16 * 512 then return nil end
@@ -1911,6 +1941,576 @@ function GOLDEN.active(parts)
     return GOLDEN.Ready
 end
 
+function GOLDEN.snapshot()
+    local Copy = {Encoding = {}}
+    for key, value in pairs(GOLDEN.Offsets) do
+        if type(value) == "number" then Copy[key] = value end
+    end
+    for key, value in pairs(GOLDEN.Offsets.Encoding) do Copy.Encoding[key] = value end
+    return Copy
+end
+
+function GOLDEN.apply(Copy)
+    for key, value in pairs(Copy) do
+        if type(value) == "number" and type(GOLDEN.Offsets[key]) == "number" then GOLDEN.Offsets[key] = value end
+    end
+    for key, value in pairs(type(Copy.Encoding) == "table" and Copy.Encoding or {}) do
+        if type(value) == "number" and GOLDEN.Offsets.Encoding[key] ~= nil then GOLDEN.Offsets.Encoding[key] = value end
+    end
+end
+
+function GOLDEN.build()
+    local Map = GOLDEN.Map
+    if Map.Build or not VantaUI.MemoryAccess() then return Map.Build end
+    local base = getbase()
+    local header = memory_read("int", base + 0x3C)
+    Map.Build = tostring(memory_read("int", base + header + 8)) .. ":" .. tostring(memory_read("int", base + header + 0x50))
+    return Map.Build
+end
+
+function GOLDEN.changed(Before)
+    for key, value in pairs(GOLDEN.snapshot()) do
+        if key ~= "Encoding" and Before[key] ~= value then return true end
+    end
+    for key, value in pairs(GOLDEN.Offsets.Encoding) do
+        if Before.Encoding[key] ~= value then return true end
+    end
+    return false
+end
+
+function GOLDEN.saveMap(ran)
+    local Map = GOLDEN.Map
+    if ran or not Map.LastRun then Map.LastRun = os.time() end
+    Map.Works, Map.SavedBuild = Map.Luau, GOLDEN.build()
+    if type(writefile) ~= "function" then return end
+    local Data = GOLDEN.snapshot()
+    Data.LastRun, Data.Works, Data.Build = Map.LastRun, Map.Works, Map.SavedBuild
+    UI.folder(CONFIG_FOLDER)
+    pcall(writefile, Map.File, HttpService:JSONEncode(Data))
+end
+
+function GOLDEN.ago(time)
+    local seconds = os.time() - time
+    local minutes, hours, days = math.floor(seconds / 60), math.floor(seconds / 3600), math.floor(seconds / 86400)
+    if days > 0 then return days .. (days == 1 and " day ago" or " days ago") end
+    if hours > 0 then return hours .. (hours == 1 and " hour ago" or " hours ago") end
+    if minutes > 0 then return minutes .. (minutes == 1 and " minute ago" or " minutes ago") end
+    return "just now"
+end
+
+function GOLDEN.showStatus()
+    local Map = GOLDEN.Map
+    local Status = Map.Label
+    if not (Status and Status.SetContent) then return end
+    local text, color
+    if Map.State == "Success" then
+        text, color = "Status: Success", Color3.fromRGB(80, 200, 110)
+    elseif Map.State == "Lobby" then
+        text, color = "Status: Be in the game!", Color3.fromRGB(230, 80, 80)
+    elseif Map.State == "Failed" then
+        text, color = "Status: Failed (" .. tostring(Map.Reason) .. ")", Color3.fromRGB(230, 80, 80)
+    elseif not Map.LastRun then
+        text = "Status: Unknown"
+    else
+        local current = GOLDEN.build()
+        local works = Map.Works and (not current or not Map.SavedBuild or current == Map.SavedBuild)
+        text = (works and "Status: Works" or "Status: Requires a remap") .. " (ran " .. GOLDEN.ago(Map.LastRun) .. ")"
+    end
+    Status:SetContent(text)
+    if Status.SetColor then Status:SetColor(color) end
+end
+
+function GOLDEN.setStatus(state, reason)
+    GOLDEN.Map.State, GOLDEN.Map.Reason = state, reason
+    GOLDEN.showStatus()
+end
+
+function GOLDEN.loadMap()
+    GOLDEN.Map.Loaded = true
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then return end
+    local ok, Data = pcall(function()
+        if not isfile(GOLDEN.Map.File) then return nil end
+        return HttpService:JSONDecode(readfile(GOLDEN.Map.File))
+    end)
+    if not (ok and type(Data) == "table") then return end
+    GOLDEN.apply(Data)
+    GOLDEN.Map.LastRun, GOLDEN.Map.Works, GOLDEN.Map.SavedBuild = tonumber(Data.LastRun), Data.Works == true, type(Data.Build) == "string" and Data.Build or nil
+end
+
+function GOLDEN.entries(key)
+    GOLDEN.Cache = GOLDEN.Cache or {}
+    GOLDEN.Cache[key] = GOLDEN.Cache[key] or getgc(key) or {}
+    return GOLDEN.Cache[key]
+end
+
+function GOLDEN.fields(current, mode, full, last)
+    local List = {{Offset = current, Mode = mode or 0}}
+    if not full then return List end
+    for offset = 0x08, last or 0xC8, 8 do
+        for encoding = 0, 3 do table.insert(List, {Offset = offset, Mode = encoding}) end
+    end
+    return List
+end
+
+function GOLDEN.counts(current, full)
+    local List = {current}
+    if not full then return List end
+    for offset = 0x08, 0xFC, 4 do table.insert(List, offset) end
+    return List
+end
+
+function GOLDEN.ints(proto)
+    local Values = {}
+    for offset = 0x08, 0xFC, 4 do Values[offset] = memory_read("int", proto + offset) end
+    return Values
+end
+
+function GOLDEN.scanConstants(base, limit)
+    local O = GOLDEN.Offsets
+    local found
+    for index = 0, limit - 1 do
+        local slot = base + index * 16
+        local tag = memory_read("int", slot + O.ValueTag)
+        if not tag or tag < 0 or tag > 31 then return index, found end
+        if tag == O.StringTag or tag == O.FunctionTag then
+            local value = memory_read("uintptr_t", slot)
+            if not GOLDEN.heap(value) or memory_read("byte", value + O.Tag) ~= tag then return index, found end
+            if not found and tag == O.StringTag and GOLDEN.text(value) == "noinput" then found = index end
+        end
+    end
+    return limit, found
+end
+
+function GOLDEN.mapConstants(Protos, Ints, full)
+    local O = GOLDEN.Offsets
+    local Best
+    for _, Field in ipairs(GOLDEN.fields(O.Constants, O.Encoding.Constants, full)) do
+        local Lengths = {}
+        for index, proto in ipairs(Protos) do
+            local base = GOLDEN.pointer(proto + Field.Offset, Field.Mode)
+            if not GOLDEN.heap(base) then Lengths = nil break end
+            local length, found = GOLDEN.scanConstants(base, 1024)
+            if index <= 2 and not found then Lengths = nil break end
+            Lengths[index] = {Length = length, Minimum = index <= 2 and found + 1 or 1}
+        end
+        for _, offset in ipairs(Lengths and GOLDEN.counts(O.ConstantCount, full) or {}) do
+            local total = 0
+            for index = 1, #Protos do
+                local count = Ints[index][offset]
+                if not count or count < Lengths[index].Minimum or count > Lengths[index].Length then total = nil break end
+                total = total + count
+            end
+            if total and (not Best or total > Best.Total) then Best = {Total = total, Offset = Field.Offset, Mode = Field.Mode, Count = offset} end
+        end
+        if full then task.wait() end
+    end
+    if not Best then return false end
+    O.Constants, O.Encoding.Constants, O.ConstantCount = Best.Offset, Best.Mode, Best.Count
+    return true
+end
+
+function GOLDEN.mapChildren(Protos, Ints, full)
+    local O = GOLDEN.Offsets
+    local Best
+    for _, Field in ipairs(GOLDEN.fields(O.Children, O.Encoding.Children, full)) do
+        local Lengths = {}
+        for index, proto in ipairs(Protos) do
+            local base = GOLDEN.pointer(proto + Field.Offset, Field.Mode)
+            local length = 0
+            if not GOLDEN.heap(base) and index == 2 then Lengths = nil break end
+            while GOLDEN.heap(base) and length < 256 do
+                local child = memory_read("uintptr_t", base + length * 8)
+                if not GOLDEN.heap(child) or memory_read("byte", child + O.Tag) ~= O.ProtoTag then break end
+                length = length + 1
+            end
+            Lengths[index] = length
+        end
+        for _, offset in ipairs(Lengths and Lengths[2] >= 2 and GOLDEN.counts(O.ChildCount, full) or {}) do
+            local total = offset ~= O.ConstantCount and 0 or nil
+            for index = 1, total and #Protos or 0 do
+                local count = Ints[index][offset]
+                if not count or count < 0 or count > Lengths[index] or (index == 2 and count < 2) then total = nil break end
+                total = total + count
+            end
+            if total and (not Best or total > Best.Total) then Best = {Total = total, Offset = Field.Offset, Mode = Field.Mode, Count = offset} end
+        end
+        if full then task.wait() end
+    end
+    if not Best then return false end
+    O.Children, O.Encoding.Children, O.ChildCount = Best.Offset, Best.Mode, Best.Count
+    return true
+end
+
+function GOLDEN.mapCode(Protos, Ints, full)
+    local O = GOLDEN.Offsets
+    local Found = {}
+    for _, Field in ipairs(GOLDEN.fields(O.Code, O.Encoding.Code, full)) do
+        local Bases = {}
+        for index, proto in ipairs(Protos) do
+            local base = GOLDEN.pointer(proto + Field.Offset, Field.Mode)
+            if not GOLDEN.heap(base) or (base >= proto and base < proto + 0x200) then Bases = nil break end
+            Bases[index] = base
+        end
+        for _, offset in ipairs(Bases and GOLDEN.counts(O.CodeSize, full) or {}) do
+            local last = offset ~= O.ConstantCount and offset ~= O.ChildCount and -1 or nil
+            local Sizes, distinct = {}, 0
+            for index = 1, last and #Protos or 0 do
+                local size = Ints[index][offset]
+                local word = size and size >= 1 and size <= 65536 and memory_read("int", Bases[index] + (size - 1) * 4)
+                local operation = word and word ~= 0 and word % 256
+                if not operation or (last ~= -1 and operation ~= last) then last = nil break end
+                last = operation
+                if not Sizes[size] then Sizes[size], distinct = true, distinct + 1 end
+            end
+            if last and distinct >= 3 then table.insert(Found, {Offset = Field.Offset, Mode = Field.Mode, Size = offset}) end
+        end
+        if full then task.wait() end
+    end
+    local Choice = Found[1]
+    if not Choice then return false end
+    for _, Candidate in ipairs(Found) do
+        for index = 1, #Protos do
+            if Ints[index][Candidate.Size] ~= Ints[index][Choice.Size] then return false end
+        end
+    end
+    O.Code, O.Encoding.Code, O.CodeSize = Choice.Offset, Choice.Mode, Choice.Size
+    return true
+end
+
+function GOLDEN.mapProto(Protos, full)
+    local Ints = {}
+    for index, proto in ipairs(Protos) do Ints[index] = GOLDEN.ints(proto) end
+    if not GOLDEN.mapConstants(Protos, Ints, full) then return false end
+    if not GOLDEN.mapChildren(Protos, Ints, full) then return false end
+    local All, AllInts = {}, {}
+    for index, proto in ipairs(Protos) do
+        table.insert(All, proto)
+        table.insert(AllInts, Ints[index])
+    end
+    for index = 2, #Protos do
+        for _, child in ipairs(GOLDEN.children(Protos[index])) do
+            if #All < 40 then
+                table.insert(All, child)
+                table.insert(AllInts, GOLDEN.ints(child))
+            end
+        end
+    end
+    return GOLDEN.mapCode(All, AllInts, full)
+end
+
+function GOLDEN.findLuau(force)
+    local O = GOLDEN.Offsets
+    local Invoke = GOLDEN.entries("handleInvoke")[1]
+    if not (Invoke and Invoke.addr and Invoke.vtt) then return false, "skill check scripts not found" end
+    local functionTag = Invoke.vtt
+    local Entries = {Invoke}
+    for _, Entry in ipairs(GOLDEN.entries("HandleSkillCheck")) do
+        if Entry.vtt == functionTag and Entry.addr then table.insert(Entries, Entry) end
+    end
+    if #Entries < 3 then return false, "skill check scripts not found" end
+    local Closures = {}
+    for index, Entry in ipairs(Entries) do
+        Closures[index] = memory_read("uintptr_t", Entry.addr)
+        if not GOLDEN.heap(Closures[index]) then return false, "Luau object layout not recognised" end
+    end
+    local valueTag
+    for _, offset in ipairs({12, 8}) do
+        local match = true
+        for _, Entry in ipairs(Entries) do
+            if memory_read("int", Entry.addr + offset) ~= functionTag then match = false break end
+        end
+        if match then valueTag = offset break end
+    end
+    if not valueTag then return false, "Luau object layout not recognised" end
+    local tag
+    for index = 0, 3 do
+        local match = true
+        for _, closure in ipairs(Closures) do
+            if memory_read("byte", closure + index) ~= functionTag then match = false break end
+        end
+        if match and tag then return false, "Luau object layout not recognised" end
+        if match then tag = index end
+    end
+    if not tag then return false, "Luau object layout not recognised" end
+    local key, other = memory_read("uintptr_t", Invoke.addr + 16), memory_read("uintptr_t", Entries[2].addr + 16)
+    if not (GOLDEN.heap(key) and GOLDEN.heap(other)) then return false, "Luau object layout not recognised" end
+    local stringTag = memory_read("byte", key + tag)
+    local textOffset, lengthOffset
+    for offset = 8, 64, 4 do
+        if memory_read("string", key + offset) == "handleInvoke" then textOffset = offset break end
+    end
+    if not textOffset then return false, "Luau object layout not recognised" end
+    for offset = textOffset - 4, 4, -4 do
+        if memory_read("int", key + offset) == 12 then lengthOffset = offset break end
+    end
+    if not lengthOffset or memory_read("byte", other + tag) ~= stringTag or memory_read("int", other + lengthOffset) ~= 16 or memory_read("string", other + textOffset) ~= "HandleSkillCheck" then return false, "Luau object layout not recognised" end
+    local nups
+    for index = tag + 1, 7 do
+        if memory_read("byte", Closures[1] + index) == 6 then
+            local Seen = {}
+            for position = 2, #Closures do Seen[memory_read("byte", Closures[position] + index)] = true end
+            if Seen[11] and Seen[14] then nups = index break end
+        end
+    end
+    if not nups then return false, "Luau object layout not recognised" end
+    local upvalues
+    for offset = 0x10, 0x48, 8 do
+        local match = memory_read("int", Closures[1] + offset + 5 * 16 + valueTag) == functionTag
+        for _, closure in ipairs(match and Closures or {}) do
+            for index = 0, memory_read("byte", closure + nups) - 1 do
+                local value = memory_read("int", closure + offset + index * 16 + valueTag)
+                if not value or value < 0 or value > 31 then match = false break end
+            end
+            if not match then break end
+        end
+        if match then upvalues = offset break end
+    end
+    if not upvalues then return false, "Luau object layout not recognised" end
+    O.Tag, O.ValueTag, O.FunctionTag, O.StringTag, O.StringText, O.StringLength, O.Nups, O.Upvalues, O.Upvalue = tag, valueTag, functionTag, stringTag, textOffset, lengthOffset, nups, upvalues, upvalues + 5 * 16
+    local check = memory_read("uintptr_t", Closures[1] + O.Upvalue)
+    if not GOLDEN.heap(check) or memory_read("byte", check + tag) ~= functionTag then return false, "Luau object layout not recognised" end
+    local Owners = {Closures[1], check}
+    for position = 2, #Closures do table.insert(Owners, Closures[position]) end
+    for _, full in ipairs(force and {true} or {false, true}) do
+        for _, Field in ipairs(GOLDEN.fields(O.Proto, O.Encoding.Proto, full, upvalues - 8)) do
+            local Protos, protoTag = {}, nil
+            for index, owner in ipairs(Owners) do
+                local proto = GOLDEN.pointer(owner + Field.Offset, Field.Mode)
+                local kind = GOLDEN.heap(proto) and memory_read("byte", proto + tag)
+                if not kind or (protoTag and kind ~= protoTag) then Protos = nil break end
+                protoTag = kind
+                Protos[index] = proto
+            end
+            if Protos and protoTag ~= functionTag and protoTag ~= stringTag then
+                O.ProtoTag = protoTag
+                if GOLDEN.mapProto(Protos, full) then
+                    O.Proto, O.Encoding.Proto = Field.Offset, Field.Mode
+                    return true
+                end
+            end
+        end
+    end
+    return false, "function layout not found"
+end
+
+function GOLDEN.mapLuau(force)
+    local Previous, mapped = GOLDEN.snapshot(), GOLDEN.Map.Luau
+    local ok, found, reason = pcall(GOLDEN.findLuau, force)
+    reason = ok and reason or "error: " .. tostring(found):sub(1, 60)
+    found = ok and found == true
+    if not found then GOLDEN.apply(Previous) end
+    GOLDEN.Map.Luau = found or mapped
+    GOLDEN.Map.Verified = found or GOLDEN.Map.Verified
+    return found, reason
+end
+
+function GOLDEN.service()
+    if GOLDEN.Service then return GOLDEN.Service end
+    for _, Service in ipairs(game:GetChildren()) do
+        if Service.ClassName == "TweenService" then GOLDEN.Service = tonumber(Service.Address) break end
+    end
+    return GOLDEN.Service
+end
+
+function GOLDEN.className(address)
+    local descriptor = memory_read("uintptr_t", address + 0x18)
+    if not descriptor or descriptor < 0x10000 then return nil end
+    local name = memory_read("uintptr_t", descriptor + 8)
+    if not name or name < 0x10000 then return nil end
+    local text = memory_read("string", name)
+    if type(text) ~= "string" or #text < 2 or #text > 40 or not text:match("^%a+$") then return nil end
+    return text
+end
+
+function GOLDEN.tweens(service, offset)
+    local first, last = memory_read("uintptr_t", service + offset), memory_read("uintptr_t", service + offset + 8)
+    if not (GOLDEN.heap(first) and GOLDEN.heap(last)) or last <= first or (last - first) % 16 ~= 0 or last - first > 16 * 512 then return nil end
+    local List = {}
+    for entry = first, last - 16, 16 do
+        local tween = memory_read("uintptr_t", entry)
+        if not GOLDEN.heap(tween) or GOLDEN.className(tween) ~= "Tween" then return nil end
+        table.insert(List, tween)
+    end
+    return List
+end
+
+function GOLDEN.findTween(force)
+    local O = GOLDEN.Offsets
+    local service = GOLDEN.service()
+    if not service then return false, "TweenService not found" end
+    local listOffset, Tweens = O.TweenList, GOLDEN.tweens(service, O.TweenList)
+    for offset = 0x40, Tweens and 0 or 0x400, 8 do
+        Tweens = GOLDEN.tweens(service, offset)
+        if Tweens then listOffset = offset break end
+    end
+    if not Tweens then return false, "no animations playing" end
+    local Samples = {}
+    for index = 1, math.min(#Tweens, 6) do
+        local Floats = {}
+        for offset = 0x40, 0x300, 4 do Floats[offset] = memory_read("float", Tweens[index] + offset) end
+        Samples[index] = {Tween = Tweens[index], Before = Floats}
+    end
+    task.wait(0.2)
+    local Present, Alive = {}, {}
+    for _, tween in ipairs(GOLDEN.tweens(service, listOffset) or {}) do Present[tween] = true end
+    for _, Sample in ipairs(Samples) do
+        if Present[Sample.Tween] then
+            Sample.After = {}
+            for offset = 0x40, 0x300, 4 do Sample.After[offset] = memory_read("float", Sample.Tween + offset) end
+            table.insert(Alive, Sample)
+        end
+    end
+    if #Alive < 1 then return false, "animations ended while sampling" end
+    local function passes(test, offset, share)
+        if offset < 0x40 or offset > 0x300 then return false end
+        local count = 0
+        for _, Sample in ipairs(Alive) do
+            if test(Sample, offset) then count = count + 1 end
+        end
+        return count >= math.max(1, math.ceil(#Alive * (share or 1)))
+    end
+    local function targets(Sample, offset)
+        local pointer = memory_read("uintptr_t", Sample.Tween + offset)
+        if not GOLDEN.heap(pointer) or pointer == Sample.Tween then return false end
+        local name = GOLDEN.className(pointer)
+        return name ~= nil and name ~= "Tween" and name ~= "TweenService"
+    end
+    local function elapses(Sample, offset)
+        local before, after = Sample.Before[offset], Sample.After[offset]
+        return before ~= nil and after ~= nil and before >= 0 and after - before >= 0.05 and after - before <= 2 and after < 3600
+    end
+    local function lasts(elapsed)
+        return function(Sample, offset)
+            local before, after = Sample.Before[offset], Sample.After[offset]
+            return before ~= nil and before == after and before > 0 and before < 3600 and offset ~= elapsed
+        end
+    end
+    local function unique(test, step, share)
+        local found
+        for offset = 0x40, #Alive >= 2 and 0x300 or 0, step do
+            if passes(test, offset, share) then
+                if found then return nil end
+                found = offset
+            end
+        end
+        return found
+    end
+    local target, elapsed, duration
+    for shift = 0, 0x80, 4 do
+        for _, delta in ipairs(shift == 0 and {0} or {shift, -shift}) do
+            if not target and (O.TweenTarget + delta) % 8 == 0 and passes(targets, O.TweenTarget + delta) and passes(elapses, O.TweenElapsed + delta, 0.6) and passes(lasts(O.TweenElapsed + delta), O.TweenTime + delta) then
+                target, elapsed, duration = O.TweenTarget + delta, O.TweenElapsed + delta, O.TweenTime + delta
+            end
+        end
+    end
+    if not target then
+        target = passes(targets, O.TweenTarget) and O.TweenTarget or unique(targets, 8)
+        elapsed = passes(elapses, O.TweenElapsed, 0.6) and O.TweenElapsed or unique(elapses, 4, 0.6)
+        duration = elapsed and (passes(lasts(elapsed), O.TweenTime) and O.TweenTime or unique(lasts(elapsed), 4))
+    end
+    if not (target and elapsed and duration) then return false, "tween fields not found" end
+    O.TweenList, O.TweenTarget, O.TweenElapsed, O.TweenTime = listOffset, target, elapsed, duration
+    return true
+end
+
+function GOLDEN.mapTween(force)
+    local ok, found, reason = pcall(GOLDEN.findTween, force)
+    reason = ok and reason or "error: " .. tostring(found):sub(1, 60)
+    found = ok and found == true
+    GOLDEN.Map.Tween = found or GOLDEN.Map.Tween
+    return found, reason
+end
+
+function GOLDEN.queueTween()
+    local Map, now = GOLDEN.Map, tick()
+    if Map.TweenBusy or GOLDEN.Busy or now < Map.TweenNext or not VantaUI.MemoryAccess() then return end
+    Map.TweenNext = now + 20
+    Map.TweenBusy = true
+    task.spawn(function()
+        local Before = GOLDEN.snapshot()
+        if GOLDEN.mapTween(false) then
+            local changed = GOLDEN.changed(Before)
+            GOLDEN.saveMap(changed)
+            if changed or Map.State == "Failed" then GOLDEN.setStatus(changed and "Success" or nil) end
+        end
+        Map.TweenBusy = false
+    end)
+end
+
+function GOLDEN.prepare(now)
+    local Map = GOLDEN.Map
+    if now >= Map.StatusAt then
+        Map.StatusAt = now + 30
+        GOLDEN.showStatus()
+    end
+    if not (SETTINGS.alwaysGolden or SETTINGS.betterBarnaby) or PLACE_MODE ~= "main" then return end
+    if GOLDEN.Busy or SWIMMER.Busy or not VantaUI.MemoryAccess() then return end
+    if not Map.Loaded then GOLDEN.loadMap() end
+    if not SETTINGS.autoRemap then
+        Map.Luau, Map.Tween = true, true
+        return
+    end
+    if Map.Verified then
+        if SETTINGS.alwaysGolden and not Map.Tween then GOLDEN.queueTween() end
+        return
+    end
+    Map.NextTry = Map.NextTry or now + 10
+    if now < Map.NextTry or Map.Tries >= 3 or Map.Waits >= 15 then return end
+    Map.NextTry = now + 20
+    GOLDEN.Busy = true
+    task.spawn(function()
+        GOLDEN.Cache = {}
+        local Before = GOLDEN.snapshot()
+        local luau, reason = GOLDEN.mapLuau(false)
+        local missing = reason == "skill check scripts not found"
+        if missing then Map.Waits = Map.Waits + 1 else Map.Tries = Map.Tries + 1 end
+        if luau then
+            local tween, tweenReason = GOLDEN.mapTween(false)
+            local changed = GOLDEN.changed(Before)
+            GOLDEN.saveMap(changed)
+            if tween or tweenReason ~= "tween fields not found" then
+                GOLDEN.setStatus(changed and "Success" or nil)
+            else
+                GOLDEN.setStatus("Failed", "tween offsets: " .. tweenReason .. ", retrying during skill checks")
+            end
+        elseif not missing then
+            GOLDEN.setStatus("Failed", "Golden and Barnaby offsets: " .. reason)
+        end
+        if not luau and not missing and Map.Tries >= 3 then
+            VantaUI:Notify("Memory offsets", "Could not find the memory offsets, so Always hit Golden and Better Barnaby stay off. Press Remap the memory offsets to try again.", 8)
+        end
+        if not SETTINGS.alwaysGolden then GOLDEN.Cache = nil end
+        GOLDEN.Busy = false
+    end)
+end
+
+function GOLDEN.remap()
+    if PLACE_MODE ~= "main" then GOLDEN.setStatus("Lobby") return end
+    if not VantaUI.MemoryAccess() then VantaUI:Notify("Memory offsets", "Memory access is off.", 4) return end
+    if GOLDEN.Busy or SWIMMER.Busy or GOLDEN.Map.TweenBusy then VantaUI:Notify("Memory offsets", "Busy, try again in a few seconds.", 4) return end
+    if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
+    GOLDEN.Busy = true
+    VantaUI:Notify("Memory offsets", "Remapping, Roblox may freeze for a few seconds.", 4)
+    task.spawn(function()
+        GOLDEN.Cache = {}
+        local luau, luauReason = GOLDEN.mapLuau(true)
+        local tween, tweenReason = GOLDEN.mapTween(true)
+        if luau or tween then GOLDEN.saveMap(true) end
+        local Failures = {}
+        if not luau then table.insert(Failures, "Golden and Barnaby offsets: " .. luauReason) end
+        if not tween then table.insert(Failures, "tween offsets: " .. tweenReason) end
+        GOLDEN.setStatus(#Failures == 0 and "Success" or "Failed", table.concat(Failures, "; "))
+        GOLDEN.Cache = nil
+        GOLDEN.Map.Tries, GOLDEN.Map.Waits, GOLDEN.Map.NextTry, GOLDEN.Map.TweenNext = 0, 0, 0, 0
+        GOLDEN.Attempts, GOLDEN.NextScan = 0, 0
+        SWIMMER.Attempts, SWIMMER.NextScan = 0, 0
+        GOLDEN.Busy = false
+        local skill = luau and "Skill check and Barnaby offsets found." or "Skill check and Barnaby offsets not found, those features stay off."
+        local engine = tween and "Tween offsets found." or "Tween offsets not found yet, retrying during skill checks."
+        VantaUI:Notify("Memory offsets", skill .. " " .. engine, 7)
+    end)
+end
+
 function GOLDEN.update(now)
     if not SETTINGS.alwaysGolden then
         if GOLDEN.Busy then return end
@@ -1921,12 +2521,12 @@ function GOLDEN.update(now)
     end
     if PLACE_MODE ~= "main" or GOLDEN.Busy then return end
     if not VantaUI.MemoryAccess() then return end
-    if (not GOLDEN.Ready or not GOLDEN.CircleReady or not GOLDEN.TreadReady) and now >= GOLDEN.NextScan and GOLDEN.Attempts < GOLDEN.MaxAttempts then
+    if (not GOLDEN.Ready or not GOLDEN.CircleReady or not GOLDEN.TreadReady) and GOLDEN.Map.Luau and now >= GOLDEN.NextScan and GOLDEN.Attempts < GOLDEN.MaxAttempts then
         GOLDEN.NextScan = now + GOLDEN.RetryDelay
         GOLDEN.Attempts = GOLDEN.Attempts + 1
         GOLDEN.Busy = true
         task.spawn(function()
-            GOLDEN.Cache = {}
+            GOLDEN.Cache = GOLDEN.Cache or {}
             if not GOLDEN.Ready then pcall(GOLDEN.setupBar) end
             if not GOLDEN.CircleReady or not GOLDEN.TreadReady then pcall(GOLDEN.setupHandlers) end
             GOLDEN.Cache = nil
@@ -2531,36 +3131,37 @@ function SWIMMER.setup()
         local gravity = slot and SWIMMER.sibling(slot, "SetGravity")
         local bounds = slot and SWIMMER.sibling(slot, "IsOutOfBounds")
         local new = slot and SWIMMER.sibling(slot, "new")
-        if gravity and bounds and new and memory_read("int", slot + 12) == 8 and memory_read("int", bounds + 12) == 8 then
+        local O = GOLDEN.Offsets
+        if gravity and bounds and new and memory_read("int", slot + O.ValueTag) == O.FunctionTag and memory_read("int", bounds + O.ValueTag) == O.FunctionTag and memory_read("int", gravity + O.ValueTag) == O.FunctionTag and memory_read("int", new + O.ValueTag) == O.FunctionTag then
             SWIMMER.Patches = {}
             local noop = memory_read("uintptr_t", gravity)
             local overlap, outside = memory_read("uintptr_t", slot), memory_read("uintptr_t", bounds)
             if overlap ~= noop then SWIMMER.patch(slot, "uintptr_t", overlap, noop) end
             if outside ~= noop then SWIMMER.patch(bounds, "uintptr_t", outside, noop) end
             local closure = memory_read("uintptr_t", new)
-            local proto = closure and memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
-            local base = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
-            local count = proto and memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
+            local proto = GOLDEN.heap(closure) and GOLDEN.read(closure, "Proto")
+            local base = GOLDEN.heap(proto) and GOLDEN.read(proto, "Constants")
+            local count = GOLDEN.heap(proto) and memory_read("int", proto + O.ConstantCount)
             local accelerationKey
             if base and base > 0x10000 and count and count > 0 and count < 128 then
                 for index = 0, count - 1 do
                     local constant = base + index * 16
-                    local tag = memory_read("int", constant + 12)
-                    if tag == 3 then
+                    local tag = memory_read("int", constant + O.ValueTag)
+                    if tag == O.NumberTag then
                         local value = memory_read("double", constant)
                         if math.abs(value + 0.1) < 1e-9 then SWIMMER.patch(constant, "double", value, 0) end
-                    elseif tag == 6 and GOLDEN.text(memory_read("uintptr_t", constant)) == "Acceleration_Y" then
+                    elseif tag == O.StringTag and GOLDEN.text(memory_read("uintptr_t", constant)) == "Acceleration_Y" then
                         accelerationKey = index
                     end
                 end
             end
-            local code = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Code)
-            local size = proto and memory_read("int", proto + GOLDEN.Offsets.CodeSize)
+            local code = GOLDEN.heap(proto) and GOLDEN.read(proto, "Code")
+            local size = GOLDEN.heap(proto) and memory_read("int", proto + O.CodeSize)
             if accelerationKey and code and code > 0x10000 and size and size > 2 and size < 256 then
                 for index = 0, size - 3 do
                     local word = code + index * 4
                     local low, high = memory_read("byte", word + 2), memory_read("byte", word + 3)
-                    if memory_read("byte", word) == 0xDE and ((low == 0xFB and high == 0xFF) or (low == 1 and high == 0)) and memory_read("byte", word + 4) == 0x1C and memory_read("int", word + 8) == accelerationKey then
+                    if ((low == 0xFB and high == 0xFF) or (low == 1 and high == 0)) and memory_read("byte", word + 5) == memory_read("byte", word + 1) and memory_read("int", word + 8) == accelerationKey then
                         SWIMMER.patch(word + 2, "byte", 0xFB, 0)
                         SWIMMER.patch(word + 3, "byte", 0xFF, 0)
                         break
@@ -2579,11 +3180,12 @@ function SWIMMER.patchCoinReach()
     for _, Entry in ipairs(getgc("HasClearedFish") or {}) do
         local slot = Entry.addr
         local tickSlot = slot and SWIMMER.sibling(slot, "tick")
-        if tickSlot and memory_read("int", slot + 12) == 8 and memory_read("int", tickSlot + 12) == 8 then
+        local O = GOLDEN.Offsets
+        if tickSlot and memory_read("int", slot + O.ValueTag) == O.FunctionTag and memory_read("int", tickSlot + O.ValueTag) == O.FunctionTag then
             local closure = memory_read("uintptr_t", tickSlot)
-            local proto = closure and memory_read("uintptr_t", closure + GOLDEN.Offsets.Proto)
-            local base = proto and memory_read("uintptr_t", proto + GOLDEN.Offsets.Constants)
-            local count = proto and memory_read("int", proto + GOLDEN.Offsets.ConstantCount)
+            local proto = GOLDEN.heap(closure) and GOLDEN.read(closure, "Proto")
+            local base = GOLDEN.heap(proto) and GOLDEN.read(proto, "Constants")
+            local count = GOLDEN.heap(proto) and memory_read("int", proto + O.ConstantCount)
             if base and base > 0x10000 and count and count > 0 and count < 128 then
                 local Names = GOLDEN.named(proto)
                 local Magnitude, X = Names["Magnitude"], Names["X"]
@@ -2615,6 +3217,7 @@ function SWIMMER.update()
     if SWIMMER.Busy or not VantaUI.MemoryAccess() then return true end
     if not SWIMMER.Ready then
         local now = tick()
+        if not GOLDEN.Map.Luau then return false end
         if now >= SWIMMER.NextScan and SWIMMER.Attempts < 3 then
             SWIMMER.NextScan = now + 10
             SWIMMER.Attempts = SWIMMER.Attempts + 1
@@ -4641,41 +5244,105 @@ function FARM.MASTERY.waitFocus()
     return focused
 end
 
+function FARM.cursorCalibrate()
+    local C = FARM.CURSOR
+    local Mouse = LocalPlayer and LocalPlayer:GetMouse()
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize
+    if not (Mouse and viewport) or not robloxFocused() then return false end
+    local Samples = {}
+    for _, point in ipairs({{0.3, 0.3}, {0.7, 0.7}, {0.5, 0.45}}) do
+        local x, y = math.floor(viewport.X * point[1]), math.floor(viewport.Y * point[2])
+        mousemoveabs(x, y)
+        task.wait(0.2)
+        local mouseX, mouseY = Mouse.X, Mouse.Y
+        if not robloxFocused() or type(mouseX) ~= "number" or type(mouseY) ~= "number" then return false end
+        table.insert(Samples, {X = x, Y = y, MouseX = mouseX, MouseY = mouseY})
+    end
+    local first, second, third = Samples[1], Samples[2], Samples[3]
+    local scaleX = (second.MouseX - first.MouseX) / (second.X - first.X)
+    local scaleY = (second.MouseY - first.MouseY) / (second.Y - first.Y)
+    if scaleX < 0.3 or scaleX > 3 or scaleY < 0.3 or scaleY > 3 then return false end
+    local offsetX, offsetY = first.MouseX - scaleX * first.X, first.MouseY - scaleY * first.Y
+    if math.abs(scaleX * third.X + offsetX - third.MouseX) > 4 or math.abs(scaleY * third.Y + offsetY - third.MouseY) > 4 then return false end
+    C.Map = {ScaleX = scaleX, ScaleY = scaleY, OffsetX = offsetX, OffsetY = offsetY}
+    C.At, C.Viewport = tick(), viewport
+    return true
+end
+
+function FARM.cursorReady()
+    local C = FARM.CURSOR
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize
+    if C.Map and tick() - C.At < 300 and viewport and C.Viewport and viewport.X == C.Viewport.X and viewport.Y == C.Viewport.Y then return true end
+    if tick() < C.RetryAt then return true end
+    if C.Busy or not KEYS.allowed() then return false end
+    C.Busy = true
+    task.spawn(function()
+        if FARM.cursorCalibrate() then
+            C.Failures = 0
+        else
+            C.Failures = C.Failures + 1
+            if C.Failures >= 3 then C.Failures, C.RetryAt = 0, tick() + 60 end
+        end
+        C.Busy = false
+    end)
+    return false
+end
+
+function FARM.guiScale(gui)
+    local C = FARM.CURSOR
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize
+    local Root = gui
+    for _ = 1, 40 do
+        if not Root or Root.ClassName == "ScreenGui" then break end
+        Root = Root.Parent
+    end
+    if viewport and Root and VantaUI.MemoryAccess() then
+        local ok, width, height = pcall(function()
+            local address = tonumber(Root.Address) + FARM.GUI.positionOffset + 8
+            return memory_read("float", address), memory_read("float", address + 4)
+        end)
+        local scale = ok and type(width) == "number" and type(height) == "number" and width > 0 and height > 0 and viewport.X / width
+        if scale and scale >= 0.5 and scale <= 4 then
+            C.GuiScale = scale
+            return scale, viewport.Y - height * scale
+        end
+    end
+    return C.GuiScale or 1, 0
+end
+
+function FARM.cursorPoint(gui, x, y)
+    local Map = FARM.CURSOR.Map
+    if not Map then return math.floor(x) + 1, math.floor(y) + 24 end
+    local scale, inset = FARM.guiScale(gui)
+    local mouseX, mouseY = x * scale, y * scale + inset
+    return math.floor((mouseX - Map.OffsetX) / Map.ScaleX + 0.5), math.floor((mouseY - Map.OffsetY) / Map.ScaleY + 0.5)
+end
+
 function FARM.MASTERY.centre(gui)
     local position, size = gui.AbsolutePosition, FARM.guiSize(gui)
     return math.floor(position.X + size.X / 2 + 0.5), math.floor(position.Y + size.Y / 2 + 0.5)
 end
 
-function FARM.MASTERY.moveTo(x, y)
-    local offset = FARM.MASTERY.offset or { x = 0, y = 0 }
-    mousemoveabs(x + offset.x, y + offset.y)
+function FARM.MASTERY.moveTo(gui, x, y)
+    mousemoveabs(FARM.cursorPoint(gui, x, y))
 end
 
 function FARM.MASTERY.calibrate()
-    local M = FARM.MASTERY
-    local Mouse = LocalPlayer:GetMouse()
-    local samples = {}
-    for _, point in ipairs({ { 640, 480 }, { 1200, 700 } }) do
-        mousemoveabs(point[1], point[2])
+    for _ = 1, 3 do
+        if FARM.cursorCalibrate() then return true end
         task.wait(0.2)
-        local ok, mx, my = pcall(function() return Mouse.X, Mouse.Y end)
-        if ok and type(mx) == "number" and type(my) == "number" then
-            table.insert(samples, { x = point[1] - mx, y = point[2] - my })
-        end
     end
-    local first, second = samples[1], samples[2]
-    if first and second and math.abs(first.x - second.x) <= 3 and math.abs(first.y - second.y) <= 3 then
-        M.offset = { x = math.floor((first.x + second.x) / 2 + 0.5), y = math.floor((first.y + second.y) / 2 + 0.5) }
-    else
-        M.offset = { x = 0, y = 0 }
-    end
+    return false
 end
 
 function FARM.MASTERY.click(gui, delay)
     local M = FARM.MASTERY
     if not M.waitFocus() then return false end
     local x, y = M.centre(gui)
-    M.moveTo(x, y)
+    M.moveTo(gui, x, y)
     task.wait(0.03)
     mousemoverel(1, 0)
     M.waitFor(function()
@@ -4802,7 +5469,7 @@ function FARM.MASTERY.scrollTo(ui, card)
     for _ = 1, 30 do
         if M.stop or not M.waitFocus() then return false end
         local x, y = M.centre(ui.cards)
-        M.moveTo(x, y)
+        M.moveTo(ui.cards, x, y)
         task.wait(0.03)
         local okBefore, before, notches = pcall(function()
             local before = card.AbsolutePosition.Y
@@ -7496,8 +8163,10 @@ function FARM.runHalt()
 end
 
 function FARM.runClick(button)
+    if not FARM.cursorReady() then return false end
     local p, s = button.AbsolutePosition, FARM.guiSize(button)
-    if not KEYS.mouse(mousemoveabs, math.floor(p.X + s.X / 2) + 1, math.floor(p.Y + s.Y / 2) + 24) then return false end
+    local x, y = FARM.cursorPoint(button, p.X + s.X / 2, p.Y + s.Y / 2)
+    if not KEYS.mouse(mousemoveabs, x, y) then return false end
     pcall(mousemoverel, 3, 3)
     pcall(mousemoverel, -3, -3)
     return true
@@ -9773,6 +10442,12 @@ local function buildMenu()
     Experimental:AddParagraph({Title = "", Content = "This will always hit Golden no matter what. Does not use inputs. Allows you to minimize Roblox."})
     toggle(Experimental, "dw_better_barnaby", "Better Auto Barnaby", "betterBarnaby", Color3.fromRGB(45, 200, 235))
     Experimental:AddParagraph({Title = "", Content = "Does not use inputs. Allows you to minimize Roblox."})
+    Experimental:AddButton({Title = "Remap the memory offsets", Callback = GOLDEN.remap})
+    GOLDEN.Map.Label = Experimental:AddParagraph({Title = "", Content = "Status: Unknown"})
+    toggle(Experimental, "dw_auto_remap", "Remap automatically on join", "autoRemap")
+    if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
+    GOLDEN.showStatus()
+    Experimental:AddParagraph({Title = "", Content = "Finds the memory offsets again after a Roblox update. Press it when the status says Requires a remap."})
 
     local Barnaby = AutomationTab:AddSection("Barnaby", "Right")
     toggle(Barnaby, "dw_barnaby_enabled", "Auto Barnaby", "autoBarnaby")
@@ -10299,6 +10974,7 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     TOON.update(tick())
     REPORT.update(tick())
     RENDER.update(tick())
+    GOLDEN.prepare(tick())
     GOLDEN.update(tick())
 end)
 

@@ -512,6 +512,13 @@ function Section:AddParagraph(config)
 	function Element:ShowLines(visible)
 		for i, Line in ipairs(self.Lines) do Line.Visible = visible and self.Wrapped[i] ~= nil end
 	end
+	function Element:SetContent(value)
+		self.Content = value or ""
+		Library.Dirty = true
+	end
+	function Element:SetColor(color)
+		for _, Line in ipairs(self.Lines) do Line.Color = color or Theme.SubText end
+	end
 	return Element
 end
 
