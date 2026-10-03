@@ -214,6 +214,7 @@ local SETTINGS = {
     farmEventTwisteds = false,
     farmSkipResearched = true,
     farmIgnoreTwistedsTravel = false,
+    farmSpeedMultiplier = 1.32,
     farmTreadmillRun = true,
     farmTreadmillStopAt = 30,
     resumeAutoFarm = false,
@@ -690,6 +691,7 @@ local FARM = {
         CHASER_DEFAULTS = { InstantRadius = 30, VisionRadius = 70, LineOfSight = 0.4 },
         SprintDefault = 25,
         SprintMultiplier = 1.32,
+        SprintMultiplierMax = 1.42,
         SprintSpeed = 25,
         SprintReadEvery = 0.25,
         SprintReadAt = 0,
@@ -5481,17 +5483,56 @@ function FARM.MASTERY.calibrate()
     return false
 end
 
+function FARM.MASTERY.box(gui)
+    local ok, x, y, w, h = pcall(function()
+        local position, size = gui.AbsolutePosition, FARM.guiSize(gui)
+        return position.X, position.Y, size.X, size.Y
+    end)
+    if not ok or type(x) ~= "number" or type(w) ~= "number" then return nil end
+    return string.format("%.1f,%.1f,%.1f,%.1f", x, y, w, h)
+end
+
+function FARM.MASTERY.settle(gui)
+    local M = FARM.MASTERY
+    local last, steady = M.box(gui), 0
+    local deadline = tick() + 2
+    while tick() < deadline do
+        task.wait(0.08)
+        local now = M.box(gui)
+        steady = (now ~= nil and now == last) and steady + 1 or 0
+        last = now
+        if steady >= 2 then return true end
+    end
+    return false
+end
+
+function FARM.MASTERY.hover(gui)
+    local M = FARM.MASTERY
+    return M.waitFor(function()
+        local state = M.byte(gui, M.STATE)
+        return state == 1 or state == 2
+    end, 0.3)
+end
+
 function FARM.MASTERY.click(gui, delay)
     local M = FARM.MASTERY
     if not M.waitFocus() then return false end
+    if not M.shown(gui) then return false end
+    M.settle(gui)
     local x, y = M.centre(gui)
     M.moveTo(gui, x, y)
     task.wait(0.03)
     mousemoverel(1, 0)
-    M.waitFor(function()
-        local state = M.byte(gui, M.STATE)
-        return state == 1 or state == 2
-    end, 0.3)
+    local hovered = M.hover(gui)
+    if not hovered then
+        M.settle(gui)
+        x, y = M.centre(gui)
+        M.moveTo(gui, x, y)
+        task.wait(0.03)
+        mousemoverel(1, 0)
+        hovered = M.hover(gui)
+    end
+    if not hovered then return false end
     if delay then task.wait(delay) end
     mouse1click()
     task.wait(0.15)
@@ -5502,8 +5543,11 @@ function FARM.MASTERY.clickUntil(gui, check, timeout, tries, delay)
     local M = FARM.MASTERY
     for _ = 1, tries or 3 do
         if M.stop then return false end
-        M.click(gui, delay)
-        if M.waitFor(check, timeout) then return true end
+        if not M.click(gui, delay) then
+            task.wait(0.3)
+        elseif M.waitFor(check, timeout) then
+            return true
+        end
     end
     return false
 end
@@ -6774,7 +6818,9 @@ function FARM.currentFloor()
 end
 
 function FARM.travelSpeed(now)
-    local speed = FARM.runSprintSpeed(now) * FARM.RUN.SprintMultiplier
+    local R = FARM.RUN
+    local multiplier = tonumber(SETTINGS.farmSpeedMultiplier) or R.SprintMultiplier
+    local speed = FARM.runSprintSpeed(now) * math.clamp(multiplier, 1, R.SprintMultiplierMax)
     if FARM.MASTERY.travelOnly() then
         speed = math.min(speed, FARM.MASTERY.TRAVEL_SPEED)
     end
@@ -11728,6 +11774,8 @@ local function buildMenu()
 
     local Farm = FarmTab:AddSection("Autofarm", "Left")
     toggle(Farm, FARM.TOGGLE_ID, "Aggressive Auto-farm", "aggressiveAutoFarm", Color3.fromRGB(204, 170, 62))
+    slider(Farm, "dw_farm_speed", "Travel Speed", "farmSpeedMultiplier", 1, FARM.RUN.SprintMultiplierMax, 2, "x", function(value) return math.clamp(value, 1, FARM.RUN.SprintMultiplierMax) end)
+    Farm:AddParagraph({Title = "", Content = "If it pushes you back, try lowering your speed. 1.42x is the maximum speed the game accepts."})
     slider(Farm, "dw_farm_floor_limit", "Floor Limit", "floorLimit", 5, 50, 0, " floors")
     toggle(Farm, "dw_farm_unlimited", "Unlimited Floors", "unlimitedFloors")
     toggle(Farm, "dw_farm_auto_resume", "Resume after teleport", "farmAutoResume")
