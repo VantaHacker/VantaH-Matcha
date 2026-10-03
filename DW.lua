@@ -217,6 +217,8 @@ local SETTINGS = {
     farmSpeedMultiplier = 1.32,
     farmTreadmillRun = true,
     farmTreadmillStopAt = 30,
+    farmMachinePriority = false,
+    farmMachineOrder = "Box,Treadmill,Circle,Barnaby",
     resumeAutoFarm = false,
     resumeAutoFarmAt = 0,
     showPlayerStamina = true,
@@ -1002,6 +1004,8 @@ for _, quest in ipairs(FARM.MASTERY.QUESTS) do
 end
 
 FARM.TREADMILL_RECOVER = 30
+FARM.MachineOrder = {"Box", "Treadmill", "Circle", "Barnaby"}
+FARM.MachineKinds = {Original = "Box", Circle = "Circle", Treadmill = "Treadmill", TreadmillTap = "Treadmill", MovementTreadmill = "Treadmill", Barnaby = "Barnaby"}
 
 FARM.TWISTED = {}
 FARM.TWISTED_PRUNE = 0
@@ -7487,6 +7491,35 @@ function FARM.runOnTreadmill(machine)
     return machine.minigame == "MovementTreadmill"
 end
 
+function FARM.runMachineKind(machine)
+    if machine.kind == nil then
+        local ok, value = pcall(function()
+            local second = machine.slot == 2 and machine.model:GetAttribute("Prompt2MinigameType")
+            return second or machine.model:GetAttribute("MinigameType")
+        end)
+        machine.kind = ok and FARM.MachineKinds[value] or false
+    end
+    return machine.kind
+end
+
+function FARM.runMachineRanks()
+    if not SETTINGS.farmMachinePriority then return nil end
+    local order = SETTINGS.farmMachineOrder
+    if FARM.Ranks and FARM.Ranks.Order == order then return FARM.Ranks.List end
+    local List, count = {}, 0
+    for kind in string.gmatch(order, "[^,]+") do
+        count += 1
+        List[kind] = count
+    end
+    FARM.Ranks = {Order = order, List = List}
+    return List
+end
+
+function FARM.runMachineRank(machine, Ranks)
+    if not Ranks then return 0 end
+    return Ranks[FARM.runMachineKind(machine)] or #FARM.MachineOrder + 1
+end
+
 function FARM.runStaminaSprint(now, root)
     local R = FARM.RUN
     local L = FARM.LOBBY
@@ -9314,7 +9347,8 @@ function FARM.runHideGoal(root, character)
         return nil, 0, ""
     end
 
-    local best, bestDistance
+    local best, bestDistance, bestRank
+    local Ranks = FARM.runMachineRanks()
     for _, machine in ipairs(FARM.runMachines()) do
         if not FARM.runDone(machine) and not FARM.runConnie(machine) and not FARM.runTaken(machine) and not FARM.runBlotMachine(machine, root, tick()) then
             local ok, stand = pcall(function()
@@ -9322,8 +9356,9 @@ function FARM.runHideGoal(root, character)
             end)
             if ok and stand then
                 local d = Vector3.new(stand.X - p.X, 0, stand.Z - p.Z).Magnitude
-                if not bestDistance or d < bestDistance then
-                    best, bestDistance = stand, d
+                local rank = FARM.runMachineRank(machine, Ranks)
+                if not bestDistance or rank < bestRank or (rank == bestRank and d < bestDistance) then
+                    best, bestDistance, bestRank = stand, d, rank
                 end
             end
         end
@@ -10207,12 +10242,13 @@ function FARM.runUpdate(now)
         R.targetKind = "machine"
         R.collect = nil
 
-        local best, bestDistance
+        local best, bestDistance, bestRank
         local blocked = false
         local blotBlocked = false
         local takenBlocked = false
-        local guardedBest, guardedDistance, Guard
+        local guardedBest, guardedDistance, guardedRank, Guard
         local Threats = FARM.runCoverThreats(root, true)
+        local Ranks = FARM.runMachineRanks()
         for _, machine in ipairs(FARM.runMachines()) do
             if not FARM.runDone(machine) then
                 if FARM.runConnie(machine) then
@@ -10223,13 +10259,14 @@ function FARM.runUpdate(now)
                     blotBlocked = true
                 else
                     local d = (machine.stand.Position - root.Position).Magnitude
+                    local rank = FARM.runMachineRank(machine, Ranks)
                     local Guarding = FARM.runGuarded(machine, Threats)
                     if Guarding then
-                        if not guardedDistance or d < guardedDistance then
-                            guardedBest, guardedDistance, Guard = machine, d, Guarding
+                        if not guardedDistance or rank < guardedRank or (rank == guardedRank and d < guardedDistance) then
+                            guardedBest, guardedDistance, guardedRank, Guard = machine, d, rank, Guarding
                         end
-                    elseif not bestDistance or d < bestDistance then
-                        best, bestDistance = machine, d
+                    elseif not bestDistance or rank < bestRank or (rank == bestRank and d < bestDistance) then
+                        best, bestDistance, bestRank = machine, d, rank
                     end
                 end
             end
@@ -11860,6 +11897,14 @@ local function buildMenu()
     toggle(MasterySection, "dw_mastery_end", "End the game after getting Mastery", "masteryEnd")
 
     local Machines = FarmTab:AddSection("Machines", "Right")
+    local Priority = toggle(Machines, "dw_farm_machine_priority", "Machines Priority", "farmMachinePriority")
+    local Order = {}
+    for kind in string.gmatch(SETTINGS.farmMachineOrder, "[^,]+") do table.insert(Order, kind) end
+    UI.Binds.dw_farm_machine_order = {Key = "farmMachineOrder", Map = function(value) return table.concat(value, ",") end}
+    local PriorityOrder = Machines:AddDropdown({Id = "dw_farm_machine_order", Title = "Priority Order", Groups = {{Name = "Priority", Values = FARM.MachineOrder}}, Default = Order, Reorder = true})
+    Priority:OnChanged(function(value)
+        PriorityOrder:SetHidden(not value)
+    end)
     toggle(Machines, "dw_farm_treadmill_run", "Run on Treadmill Machines", "farmTreadmillRun")
     slider(Machines, "dw_farm_treadmill_stop", "Stop Running at", "farmTreadmillStopAt", 0, 270, 0, " stamina")
 
@@ -12194,6 +12239,8 @@ local function buildMenu()
                     Data[id] = {Key = Option.Key}
                 elseif Option.Kind == "Colorpicker" then
                     Data[id] = {R = value.R, G = value.G, B = value.B}
+                elseif Option.Reorder then
+                    Data[id] = Option:Copy()
                 elseif Option.Multi then
                     local Chosen = {}
                     for _, item in ipairs(Option.Values) do

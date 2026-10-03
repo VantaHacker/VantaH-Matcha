@@ -525,6 +525,7 @@ end
 function Section:AddDropdown(config)
 	local Element = newElement(self, config, "Dropdown", 52)
 	Element.Multi = config.Multi == true
+	Element.Reorder = config.Reorder == true and not Element.Multi
 	function Element:BuildItems(values, groups)
 		self.Items = {}
 		self.Values = {}
@@ -545,9 +546,44 @@ function Section:AddDropdown(config)
 		end
 	end
 	Element:BuildItems(config.Values, config.Groups)
+	function Element:Order(list)
+		local Known, Seen, Ordered = {}, {}, {}
+		for _, Item in ipairs(self.Items) do
+			if not Item.Header then Known[Item.Value] = true end
+		end
+		for _, value in ipairs(type(list) == "table" and list or {}) do
+			if Known[value] and not Seen[value] then
+				Seen[value] = true
+				Ordered[#Ordered + 1] = value
+			end
+		end
+		for _, Item in ipairs(self.Items) do
+			if not Item.Header and not Seen[Item.Value] then
+				Seen[Item.Value] = true
+				Ordered[#Ordered + 1] = Item.Value
+			end
+		end
+		self.Value = Ordered
+		local index = 0
+		for _, Item in ipairs(self.Items) do
+			if not Item.Header then
+				index += 1
+				Item.Value = Ordered[index]
+				Item.Index = index
+				self.Values[index] = Ordered[index]
+			end
+		end
+	end
+	function Element:Copy()
+		local List = {}
+		for i, value in ipairs(self.Value) do List[i] = value end
+		return List
+	end
 	if Element.Multi then
 		Element.Value = {}
 		for _, value in ipairs(type(config.Default) == "table" and config.Default or {}) do Element.Value[value] = true end
+	elseif Element.Reorder then
+		Element:Order(config.Default)
 	else
 		Element.Value = config.Default or Element.Values[1]
 	end
@@ -558,6 +594,7 @@ function Section:AddDropdown(config)
 	local Arrow = track(Element, draw("Triangle", {Filled = true, Color = Theme.SubText, ZIndex = 5, Visible = false, Transparency = 1}))
 
 	function Element:Display()
+		if self.Reorder then return table.concat(self.Value, " > ") end
 		if not self.Multi then return tostring(self.Value or "None") end
 		local Chosen = {}
 		for _, value in ipairs(self.Values) do
@@ -597,6 +634,23 @@ function Section:AddDropdown(config)
 		end
 	end
 	function Element:Choose(value)
+		if self.Reorder then
+			if self.Picked == nil then
+				self.Picked = value
+				return
+			end
+			local picked = self.Picked
+			self.Picked = nil
+			if picked == value then return end
+			local List = self:Copy()
+			local from, to = table.find(List, picked), table.find(List, value)
+			if not (from and to) then return end
+			List[from], List[to] = List[to], List[from]
+			self:Order(List)
+			self:Paint()
+			fire(self, self:Copy())
+			return
+		end
 		if self.Multi then
 			self.Value[value] = not self.Value[value] or nil
 		else
@@ -607,6 +661,14 @@ function Section:AddDropdown(config)
 		fire(self, self.Value)
 	end
 	function Element:Set(value)
+		if self.Reorder then
+			self.Picked = nil
+			self:Order(value)
+			if Library.Popup and Library.Popup.Owner == self then Library.Popup:Place() end
+			self:Paint()
+			fire(self, self:Copy())
+			return
+		end
 		if self.Multi then
 			self.Value = {}
 			for _, item in ipairs(type(value) == "table" and value or {}) do self.Value[item] = true end
@@ -619,6 +681,7 @@ function Section:AddDropdown(config)
 	function Element:SetValues(values, groups)
 		if Library.Popup and Library.Popup.Owner == self then Library:ClosePopup() end
 		self:BuildItems(values, groups)
+		if self.Reorder then self:Order(self.Value) end
 		self:Paint()
 	end
 	return Element
@@ -1308,6 +1371,7 @@ local function popupRows(count)
 			Check = box(22, Theme.CheckOff, 3),
 			CheckBorder = outline(23, Theme.Border, 3),
 			Text = label(23, "", Theme.Text),
+			Number = label(24, "", Theme.SubText, Library.TextSize - 1),
 			Line = box(22, Theme.Line, 0),
 		}
 	end
@@ -1319,9 +1383,10 @@ function Library:ClosePopup()
 	if not Popup then return end
 	if self.Typing and self.Typing.InPopup then self:StopTyping(false) end
 	self.Popup = nil
+	Popup.Owner.Picked = nil
 	setVisible(Popup.Draws, false)
 	if Popup.Rows then
-		for _, Row in ipairs(Popup.Rows) do setVisible({Row.Back, Row.Check, Row.CheckBorder, Row.Text, Row.Line}, false) end
+		for _, Row in ipairs(Popup.Rows) do setVisible({Row.Back, Row.Check, Row.CheckBorder, Row.Text, Row.Number, Row.Line}, false) end
 	end
 	if Popup.Owner.Paint then Popup.Owner:Paint() end
 	if self.Dragging == Popup then self.Dragging = nil end
@@ -1381,6 +1446,7 @@ function Library:OpenList(Owner)
 				Row.Back.Color = Theme.Section
 				Row.Check.Visible = false
 				Row.CheckBorder.Visible = false
+				Row.Number.Visible = false
 				local text = fit(Item.Header, Library.TextSize - 1, rowWidth - 60)
 				Row.Text.Text = text
 				Row.Text.Size = Library.TextSize - 1
@@ -1393,12 +1459,32 @@ function Library:OpenList(Owner)
 			else
 				local value = Item.Value
 				local selected = Owner.Multi and Owner.Value[value] or (not Owner.Multi and Owner.Value == value)
+				local picked = Owner.Reorder and Owner.Picked == value
 				Row.Line.Visible = false
 				Row.Text.Size = Library.TextSize
 				Row.Back.Color = self.HoverRow == i and Theme.ElementHover or Theme.Section
+				Row.Number.Visible = Owner.Reorder
 				local indent = Owner.Grouped and 8 or 0
 				local textX = x + 12 + indent
-				if Owner.Multi then
+				if Owner.Reorder then
+					local number = tostring(Item.Index or i + self.Offset)
+					local size = Library.TextSize - 1
+					Row.Check.Position = Vector2.new(x + 10 + indent, ry + 3)
+					Row.Check.Size = Vector2.new(18, 18)
+					Row.Check.Color = Theme.CheckOff
+					Row.CheckBorder.Position = Row.Check.Position
+					Row.CheckBorder.Size = Row.Check.Size
+					Row.CheckBorder.Color = Theme.Border
+					Row.Check.Visible = true
+					Row.CheckBorder.Visible = true
+					Row.Number.Center = false
+					Row.Number.Size = size
+					Row.Number.Text = number
+					Row.Number.Color = picked and Theme.Accent or Theme.SubText
+					Row.Number.Position = Vector2.new(math.floor(x + 10 + indent + (18 - Library.TextWidth(number, size)) / 2 + 0.5), ry + 6)
+					selected = picked
+					textX = x + 36 + indent
+				elseif Owner.Multi then
 					Row.Check.Position = Vector2.new(x + 10 + indent, ry + 5)
 					Row.Check.Size = Vector2.new(14, 14)
 					Row.Check.Color = selected and Theme.Accent or Theme.CheckOff
