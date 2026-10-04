@@ -2588,7 +2588,8 @@ function GOLDEN.prepare(now)
         Map.StatusAt = now + 30
         GOLDEN.showStatus()
     end
-    if not (SETTINGS.alwaysGolden or SETTINGS.betterBarnaby) or PLACE_MODE ~= "main" then return end
+    local lobby = PLACE_MODE == "lobby" and SETTINGS.betterBarnaby
+    if not ((SETTINGS.alwaysGolden or SETTINGS.betterBarnaby) and PLACE_MODE == "main" or lobby) then return end
     if GOLDEN.Busy or SWIMMER.Busy or not VantaUI.MemoryAccess() then return end
     if not Map.Loaded then GOLDEN.loadMap() end
     if not SETTINGS.autoRemap then
@@ -2601,9 +2602,10 @@ function GOLDEN.prepare(now)
         FARM.debugNote("golden offsets: saved map matches this client build, skipped the scan")
     end
     if Map.Verified then
-        if SETTINGS.alwaysGolden and not Map.Tween then GOLDEN.queueTween() end
+        if SETTINGS.alwaysGolden and not Map.Tween and not lobby then GOLDEN.queueTween() end
         return
     end
+    if lobby then return end
     Map.NextTry = Map.NextTry or now + 10
     if now < Map.NextTry or Map.Tries >= 3 or Map.Waits >= 15 then return end
     Map.NextTry = now + 20
@@ -3293,7 +3295,7 @@ function SWIMMER.setup()
             local noop = memory_read("uintptr_t", gravity)
             local overlap, outside = memory_read("uintptr_t", slot), memory_read("uintptr_t", bounds)
             if overlap ~= noop then SWIMMER.patch(slot, "uintptr_t", overlap, noop) end
-            if outside ~= noop then SWIMMER.patch(bounds, "uintptr_t", outside, noop) end
+            if outside ~= noop and PLACE_MODE ~= "lobby" then SWIMMER.patch(bounds, "uintptr_t", outside, noop) end
             local closure = memory_read("uintptr_t", new)
             local proto = GOLDEN.heap(closure) and GOLDEN.read(closure, "Proto")
             local base = GOLDEN.heap(proto) and GOLDEN.read(proto, "Constants")
@@ -3367,7 +3369,7 @@ function SWIMMER.update()
         SWIMMER.Attempts = 0
         return false
     end
-    if PLACE_MODE ~= "main" then return false end
+    if PLACE_MODE ~= "main" and PLACE_MODE ~= "lobby" then return false end
     local world = getBarnabyWorld()
     if not world then return false end
     if SWIMMER.Busy or not VantaUI.MemoryAccess() then return true end
@@ -3392,7 +3394,7 @@ end
 local function doAutoBarnaby()
     if SETTINGS.betterBarnaby or SWIMMER.Ready then
         local handled = SWIMMER.update()
-        if SETTINGS.betterBarnaby and PLACE_MODE == "main" then return handled end
+        if SETTINGS.betterBarnaby and (PLACE_MODE == "main" or handled) then return handled end
     end
 
     if not SETTINGS.autoBarnaby then
