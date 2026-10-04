@@ -206,12 +206,14 @@ local SETTINGS = {
     farmHideOnTeleport = true,
     farmEventItems = true,
     farmSpecialItems = true,
+    farmTrickOrTreat = true,
     farmHealItems = true,
     farmExtractionItems = true,
     farmCapsules = true,
     farmCapsulesResearch = false,
     farmResearchTwisteds = true,
     farmEventTwisteds = false,
+    farmAvoidAura = 2.5,
     farmSkipResearched = true,
     farmIgnoreTwistedsTravel = false,
     farmSpeedMultiplier = 1.32,
@@ -668,7 +670,7 @@ local FARM = {
     resumeWritten = false,
     resumePending = false,
     FORCE_OFF_WINDOW = 3,
-    Debug = {Enabled = _G.DW_DEBUG == true, File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05},
+    Debug = {Enabled = _G.DW_DEBUG == true or (type(isfile) == "function" and select(2, pcall(isfile, "DW/Debug.txt")) == true), File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05},
     RUN = {
         PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
         ARRIVE = 3,
@@ -704,6 +706,11 @@ local FARM = {
         TrimPhases = {tween = true, toElevator = true, research = true},
         AvoidMargin = 2.5,
         AvoidRange = 6,
+        SteerLook = 10,
+        ItemGuard = 12,
+        SteerPush = 1.5,
+        SteerDrift = 0.35,
+        CollectDodge = 5,
         FrameTime = 0.016,
         CoverSkip = {Generators = true, Monsters = true, Items = true, Waypoints = true, TriggerZones = true, SpawnPoints = true, MonsterSpawnPoints = true, GeneratorSpawnPoints = true, ItemSpawnPoints = true, GeneratorSpawnPointsCache = true, HolidayPickups = true, Puddles = true, Sounds = true, TrickOrTreatDoors = true},
         CoverBatch = 150,
@@ -734,6 +741,8 @@ local FARM = {
         ZoneRects = 24,
         ZoneSlack = 0.3,
         EscapeToward = 1,
+        EscapeGain = 2,
+        EscapeProgress = 0.5,
         HideToward = 0.3,
         CoverRootOffset = 2.85,
         CoverFloorRange = 6,
@@ -748,7 +757,12 @@ local FARM = {
         PanicGraceUntil = 0,
         ExitProbe = 1.5,
         CoverRetryEvery = 2,
-        KillRadius = {BassieMonster = 4, BlottMonster = 4, BobetteMonster = 4, GourdyMonster = 4, ShellyMonster = 4, SproutMonster = 4, VeeMonster = 4, GoobMonster = 3.5, ScrapsMonster = 3.5, GigiMonster = 5, PebbleMonster = 6.5, DandyMonster = 8.5, DyleMonster = 8.5},
+        CoverSettleChecks = 2,
+        CoverSettleEvery = 1,
+        CoverWatchEvery = 3,
+        CoverWatchTime = 90,
+        CoverGrowth = 40,
+        KillRadius = {BassieMonster = 4, BlottMonster = 4, BobetteMonster = 4, GourdyMonster = 4, ShellyMonster = 4, SproutMonster = 4, VeeMonster = 4, GoobMonster = 3.5, ScrapsMonster = 3.5, GigiMonster = 5, PebbleMonster = 6.5, DandyMonster = 8.5, DyleMonster = 8.5, SquirmMonster = 5},
         KillDefault = 3.33,
         CoverDepth = 1.5,
         CampTime = 4,
@@ -763,6 +777,8 @@ local FARM = {
         GuardBuffer = 6,
         GuardWait = 20,
         SneakEvery = 0.5,
+        CovertStep = 3,
+        CovertRange = 90,
         SneakAt = 0,
         SneakBuffer = 4,
         CoverBuildPhases = {working = true, aim = true, pick = true, collect = true},
@@ -781,11 +797,16 @@ local FARM = {
         SpecialHold = 0.6,
         ApproachGap = 3,
         SpecialName = "Special Collectible",
-        QuestFolders = {"UniqueLights", "FreeArea"},
+        QuestFolders = {"UniqueLights", "FreeArea", "Ignore", "LoreRoom"},
         QuestSkip = {"Typewriter", "TV"},
         QuestBatch = 10,
         QuestEvery = 1,
+        QuestRecheck = 2,
         QuestName = "Gourdy quest prop",
+        DoorName = "Trick or Treat Door",
+        TravelPhases = {pick = true, tween = true, collect = true},
+        MachineCover = 20,
+        DoorHold = 1,
         HEAL_ORDER = { "HealthKit", "Bandage" },
         HEAL_AT = 1,
         KEEP_ITEMS = { bandage = true, healthkit = true, jumpercable = true, valve = true, tape = true, instructions = true, extractionspeedcandy = true, bonbon = true, stopwatch = true, skillcheckcandy = true },
@@ -827,6 +848,7 @@ local FARM = {
         RODGER_ACTIVE_RANGE = 34,
         RODGER_RISE = 3,
         SPROUT_FLEE_MARGIN = 4,
+        RollMargin = 8,
         SPROUT_RECHECK = 0.2,
         sproutAt = 0,
         sprouts = {},
@@ -7015,6 +7037,15 @@ function FARM.runSlotOf(character, name)
     return nil
 end
 
+function FARM.runTrinketReady(character, name)
+    local Trinkets = character:FindFirstChild("Trinkets")
+    if not Trinkets then return false end
+    for _, Trinket in ipairs(Trinkets:GetChildren()) do
+        if STRINGS.read(Trinket) == name then return UI.bool(Trinket:FindFirstChild("Active")) == true end
+    end
+    return false
+end
+
 function FARM.runHasFreeSlot(character)
     for _, slot in ipairs(FARM.runInventory(character)) do
         local key = FARM.runItemKey(slot.item)
@@ -7230,10 +7261,30 @@ function FARM.runSpecialMaxed()
     return maxed
 end
 
+function FARM.runQuestCounts(Room)
+    local R = FARM.RUN
+    local Counts = {}
+    for _, name in ipairs(R.QuestFolders) do
+        local Folder = Room:FindFirstChild(name)
+        Counts[name] = Folder and #Folder:GetChildren() or 0
+    end
+    return Counts
+end
+
 function FARM.runQuestScan(Room)
     local R = FARM.RUN
     local key = FARM.runKey(Room)
     if not key then return end
+    if R.QuestMap == key and not R.QuestQueue and tick() >= (R.QuestCheckAt or 0) then
+        R.QuestCheckAt = tick() + R.QuestRecheck
+        local Counts = FARM.runQuestCounts(Room)
+        for name, count in pairs(Counts) do
+            if count ~= (R.QuestCounts and R.QuestCounts[name]) then
+                R.QuestMap = nil
+                break
+            end
+        end
+    end
     if R.QuestMap ~= key then
         R.QuestMap = key
         R.QuestProps = {}
@@ -7241,6 +7292,8 @@ function FARM.runQuestScan(Room)
         R.QuestAt = 0
         R.QuestQueue = {}
         R.QuestIndex = 1
+        R.QuestCounts = FARM.runQuestCounts(Room)
+        R.QuestCheckAt = tick() + R.QuestRecheck
         for _, name in ipairs(R.QuestFolders) do
             local Folder = Room:FindFirstChild(name)
             for _, Child in ipairs(Folder and Folder:GetChildren() or {}) do
@@ -7262,7 +7315,10 @@ function FARM.runQuestScan(Room)
             end)
         end
         R.QuestIndex = last + 1
-        if R.QuestIndex > #Queue then R.QuestQueue = nil end
+        if R.QuestIndex > #Queue then
+            R.QuestQueue = nil
+            FARM.debugNote(string.format("quest props scanned: %d found in %d children", #R.QuestProps, #Queue))
+        end
     end
     local now = tick()
     if now < R.QuestAt then return end
@@ -7278,6 +7334,7 @@ function FARM.runQuestScan(Room)
             end
         end)
     end
+    if #Prompts ~= #(R.QuestPrompts or {}) then FARM.debugNote(string.format("quest prompts live: %d of %d props", #Prompts, #R.QuestProps)) end
     R.QuestPrompts = Prompts
 end
 
@@ -7378,6 +7435,20 @@ function FARM.runCollectTarget(root, character, itemsOnly)
         end
     end
 
+    local Doors = not itemsOnly and SETTINGS.farmTrickOrTreat and map:FindFirstChild("TrickOrTreatDoors")
+    for _, Door in ipairs(Doors and Doors:GetChildren() or {}) do
+        local Ground = Door:FindFirstChild("Ground")
+        local ok, position = pcall(function()
+            return Ground.Position
+        end)
+        if ok and position and not doorUsed(Door) and not R.skip[FARM.runSpotKey(position)] then
+            local d = (position - root.Position).Magnitude
+            if not capsuleDistance or d < capsuleDistance then
+                bestCapsule, capsuleDistance = {model = Door, prompt = Ground, kind = "door", name = R.DoorName, spot = FARM.runSpotKey(position), standY = root.Position.Y}, d
+            end
+        end
+    end
+
     if (masteryItems or masteryCapsules) and bestItem and bestCapsule then
         return capsuleDistance < itemDistance and bestCapsule or bestItem
     end
@@ -7410,7 +7481,7 @@ function FARM.runUseItems(now, character)
         end
     end
 
-    if SETTINGS.farmExtractionItems and R.phase == "working" and R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
+    if SETTINGS.farmExtractionItems and R.phase == "working" and R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name and not FARM.runTrinketReady(character, "VeeRemote") then
         local cur, req, valid = FARM.runFill(R.current)
         local valve = FARM.runSlotOf(character, "Valve")
         if valve and valid and cur < req then
@@ -7652,7 +7723,7 @@ function FARM.runThreat(root, ignore)
     end
     FARM.runResearchMap(map)
 
-    local nearest, chasing, panic, seen = 9999, false, false, false
+    local nearest, chasing, panic, seen, danger = 9999, false, false, false, false
     local hidden = R.phase == "hide"
     local eye = root.Position
     local walls = FARM.runRayWorks(root, hidden)
@@ -7661,6 +7732,8 @@ function FARM.runThreat(root, ignore)
     local myName = LocalPlayer.Name
     local research = SETTINGS.farmResearchTwisteds or SETTINGS.farmEventTwisteds or FARM.MASTERY.researchMode()
     for _, monster in ipairs(monsters:GetChildren()) do
+        local wasPanic, wasSeen, wasChasing = panic, seen, chasing
+        panic, seen, chasing = false, false, false
         local T = FARM.twisted(monster)
         local part = T and T.Part
         local ok, position = pcall(function()
@@ -7731,24 +7804,29 @@ function FARM.runThreat(root, ignore)
                 end
             elseif not chasing and FARM.twistedTarget(T) == myName then
                 chasing = true
+                R.ChaseWhy = string.format("%s targets you at %.0f studs", monster.Name, distance)
             end
 
             if chasing or razzle then
             elseif passive then
                 if FARM.twistedAttr(T, "Attacking") == true then
                     chasing = true
+                    R.ChaseWhy = string.format("passive %s attacking at %.0f studs", monster.Name, distance)
                 end
-            elseif distance < R.DANGER and FARM.twistedChasing(T) then
+            elseif (not T.Holder or not VantaUI.MemoryAccess()) and distance < math.min(R.DANGER, (T.Instant or R.CHASER_DEFAULTS.InstantRadius) + R.DIVE_BUFFER) and not FARM.twistedTarget(T) and FARM.twistedChasing(T) then
                 chasing = true
+                R.ChaseWhy = string.format("%s in chase state, target unreadable, at %.0f studs", monster.Name, distance)
             end
 
             if distance < nearest and not passive then
                 nearest = distance
             end
         end
+        if (panic or seen or chasing) and FARM.runDangerous(monster) then danger = true end
+        panic, seen, chasing = panic or wasPanic, seen or wasSeen, chasing or wasChasing
     end
 
-    return nearest, chasing, panic, seen
+    return nearest, chasing, panic, seen, danger
 end
 
 function FARM.runRayWorks(root, underground)
@@ -7937,7 +8015,54 @@ function FARM.runHazards(now)
             end
         end
     end
+    for _, Roller in ipairs(map and FARM.runRollingPumpkins(map) or {}) do
+        list[#list + 1] = Roller
+    end
     R.sprouts = list
+    return list
+end
+
+function FARM.runRollingPumpkins(map)
+    local R = FARM.RUN
+    local key = FARM.runKey(map)
+    if R.RollMap ~= key then
+        R.RollMap, R.RollSeen, R.Rollers = key, {}, {}
+    end
+    local Parents = {Workspace, map}
+    local Doors = map:FindFirstChild("TrickOrTreatDoors")
+    for _, Door in ipairs(Doors and Doors:GetChildren() or {}) do table.insert(Parents, Door) end
+    for _, Parent in ipairs(Parents) do
+        for _, Child in ipairs(Parent:GetChildren()) do
+            local address = FARM.runKey(Child)
+            if address and not R.RollSeen[address] then
+                R.RollSeen[address] = true
+                local ok, width = pcall(function()
+                    return Child.ClassName == "Model" and Child:GetAttribute("FullWidth")
+                end)
+                if ok and type(width) == "number" then
+                    table.insert(R.Rollers, {Model = Child, Width = width})
+                    FARM.debugNote(string.format("rolling pumpkin found: %s (full width %.1f)", Child:GetFullName(), width))
+                end
+            end
+        end
+    end
+    local list = {}
+    for i = #R.Rollers, 1, -1 do
+        local Roller = R.Rollers[i]
+        local ok, position = pcall(function()
+            if not Roller.Model.Parent then return nil end
+            for _, Child in ipairs(Roller.Model:GetChildren()) do
+                if Child.ClassName == "ObjectValue" and Child.Value and Child.Value:IsA("BasePart") then return Child.Value.Position end
+            end
+            local Part = Roller.Model.PrimaryPart or Roller.Model:FindFirstChildWhichIsA("BasePart")
+            return Part and Part.Position
+        end)
+        if ok and position then
+            list[#list + 1] = {position = position, range = Roller.Width / 2 + R.RollMargin}
+        elseif not (ok and Roller.Model.Parent) then
+            table.remove(R.Rollers, i)
+        end
+    end
     return list
 end
 
@@ -8360,27 +8485,33 @@ end
 function FARM.runSteer(root, direction, now)
     local R = FARM.RUN
     local p = root.Position
-    local pushX, pushZ = 0, 0
+    local aura = SETTINGS.farmAvoidAura or R.AvoidMargin
+    local Best, bestDistance
     for _, Threat in ipairs(FARM.frameThreats(root, now)) do
         local dx, dz = p.X - Threat.Position.X, p.Z - Threat.Position.Z
         local distance = math.sqrt(dx * dx + dz * dz)
-        local keep = Threat.Kill + R.AvoidMargin
-        if distance > 0.01 and distance < keep + R.AvoidRange then
-            local awayX, awayZ = dx / distance, dz / distance
-            local toward = -(awayX * direction.X + awayZ * direction.Z)
-            if toward > 0 or distance < keep then
-                local weight = math.min((keep + R.AvoidRange - distance) / R.AvoidRange, 2)
-                local sideX, sideZ = -awayZ, awayX
-                if sideX * direction.X + sideZ * direction.Z < 0 then sideX, sideZ = -sideX, -sideZ end
-                pushX += (awayX + sideX) * weight
-                pushZ += (awayZ + sideZ) * weight
+        local keep = Threat.Kill + aura
+        if distance > 0.01 and distance < keep + R.AvoidRange + R.SteerLook then
+            local ahead = -(dx * direction.X + dz * direction.Z)
+            local lateral = math.abs(dx * direction.Z - dz * direction.X)
+            local blocking = distance < keep or (ahead > 0 and (distance < keep + R.AvoidRange or lateral < keep + 1))
+            if blocking and (not bestDistance or distance < bestDistance) then
+                Best, bestDistance = {Name = Threat.Name, X = dx / distance, Z = dz / distance, Keep = keep}, distance
             end
         end
     end
-    if pushX == 0 and pushZ == 0 then return direction end
-    local steered = Vector3.new(direction.X + pushX, 0, direction.Z + pushZ)
-    if steered.Magnitude < 0.05 then return Vector3.new(-direction.Z, 0, direction.X) end
-    return steered.Unit
+    if not Best then
+        R.SteerSide = nil
+        return direction
+    end
+    local sideX, sideZ = -Best.Z, Best.X
+    if not R.SteerSide or R.SteerFor ~= Best.Name then
+        R.SteerSide = sideX * direction.X + sideZ * direction.Z >= 0 and 1 or -1
+        R.SteerFor = Best.Name
+    end
+    sideX, sideZ = sideX * R.SteerSide, sideZ * R.SteerSide
+    local outward = bestDistance < Best.Keep and R.SteerPush or R.SteerDrift
+    return Vector3.new(sideX + Best.X * outward, 0, sideZ + Best.Z * outward).Unit
 end
 
 function FARM.runDangerous(monster)
@@ -8443,12 +8574,42 @@ function FARM.coverIndex(Entry)
     end
 end
 
+function FARM.coverCount(Room)
+    local R = FARM.RUN
+    local count = 0
+    for _, Child in ipairs(Room:GetChildren()) do
+        if not R.CoverSkip[Child.Name] then count += #Child:GetDescendants() + 1 end
+    end
+    return count
+end
+
+function FARM.coverFill(Room)
+    local R = FARM.RUN
+    R.CoverParts = {}
+    R.CoverCells = {}
+    R.CoverLevels = {}
+    R.CoverHeights = nil
+    R.CoverPreloaded = nil
+    R.CoverQueue = {}
+    R.CoverIndex = 1
+    for _, Child in ipairs(Room:GetChildren()) do
+        if not R.CoverSkip[Child.Name] then
+            if Child.ClassName == "Part" then table.insert(R.CoverQueue, Child) end
+            for _, Descendant in ipairs(Child:GetDescendants()) do
+                table.insert(R.CoverQueue, Descendant)
+            end
+        end
+    end
+    R.CoverFilled = true
+    R.CoverBuiltCount = R.CoverCount
+end
+
 function FARM.runCoverCache(Room)
     local R = FARM.RUN
     local key = FARM.runKey(Room)
     if not key then return end
     local now = tick()
-    if R.CoverMap == key and not R.CoverQueue and #R.CoverParts < R.CoverMinParts and now >= (R.CoverRetryAt or 0) then
+    if R.CoverMap == key and R.CoverFilled and not R.CoverQueue and #R.CoverParts < R.CoverMinParts and now >= (R.CoverRetryAt or 0) then
         R.CoverRetryAt = now + R.CoverRetryEvery
         R.CoverMap = nil
     end
@@ -8461,14 +8622,25 @@ function FARM.runCoverCache(Room)
         R.CoverPreloaded = nil
         R.CoverQueue = {}
         R.CoverIndex = 1
-        for _, Child in ipairs(Room:GetChildren()) do
-            if not R.CoverSkip[Child.Name] then
-                if Child.ClassName == "Part" then table.insert(R.CoverQueue, Child) end
-                for _, Descendant in ipairs(Child:GetDescendants()) do
-                    table.insert(R.CoverQueue, Descendant)
-                end
+        R.CoverFilled = false
+        R.CoverStart, R.CoverCheckAt, R.CoverCount, R.CoverStable = now, 0, -1, 0
+    end
+    if now >= R.CoverCheckAt and now - R.CoverStart < R.CoverWatchTime then
+        R.CoverCheckAt = now + (R.CoverFilled and R.CoverWatchEvery or R.CoverSettleEvery)
+        local ok, count = pcall(FARM.coverCount, Room)
+        if ok then
+            R.CoverStable = count == R.CoverCount and R.CoverStable + 1 or 0
+            R.CoverCount = count
+            if R.CoverFilled and count - R.CoverBuiltCount >= R.CoverGrowth then
+                FARM.debugNote(string.format("room grew from %d to %d instances, remapping cover", R.CoverBuiltCount, count))
+                FARM.coverFill(Room)
             end
         end
+    end
+    if not R.CoverFilled then
+        if R.CoverStable < R.CoverSettleChecks and now - R.CoverStart < R.CoverWatchTime then return end
+        FARM.debugNote(string.format("room settled at %d instances after %.1f s", R.CoverCount, now - R.CoverStart))
+        FARM.coverFill(Room)
     end
     local Queue = R.CoverQueue
     if not Queue then return end
@@ -8935,6 +9107,27 @@ function FARM.runPathSeen(from, to, Threats)
     return false
 end
 
+function FARM.runPathVisible(from, to, Threats)
+    local R = FARM.RUN
+    local Room = UI.map()
+    local Ignore = {Room and Room:FindFirstChild("Generators"), Room and Room:FindFirstChild("Monsters"), Workspace:FindFirstChild("InGamePlayers")}
+    local lift = Vector3.new(0, R.SightLift, 0)
+    local length = FARM.flatDistance(from, to)
+    local steps = math.max(1, math.ceil(length / R.CovertStep))
+    for _, Threat in ipairs(Threats) do
+        if Threat.Name ~= "Hazard" and FARM.flatDistance(from, Threat.Position) < R.CovertRange then
+            local eye = Threat.Position + lift
+            for i = 1, steps do
+                local t = i / steps
+                local point = Vector3.new(from.X + (to.X - from.X) * t, from.Y, from.Z + (to.Z - from.Z) * t) + lift
+                local ok, hit = pcall(FARM.rayFirst, eye, point, Ignore)
+                if not (ok and hit and (hit - eye).Magnitude < (point - eye).Magnitude - 1) then return true end
+            end
+        end
+    end
+    return false
+end
+
 function FARM.runGuarded(machine, Threats)
     local R = FARM.RUN
     local ok, stand = pcall(function()
@@ -9026,7 +9219,7 @@ function FARM.runHopGoal(root, character)
     return FARM.runHideGoal(root, character)
 end
 
-function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, toward)
+function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, toward, covert)
     local R = FARM.RUN
     local p = root.Position
     local Level = FARM.coverLevel(p.Y, p)
@@ -9053,6 +9246,7 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
     local Seen = {}
     local slack = R.ZoneSlack
     local towardWeight = escape and R.EscapeToward or R.HideToward
+    local startToward = escape and toward and math.sqrt((toward.X - px) ^ 2 + (toward.Z - pz) ^ 2)
     local function consider(Zone, sx, sz, exposure)
         local dx, dz = sx - px, sz - pz
         local travelSquared = dx * dx + dz * dz
@@ -9061,7 +9255,8 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
             if (sx - H.X) ^ 2 + (sz - H.Z) ^ 2 <= H.Range then return end
         end
         local travel = math.sqrt(travelSquared)
-        local safe, away = true, true
+        if startToward and startToward - math.sqrt((sx - toward.X) ^ 2 + (sz - toward.Z) ^ 2) < math.max(R.EscapeGain, travel * R.EscapeProgress) then return end
+        local safe, away, unseen = true, true, true
         if travel > R.CoverNear or escape then
             for _, T in ipairs(Info) do
                 local ox, oz = T.X - px, T.Z - pz
@@ -9081,6 +9276,8 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
                 if sneak and T.Danger and (there < T.Instant + sneakBuffer or pass < T.Instant + sneakBuffer) then
                     safe, away = false, false
                 end
+                local zone = T.Instant + (T.Danger and sneakBuffer or 0)
+                if there < zone or pass < zone then unseen = false end
             end
         end
         local score
@@ -9094,6 +9291,7 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
         end
         if score then
             local rank = safe and away and 0 or (away and 2 or 4)
+            if goal then rank = unseen and 0 or 4 end
             table.insert(Candidates, {Data = {X = sx, Z = sz, Exposure = exposure, Hidden = R.HideMin, Entry = Zone.Entry}, Score = score, Rank = rank})
         end
     end
@@ -9142,7 +9340,7 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
         if checked >= R.CoverChecks then break end
         checked += 1
         Candidate.Spot = Vector3.new(Candidate.Data.X, p.Y, Candidate.Data.Z)
-        if FARM.runCoverGround(Candidate.Spot) and not (escape and FARM.runPathSeen(p, Candidate.Spot, Threats)) then
+        if FARM.runCoverGround(Candidate.Spot) and not (escape and FARM.runPathSeen(p, Candidate.Spot, Threats)) and not (covert and FARM.runPathVisible(p, Candidate.Spot, Threats)) then
             FARM.debugNote(string.format("cover pick (%s): rank %d exposure %.1f hidden %.1f need %.1f travel %.1f, %d candidates, %d threats", escape and "escape" or (sneak and "sneak" or (goal and "hop" or "hide")), Candidate.Rank, Candidate.Data.Exposure, Candidate.Data.Hidden, need, FARM.flatDistance(p, Candidate.Spot), #Candidates, #Threats))
             return Candidate.Spot, Candidate.Data
         end
@@ -9859,26 +10057,50 @@ function FARM.runUpdate(now)
 
     local researching = R.phase == "research" and R.research
     local hidingFor = (R.phase == "dive" or R.phase == "hide") and R.hideIgnore
-    local nearest, chasing, panic, seen = FARM.runThreat(root, (researching and R.research.key) or hidingFor or nil)
+    local nearest, chasing, panic, seen, danger = FARM.runThreat(root, (researching and R.research.key) or hidingFor or nil)
     local hiding = R.phase == "dive" or R.phase == "hide"
 
     local travelIgnore = SETTINGS.farmIgnoreTwistedsTravel and (R.phase == "tween" or R.phase == "collect")
     local grabbing = R.phase == "collect" and R.collect and R.collectDeadline and now < R.collectDeadline
-    if (chasing or (panic and now >= R.PanicGraceUntil)) and not hiding and not travelIgnore and not grabbing and R.phase ~= "sacrifice" and not FARM.runSafeInElevator(character) then
+    local nearMachine = R.current and select(2, pcall(function()
+        return FARM.flatDistance(root.Position, R.current.prompt.Position) < R.MachineCover
+    end)) == true
+    local crowded, touched = false, false
+    if R.TravelPhases[R.phase] then
+        local p = root.Position
+        local okGoal, goal = pcall(function()
+            return R.collect and R.collect.prompt.Position
+        end)
+        goal = okGoal and goal or nil
+        for _, Threat in ipairs(FARM.frameThreats(root, now)) do
+            if Threat.Name ~= "Hazard" then
+                if FARM.flatDistance(p, Threat.Position) < Threat.Kill + (SETTINGS.farmAvoidAura or R.AvoidMargin) then
+                    crowded = Threat.Name .. " touched the avoid aura"
+                    touched = true
+                end
+                if goal and FARM.flatDistance(goal, Threat.Position) < R.ItemGuard then crowded = Threat.Name .. " is near the " .. (R.collect.kind == "capsule" and "Research Capsule" or tostring(R.collect.name)) end
+            end
+        end
+    end
+    if crowded and not R.CrowdedNoted then FARM.debugNote(string.format("travel blocked: %s, allowing cover", crowded)) end
+    R.CrowdedNoted = crowded or nil
+    local farChase = not danger and R.TravelPhases[R.phase] and not nearMachine and not crowded
+    if (chasing or touched or (panic and now >= R.PanicGraceUntil)) and not hiding and not travelIgnore and not grabbing and not farChase and R.phase ~= "sacrifice" and not FARM.runSafeInElevator(character) then
         FARM.runRmb(false)
         if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
             KEYS.tap(R.E_KEY)
         end
 
         local toElevator = R.phase == "toElevator"
-        if chasing and (toElevator or FARM.runFloorDone()) then
-            FARM.setStatus("Twisted chasing, running to the elevator")
-            if not toElevator and FARM.runRushElevator(root, "Twisted chasing, running to the elevator") then return end
+        if (chasing or not danger) and (toElevator or FARM.runFloorDone()) then
+            local status = chasing and "Twisted chasing, running to the elevator" or "Twisted near, running to the elevator"
+            FARM.setStatus(status)
+            if not toElevator and FARM.runRushElevator(root, status) then return end
         else
             R.research = nil
             R.hideIgnore = nil
             FARM.runSprintOff()
-            FARM.debugNote(string.format("dive trigger: chasing=%s panic=%s seen=%s nearest=%.1f grace=%.1f", tostring(chasing), tostring(panic), tostring(seen), nearest or -1, R.PanicGraceUntil - now))
+            FARM.debugNote(string.format("dive trigger: chasing=%s panic=%s seen=%s nearest=%.1f grace=%.1f%s", tostring(chasing), tostring(panic), tostring(seen), nearest or -1, R.PanicGraceUntil - now, chasing and " (" .. tostring(R.ChaseWhy) .. ")" or ""))
             FARM.runDive(root, now, toElevator and "Twisted near, diving to the elevator" or "Twisted near, diving")
             R.elevatorDive = toElevator or nil
             return
@@ -9941,7 +10163,7 @@ function FARM.runUpdate(now)
         return
     end
 
-    if (R.phase == "dive" or R.phase == "hide") and chasing and FARM.runFloorDone() and FARM.runRushElevator(root, "Twisted chasing, running to the elevator") then
+    if (R.phase == "dive" or R.phase == "hide") and (chasing or not danger) and FARM.runFloorDone() and FARM.runRushElevator(root, chasing and "Twisted chasing, running to the elevator" or "Running to the elevator") then
         return
     end
 
@@ -10039,8 +10261,14 @@ function FARM.runUpdate(now)
         end
 
         local clear = R.clearSince and now - R.clearSince >= R.CLEAR_TIME
-        if not clear and Camper and not chasing and now - (R.HideStart or now) >= R.CampTime and now >= R.EscapeAt then
+        local campDistance = Camper and FARM.flatDistance(p, Camper.Position)
+        local camping = Camper and campDistance < Camper.Instant and Camper
+        if not camping or camping.Name ~= R.CampName then R.CampName, R.CampSince = camping and camping.Name, now end
+        local leaving = camping and R.CampLast and campDistance > R.CampLast + 0.5
+        if now >= (R.CampLastAt or 0) then R.CampLast, R.CampLastAt = campDistance, now + 0.5 end
+        if not clear and camping and not leaving and not chasing and now - R.CampSince >= R.CampTime and now >= R.EscapeAt then
             R.EscapeAt = now + R.EscapeEvery
+            FARM.debugNote(string.format("camper %s at %.0f studs (instant %.0f) for %.1f s", camping.Name, FARM.flatDistance(p, camping.Position), camping.Instant, now - R.CampSince))
             local spot, Spot = FARM.runFindCover(root, Threats, nil, R.CoverReach, 0, true, false, (FARM.runHopGoal(root, character)))
             if spot then
                 R.Cover, R.CoverSpot = spot, Spot
@@ -10051,11 +10279,11 @@ function FARM.runUpdate(now)
                 return
             end
         end
-        if not clear and not chasing and not seen and #Threats > 0 and now >= R.SneakAt then
+        if not clear and #Threats > 0 and now >= R.SneakAt then
             R.SneakAt = now + R.SneakEvery
             local goal, radius, label, ignore = FARM.runHopGoal(root, character)
             if goal and FARM.flatDistance(p, goal) > (radius or 0) + R.HopDirect then
-                local spot, Spot = FARM.runFindCover(root, Threats, goal, R.HopReach, R.HopGain, false, true)
+                local spot, Spot = FARM.runFindCover(root, Threats, goal, R.HopReach, R.HopGain, false, true, nil, chasing or seen)
                 if spot then
                     R.Cover, R.CoverSpot = spot, Spot
                     R.HopLabel = label
@@ -10628,7 +10856,15 @@ function FARM.runUpdate(now)
             return
         end
 
-        if not target or target.model.Parent == nil or (target.kind ~= "quest" and not target.model:FindFirstChild("Prompt")) then
+        if target and target.kind == "door" and doorUsed(target.model) then
+            FARM.debugNote(string.format("trick or treat door used after %d tries", R.collectTries))
+            R.skip[target.spot] = true
+            R.collect = nil
+            R.phase = "pick"
+            return
+        end
+
+        if not target or target.model.Parent == nil or (target.kind ~= "quest" and target.kind ~= "door" and not target.model:FindFirstChild("Prompt")) then
             if target and target.kind == "buy" then
                 R.bought[target.name] = true
             end
@@ -10644,6 +10880,20 @@ function FARM.runUpdate(now)
         if flat > R.LOST then
             R.phase = "pick"
             return
+        end
+
+        if target.kind ~= "buy" then
+            local p = root.Position
+            for _, Threat in ipairs(FARM.frameThreats(root, now)) do
+                local dx, dz = p.X - Threat.Position.X, p.Z - Threat.Position.Z
+                local distance = math.sqrt(dx * dx + dz * dz)
+                if Threat.Name ~= "Hazard" and distance < Threat.Kill + (SETTINGS.farmAvoidAura or R.AvoidMargin) + R.CollectDodge then
+                    local away = distance > 0.01 and Vector3.new(dx / distance, 0, dz / distance) or Vector3.new(1, 0, 0)
+                    root.Position = p + away * FARM.stepLength(now)
+                    FARM.setStatus(string.format("Dodging %s near %s", Threat.Name, target.kind == "capsule" and "Research Capsule" or target.name))
+                    return
+                end
+            end
         end
 
         if target.kind == "buy" and okPos and position then
@@ -10668,7 +10918,7 @@ function FARM.runUpdate(now)
             target.wrongSince = nil
         end
 
-        if target.kind == "quest" and okPos and position then
+        if (target.kind == "quest" or target.kind == "door") and okPos and position then
             FARM.runFace(camera, root, position)
         end
 
@@ -10680,7 +10930,9 @@ function FARM.runUpdate(now)
                 return
             end
 
-            if not KEYS.tap(R.E_KEY) then
+            if target.kind == "door" then
+                if not KEYS.hold(R.E_KEY, R.DoorHold) then return end
+            elseif not KEYS.tap(R.E_KEY) then
                 return
             end
             if target.kind == "rodger" then
@@ -10691,7 +10943,7 @@ function FARM.runUpdate(now)
             end
             R.collectTries = R.collectTries + 1
             R.at = now + R.COLLECT_RETRY
-            FARM.setStatus((target.kind == "buy" and "Buying " or "Collecting ") .. (target.kind == "capsule" and "Research Capsule" or target.name))
+            FARM.setStatus((target.kind == "buy" and "Buying " or (target.kind == "door" and "Opening " or "Collecting ")) .. (target.kind == "capsule" and "Research Capsule" or target.name))
         end
         return
     end
@@ -11813,6 +12065,7 @@ local function buildMenu()
     toggle(Farm, FARM.TOGGLE_ID, "Aggressive Auto-farm", "aggressiveAutoFarm", Color3.fromRGB(204, 170, 62))
     slider(Farm, "dw_farm_speed", "Travel Speed", "farmSpeedMultiplier", 1, FARM.RUN.SprintMultiplierMax, 2, "x", function(value) return math.clamp(value, 1, FARM.RUN.SprintMultiplierMax) end)
     Farm:AddParagraph({Title = "", Content = "If it pushes you back, try lowering your speed. 1.42x is the maximum speed the game accepts."})
+    slider(Farm, "dw_farm_avoid_aura", "Avoid Aura", "farmAvoidAura", 2.5, 12.5, 1, " studs")
     slider(Farm, "dw_farm_floor_limit", "Floor Limit", "floorLimit", 5, 50, 0, " floors")
     toggle(Farm, "dw_farm_unlimited", "Unlimited Floors", "unlimitedFloors")
     toggle(Farm, "dw_farm_auto_resume", "Resume after teleport", "farmAutoResume")
@@ -11911,6 +12164,7 @@ local function buildMenu()
     local Collecting = FarmTab:AddSection("Collecting", "Right")
     toggle(Collecting, "dw_farm_event_items", "Collect Event Collectibles", "farmEventItems")
     toggle(Collecting, "dw_farm_special_items", "Collect Special Collectibles (On events)", "farmSpecialItems")
+    toggle(Collecting, "dw_farm_trick_or_treat", "Use Trick or Treat Doors", "farmTrickOrTreat")
     toggle(Collecting, "dw_farm_heal_items", "Collect & Use healing items", "farmHealItems")
     toggle(Collecting, "dw_farm_extraction_items", "Collect & Use extraction items", "farmExtractionItems")
     local CapsulesIchor = toggle(Collecting, "dw_farm_capsules", "Collect Research Capsules [For Ichor]", "farmCapsules")
