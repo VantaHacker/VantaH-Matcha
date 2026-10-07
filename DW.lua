@@ -53,6 +53,14 @@ if not VantaUI then
     return
 end
 
+local FireProximityPrompt = (function()
+    local ok, source = pcall(readfile, "FireProximityPrompt.lua")
+    if not (ok and type(source) == "string" and #source > 0) then ok, source = pcall(httpget, "https://raw.githubusercontent.com/VantaHacker/VantaH-Matcha/refs/heads/main/FireProximityPrompt.lua") end
+    local chunk = ok and type(source) == "string" and loadstring(source)
+    if not chunk then return nil end
+    return pcall(chunk) and _G.FireProximityPrompt or nil
+end)()
+
 local ITEM_USES = {"Collectible", "Healing", "Machines", "Skill Check", "Speed", "Stamina", "Stealth", "Random Effect", "Distraction"}
 
 local ITEM_INFO = {
@@ -195,6 +203,7 @@ local SETTINGS = {
     showItemRarity = true,
     showPlayerHealth = true,
     aggressiveAutoFarm = false,
+    hybridMode = false,
     allowFarmWithPlayers = false,
     floorLimit = 15,
     unlimitedFloors = false,
@@ -212,15 +221,17 @@ local SETTINGS = {
     farmCapsules = true,
     farmCapsulesResearch = false,
     farmResearchTwisteds = true,
-    farmEventTwisteds = false,
     farmAvoidAura = 2.5,
     farmSkipResearched = true,
-    farmIgnoreTwistedsTravel = false,
     farmSpeedMultiplier = 1.32,
     farmTreadmillRun = true,
     farmTreadmillStopAt = 30,
     farmMachinePriority = false,
     farmMachineOrder = "Box,Treadmill,Circle,Barnaby",
+    farmMemoryPosition = false,
+    farmTurnBody = false,
+    farmFakeWalk = false,
+    farmHookPrompts = false,
     resumeAutoFarm = false,
     resumeAutoFarmAt = 0,
     showPlayerStamina = true,
@@ -439,8 +450,12 @@ local SKILL = {
 }
 
 local GOLDEN = {PressDelay = 0.65, Ready = false, CircleReady = false, TreadReady = false, Busy = false, Slots = {}, NextScan = 0, NextCheck = 0, Sweep = 2, Attempts = 0, MaxAttempts = 3, RetryDelay = 30}
-GOLDEN.Offsets = {Tag = 1, Nups = 4, ValueTag = 12, StringTag = 6, FunctionTag = 8, NumberTag = 3, ProtoTag = 15, StringLength = 20, StringText = 24, Upvalues = 0x20, Upvalue = 0x70, Proto = 0x18, Code = 0x50, CodeSize = 0xAC, Constants = 0x48, ConstantCount = 0xA4, Children = 0x28, ChildCount = 0xA0, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
+GOLDEN.Offsets = {Tag = 0, Nups = 6, ValueTag = 12, StringTag = 6, FunctionTag = 8, NumberTag = 3, ProtoTag = 15, StringLength = 20, StringText = 24, Upvalues = 0x20, Upvalue = 0x70, Proto = 0x18, Code = 0x28, CodeSize = 0xA8, Constants = 0x20, ConstantCount = 0xAC, Children = 0x48, ChildCount = 0xA0, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
 GOLDEN.Offsets.Encoding = {Proto = 0, Code = 0, Constants = 0, Children = 0}
+GOLDEN.Engine = {Primitive = 0x178, PrimitivePosition = 0xD4, Body = 0x140, BodyLink = 0x68, BodyPosition = 0x98, BodyRotation = 0x74, MoveCheckA = 0x1C0, MoveCheckB = 0x39C, MoveA = 0x130, MoveB = 0x36C, LabelText = 0xBA0, RenderSwitch = 0x190, RenderCheck = 0x1D8, EngineGlobal = 0x8656E40, EngineVtable = 0x6D6CD48, EngineHolder = 0xBC0, EngineColor = 0x1A8, Camera = 0xC8}
+for key, value in pairs(GOLDEN.Engine) do GOLDEN.Offsets[key] = value end
+GOLDEN.Status = {Rows = {}, At = 0, Every = 2}
+GOLDEN.Status.Colors = {Waiting = Color3.fromRGB(175, 225, 180), Working = Color3.fromRGB(80, 200, 110), Remapped = Color3.fromRGB(45, 200, 235), Partly = Color3.fromRGB(204, 170, 62), Broken = Color3.fromRGB(230, 80, 80)}
 GOLDEN.Map = {File = CONFIG_FOLDER .. "/Offsets.json", Loaded = false, Luau = false, Tween = false, Tries = 0, Waits = 0, NextTry = nil, TweenNext = 0, TweenBusy = false, StatusAt = 0}
 
 local KEYS = {Held = {}, Timed = {}}
@@ -652,7 +667,20 @@ local FARM = {
     pauseDown = false,
     pausedAt = 0,
     TOGGLE_ID = "dw_farm_aggressive",
-    SpeedMeter = {Every = 0.25, At = 0, Value = 0},
+    SpeedMeter = {Every = 0.25, At = 0, Value = 0, TrimEvery = 1, TrimStep = 0.05},
+    TrustScores = {
+        Every = 0.2,
+        At = 0,
+        Max = 3,
+        FullShow = 2,
+        FallbackMultiplier = 1.2,
+        Fallback = false,
+        List = {
+            {Key = "KM_SPEED_TRUST_SCORE", Name = "Speed", Speed = true},
+            {Key = "KM_TELEPORT_TRUST_SCORE", Name = "Teleport"},
+            {Key = "KM_FLY_TRUST_SCORE", Name = "Fly"},
+        },
+    },
     BANNER = {
         TITLE_SIZE = 40,
         BODY_SIZE = 30,
@@ -670,7 +698,7 @@ local FARM = {
     resumeWritten = false,
     resumePending = false,
     FORCE_OFF_WINDOW = 3,
-    Debug = {Enabled = _G.DW_DEBUG == true or (type(isfile) == "function" and select(2, pcall(isfile, "DW/Debug.txt")) == true), File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05},
+    Debug = {Enabled = _G.DW_DEBUG == true or (type(isfile) == "function" and select(2, pcall(isfile, "DW/Debug.txt")) == true), File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05, SampleEvery = 0.25, SampleAt = 0, TravelEvery = 2, TravelAt = 0, JumpAt = 0, GoalAt = 0, MaxBytes = 2000000, KeepBytes = 1000000},
     RUN = {
         PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
         ARRIVE = 3,
@@ -687,6 +715,24 @@ local FARM = {
         SURFACE_BUFFER = 10,
         RAY_RECHECK = 5,
         FREEZE_EVERY = 0.1,
+        PrimitiveOffset = 0x178,
+        VelocityOffset = 0xE0,
+        BodyOffset = 0x140,
+        BodyLinkOffset = 0x68,
+        BodyPositionOffset = 0x98,
+        BodyVelocityOffset = 0xC,
+        BodyRotationOffset = 0x74,
+        BodySpinOffset = 0xB0,
+        PathDrift = 3,
+        PathKeep = 0.3,
+        MovedByGame = 12,
+        FallCatch = 4,
+        CameraRotationOffset = 0xC8,
+        HookKinds = {item = true, capsule = true, event = true, door = true, quest = true, buy = true},
+        MoveOffsets = {0x130, 0x36C},
+        MoveCheck = {0x1C0, 0x39C},
+        FakeWalkHold = 0.1,
+        VelocityCheckEvery = 2,
         ATTR_EVERY = 1 / 30,
         RAY_DOWN = 50,
         RAY_HOPS = 6,
@@ -761,7 +807,7 @@ local FARM = {
         CoverSettleEvery = 1,
         CoverWatchEvery = 3,
         CoverWatchTime = 90,
-        CoverGrowth = 40,
+        CoverGrowth = 10,
         KillRadius = {BassieMonster = 4, BlottMonster = 4, BobetteMonster = 4, GourdyMonster = 4, ShellyMonster = 4, SproutMonster = 4, VeeMonster = 4, GoobMonster = 3.5, ScrapsMonster = 3.5, GigiMonster = 5, PebbleMonster = 6.5, DandyMonster = 8.5, DyleMonster = 8.5, SquirmMonster = 5},
         KillDefault = 3.33,
         CoverDepth = 1.5,
@@ -981,7 +1027,7 @@ FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled =
 
 FARM.MASTERY = {
     VISIBLE = 0x59D,
-    TEXT = 0xB88,
+    TEXT = 0xBA0,
     STATE = 0x568,
     QUESTS = {
         { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
@@ -1062,10 +1108,12 @@ TOON.RULES.Blot = TOON.RULES.Blott
 
 TOON.UNSUPPORTED = {Shelly = true, Sprout = true, Goob = true, Glisten = true, Cosmo = true, Scraps = true, Brusha = true, Squirm = true, Ginger = true}
 
+local HYBRID = {Sprint = nil, SprintAt = 0, SprintEvery = 1, Busy = {}, Timeout = 10, CheckEvery = 60, CheckAt = 0, Checked = false, Checking = false}
+
 local REPORT = {FILE = "DW/session.json", STALE = 1800, BEAT = 15, POLL = 1, WAIT_MAX = 45, queue = {}, queuedAt = 0, COLOR = 3907299, DEATH_COLOR = 16724787, LIMIT_COLOR = 15844367, EMOJI ={Ichor = "<:Ichor:1537419766216794202>", Research = "<:Research:1537425747042639962>", Items = "<:Items:1537454153415008316>", Twisteds = "<:Twisteds:1537144148908314675>", Character = "<:Character:1537200090370805840>", Mastery = "<:Mastery:1537206041085747331>"}, nextAt = 0, beatAt = 0}
 
 local RENDER = {Offset = 0x190, CheckOffset = 0x1D8, Applied = false, Wanted = false, NextAt = 0}
-RENDER.Clear = {Global = 0x858D208, VisualEngine = 0x6D58DD0, Holder = 0xBC0, Color = 0x1A4, Saved = nil}
+RENDER.Clear = {Global = 0x8656E40, VisualEngine = 0x6D6CD48, Holder = 0xBC0, Color = 0x1A8, Saved = nil}
 
 local UI_REFRESH_INTERVAL = 0.1
 local lastUiRefresh = 0
@@ -1384,6 +1432,106 @@ function KEYS.mouse(action, ...)
     if not (robloxFocused() and not VantaUI.Blocked) then return false end
     pcall(action, ...)
     return true
+end
+
+function HYBRID.on()
+    return SETTINGS.hybridMode == true and PLACE_MODE == "main"
+end
+
+function HYBRID.remote(name)
+    local Events = game:GetService("ReplicatedStorage"):FindFirstChild("Events")
+    return Events and Events:FindFirstChild(name)
+end
+
+function HYBRID.character()
+    local Folder = workspace:FindFirstChild("InGamePlayers")
+    return Folder and Folder:FindFirstChild(LocalPlayer.Name)
+end
+
+function HYBRID.fire(Remote, ...)
+    if not Remote then return false end
+    local Arguments = table.pack(...)
+    local ok, result = pcall(function() return Remote:FireServer(table.unpack(Arguments, 1, Arguments.n)) end)
+    return ok and result ~= false
+end
+
+function HYBRID.invoke(name, ...)
+    local started = HYBRID.Busy[name]
+    if started and tick() - started < HYBRID.Timeout then return false end
+    local Remote = HYBRID.remote(name)
+    if not Remote then return false end
+    HYBRID.Busy[name] = tick()
+    local Arguments = table.pack(...)
+    task.spawn(function()
+        pcall(function() Remote:InvokeServer(table.unpack(Arguments, 1, Arguments.n)) end)
+        HYBRID.Busy[name] = nil
+    end)
+    return true
+end
+
+function HYBRID.ready()
+    return HYBRID.fire(HYBRID.remote("ReadyUpEvent"), "ReadyUp")
+end
+
+function HYBRID.sprint(now, want)
+    if HYBRID.Sprint == want and now < HYBRID.SprintAt then return true end
+    HYBRID.SprintAt = now + HYBRID.SprintEvery
+    if HYBRID.Sprint == want and FARM.isSprinting() == want then return true end
+    HYBRID.Sprint = want
+    return HYBRID.fire(HYBRID.remote("SprintEvent"), want)
+end
+
+function HYBRID.item(slot)
+    local char = HYBRID.character()
+    local Inventory = char and char:FindFirstChild("Inventory")
+    local Slot = Inventory and Inventory:FindFirstChild("Slot" .. slot)
+    if not Slot then return false end
+    return HYBRID.invoke("ItemEvent", char, Slot)
+end
+
+function HYBRID.ability()
+    local char = HYBRID.character()
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    return HYBRID.invoke("AbilityEvent", char, root.CFrame, false, nil)
+end
+
+function HYBRID.vote(name)
+    local Info = workspace:FindFirstChild("Info")
+    local Folder = Info and Info:FindFirstChild("CardVote")
+    local Card = Folder and Folder:FindFirstChild(name)
+    if not Card then return false end
+    return HYBRID.fire(HYBRID.remote("CardVoteEvent"), Card)
+end
+
+function HYBRID.struggle(side)
+    return HYBRID.fire(HYBRID.remote("TwistedSquirmGrab"), "Struggle", side)
+end
+
+function HYBRID.available()
+    local Remote = HYBRID.remote("GetKeybinds")
+    if not Remote then return true end
+    local ok, result = pcall(function() return Remote:InvokeServer() end)
+    return not (ok and result == false)
+end
+
+function HYBRID.update(now)
+    if not SETTINGS.hybridMode then HYBRID.Checked = false return end
+    if HYBRID.Checking or (HYBRID.Checked and now < HYBRID.CheckAt) then return end
+    HYBRID.Checking, HYBRID.Checked, HYBRID.CheckAt = true, true, now + HYBRID.CheckEvery
+    task.spawn(function()
+        local available = HYBRID.available()
+        HYBRID.Checking = false
+        if available or not SETTINGS.hybridMode then return end
+        SETTINGS.hybridMode, HYBRID.Checked = false, false
+        pcall(UI.SetValue, "dw_farm_hybrid", false)
+        VantaUI:Notify("Hybrid Mode support", "Hybrid mode is off in Matcha.", 6)
+    end)
+end
+
+function HYBRID.leave(Machine)
+    local Stats = Machine.model and Machine.model:FindFirstChild("Stats")
+    return HYBRID.fire(Stats and Stats:FindFirstChild("StopInteracting"), "Stop")
 end
 
 local function getIdentity(instance)
@@ -2175,6 +2323,271 @@ function GOLDEN.loadMap()
     GOLDEN.apply(Data)
     GOLDEN.Map.LastRun, GOLDEN.Map.Works, GOLDEN.Map.SavedBuild = tonumber(Data.LastRun), Data.Works == true, type(Data.Build) == "string" and Data.Build or nil
     GOLDEN.Map.TweenSaved = Data.TweenElapsed ~= nil and Data.TweenList ~= nil and Data.TweenTime ~= nil
+    GOLDEN.applyEngine()
+end
+
+function GOLDEN.applyEngine()
+    local O, R = GOLDEN.Offsets, FARM.RUN
+    R.PrimitiveOffset, R.VelocityOffset = O.Primitive, O.PrimitivePosition + 12
+    R.BodyOffset, R.BodyLinkOffset, R.BodyPositionOffset = O.Body, O.BodyLink, O.BodyPosition
+    R.BodyRotationOffset, R.BodySpinOffset = O.BodyRotation, O.BodyPosition + 0x18
+    R.MoveCheck, R.MoveOffsets = {O.MoveCheckA, O.MoveCheckB}, {O.MoveA, O.MoveB}
+    R.CameraRotationOffset = O.Camera
+    R.BodyRoot, R.BodyAt, R.VelocityRoot, R.VelocityAt = nil, nil, nil, nil
+    FARM.MASTERY.TEXT = O.LabelText
+    RENDER.Offset, RENDER.CheckOffset = O.RenderSwitch, O.RenderCheck
+    local Clear = RENDER.Clear
+    Clear.Global, Clear.VisualEngine, Clear.Holder, Clear.Color = O.EngineGlobal, O.EngineVtable, O.EngineHolder, O.EngineColor
+    local Fire = FireProximityPrompt
+    if not (Fire and Fire.Offsets) then return end
+    for _, mode in pairs(O.Encoding) do
+        if mode ~= 0 then return end
+    end
+    local changed = false
+    for _, key in ipairs({"Tag", "ValueTag", "StringTag", "FunctionTag", "StringLength", "StringText", "Proto", "Code", "CodeSize", "Constants", "ConstantCount"}) do
+        if Fire.Offsets[key] ~= O[key] then Fire.Offsets[key], changed = O[key], true end
+    end
+    if Fire.Offsets.CameraRotation ~= O.Camera then Fire.Offsets.CameraRotation, changed = O.Camera, true end
+    if changed and Fire.State and not Fire.Busy then Fire.State.Ready = false end
+end
+
+function GOLDEN.near(address, Position)
+    local x, y, z = memory_read("float", address), memory_read("float", address + 4), memory_read("float", address + 8)
+    return x ~= nil and y ~= nil and z ~= nil and math.abs(x - Position.X) < 0.5 and math.abs(y - Position.Y) < 0.5 and math.abs(z - Position.Z) < 0.5
+end
+
+function GOLDEN.rotationAt(address, CF)
+    local Components = {CF:GetComponents()}
+    for i = 4, 12 do
+        local value = memory_read("float", address + (i - 4) * 4)
+        if not value or math.abs(value - Components[i]) > 0.01 then return false end
+    end
+    return true
+end
+
+function GOLDEN.mapBody()
+    local O = GOLDEN.Offsets
+    local root = UI.myPart("HumanoidRootPart")
+    if not root then return false, "no character" end
+    local key, position, CF = root.Address, root.Position, root.CFrame
+    local function bodyOf(primitive, bodyOffset)
+        local body = memory_read("uintptr_t", primitive + bodyOffset)
+        if not GOLDEN.heap(body) then return nil end
+        local link = memory_read("uintptr_t", body + 8)
+        if not link or link < primitive or link - primitive > 0x300 or (link - primitive) % 8 ~= 0 then return nil end
+        return body, link - primitive
+    end
+    local function check(primitiveOffset, primitivePosition, bodyOffset, bodyPosition)
+        local primitive = memory_read("uintptr_t", key + primitiveOffset)
+        if not GOLDEN.heap(primitive) or not GOLDEN.near(primitive + primitivePosition, position) then return nil end
+        local body, link = bodyOf(primitive, bodyOffset)
+        if not body or not GOLDEN.near(body + bodyPosition, position) or not GOLDEN.rotationAt(body + bodyPosition - 0x24, CF) then return nil end
+        return link
+    end
+    if check(O.Primitive, O.PrimitivePosition, O.Body, O.BodyPosition) then return true end
+    for primitiveOffset = 0x100, 0x280, 8 do
+        local primitive = memory_read("uintptr_t", key + primitiveOffset)
+        if GOLDEN.heap(primitive) then
+            local primitivePosition
+            for offset = 0x40, 0x180, 4 do
+                if GOLDEN.near(primitive + offset, position) then primitivePosition = offset break end
+            end
+            if primitivePosition then
+                for bodyOffset = 0x80, 0x280, 8 do
+                    local body, link = bodyOf(primitive, bodyOffset)
+                    if body then
+                        for bodyPosition = 0x40, 0x140, 4 do
+                            if GOLDEN.near(body + bodyPosition, position) and GOLDEN.rotationAt(body + bodyPosition - 0x24, CF) then
+                                O.Primitive, O.PrimitivePosition, O.Body, O.BodyLink, O.BodyPosition, O.BodyRotation = primitiveOffset, primitivePosition, bodyOffset, link, bodyPosition, bodyPosition - 0x24
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false, "character body not found"
+end
+
+function GOLDEN.mapWalk()
+    local O = GOLDEN.Offsets
+    local humanoid = UI.myPart("Humanoid")
+    if not humanoid then return false, "no character" end
+    local address = humanoid.Address
+    local function speed(a, b)
+        local value = memory_read("float", address + a)
+        return value ~= nil and value > 0 and value <= 100 and value == memory_read("float", address + b)
+    end
+    if speed(O.MoveCheckA, O.MoveCheckB) then return true end
+    local best, bestCost, ties
+    for first = -0x80, 0x80, 4 do
+        for second = -0x80, 0x80, 4 do
+            if speed(O.MoveCheckA + first, O.MoveCheckB + second) then
+                local cost = math.abs(first) + math.abs(second) + (first == second and 0 or 0x1000)
+                if not bestCost or cost < bestCost then best, bestCost, ties = {first, second}, cost, false
+                elseif cost == bestCost then ties = true end
+            end
+        end
+    end
+    if not best then return false, "walk speed not found" end
+    if ties then return false, "walk speed ambiguous" end
+    O.MoveCheckA, O.MoveA = O.MoveCheckA + best[1], O.MoveA + best[1]
+    O.MoveCheckB, O.MoveB = O.MoveCheckB + best[2], O.MoveB + best[2]
+    return true
+end
+
+function GOLDEN.mapText()
+    local O = GOLDEN.Offsets
+    local Labels = {}
+    local Gui = UI.playerGui()
+    for _, Child in ipairs(Gui and Gui:GetDescendants() or {}) do
+        if Child.ClassName == "TextLabel" then
+            local ok, text = pcall(function() return Child.Text end)
+            if ok and type(text) == "string" and #text > 3 then
+                table.insert(Labels, {Label = Child, Text = text})
+                if #Labels >= 3 then break end
+            end
+        end
+    end
+    if #Labels == 0 then return false, "no text on screen" end
+    local function works(offset)
+        for _, Entry in ipairs(Labels) do
+            local ok, read = pcall(STRINGS.memory, Entry.Label.Address + offset)
+            if not ok or read ~= Entry.Text then return false end
+        end
+        return true
+    end
+    if works(O.LabelText) then return true end
+    for offset = 0x900, 0x1100, 8 do
+        if works(offset) then O.LabelText = offset return true end
+    end
+    return false, "text field not found"
+end
+
+function GOLDEN.mapRender()
+    local O = GOLDEN.Offsets
+    local service
+    for _, Child in ipairs(game:GetChildren()) do
+        if Child.ClassName == "RunService" then service = tonumber(Child.Address) break end
+    end
+    if not service then return false, "RunService not found" end
+    local distance = O.RenderCheck - O.RenderSwitch
+    local function works(check)
+        if memory_read("double", service + check) ~= 0.05 then return false end
+        local value = memory_read("byte", service + check - distance)
+        return value == 0 or value == 1
+    end
+    if works(O.RenderCheck) then return true end
+    local found
+    for check = 0x100, 0x400, 8 do
+        if works(check) then
+            if found then return false, "render switch ambiguous" end
+            found = check
+        end
+    end
+    if not found then return false, "render switch not found" end
+    O.RenderCheck, O.RenderSwitch = found, found - distance
+    return true
+end
+
+function GOLDEN.clearColor(holder)
+    for offset = 0x180, 0x200, 4 do
+        local white = true
+        for index = 0, 3 do
+            if memory_read("float", holder + offset + index * 4) ~= 1 then white = false break end
+        end
+        if white then return offset end
+    end
+end
+
+function GOLDEN.mapEngine()
+    local O = GOLDEN.Offsets
+    pcall(RENDER.setClear, false)
+    local base = getbase()
+    local function valid(global, vtable, holderOffset, color)
+        local engine = memory_read("uintptr_t", base + global)
+        if not GOLDEN.heap(engine) or memory_read("uintptr_t", engine) - base ~= vtable then return false end
+        local holder = memory_read("uintptr_t", engine + holderOffset)
+        if not GOLDEN.heap(holder) then return false end
+        local r, g, b, a = memory_read("float", holder + color), memory_read("float", holder + color + 4), memory_read("float", holder + color + 8), memory_read("float", holder + color + 12)
+        return a == 1 and r == g and g == b and r >= 0 and r <= 1
+    end
+    if valid(O.EngineGlobal, O.EngineVtable, O.EngineHolder, O.EngineColor) then return true end
+    local header = base + memory_read("int", base + 0x3C)
+    local count = memory_read("int", header + 4) // 65536 % 65536
+    local sections = header + 24 + memory_read("int", header + 20) % 65536
+    local Sections = {}
+    for index = 0, count - 1 do
+        local section = sections + index * 40
+        local name = ""
+        for offset = 0, 7 do
+            local character = memory_read("byte", section + offset)
+            if character == 0 then break end
+            name = name .. string.char(character)
+        end
+        Sections[name] = {Start = memory_read("int", section + 12), Size = memory_read("int", section + 8)}
+    end
+    local Data, Read = Sections[".data"], Sections[".rdata"]
+    if not (Data and Read) then return false, "module sections not found" end
+    local steps = 0
+    local function scan(from, to)
+        local Found = {}
+        from = math.max(from - from % 8, Data.Start)
+        to = math.min(to, Data.Start + Data.Size - 8)
+        for offset = from, to, 8 do
+            steps = steps + 1
+            if steps % 8192 == 0 then task.wait(1 / 60) end
+            local engine = memory_read("uintptr_t", base + offset)
+            if GOLDEN.heap(engine) and (engine < base or engine > base + Data.Start + Data.Size) then
+                local vtable = memory_read("uintptr_t", engine)
+                local relative = vtable and vtable - base
+                if relative and relative >= Read.Start and relative < Read.Start + Read.Size then
+                    local holder = memory_read("uintptr_t", engine + O.EngineHolder)
+                    local color = GOLDEN.heap(holder) and GOLDEN.clearColor(holder)
+                    if color then table.insert(Found, {Global = offset, Vtable = relative, Color = color}) end
+                end
+            end
+        end
+        return Found
+    end
+    local Found = scan(O.EngineGlobal - 0x400000, O.EngineGlobal + 0x400000)
+    if #Found ~= 1 then Found = scan(Data.Start, Data.Start + Data.Size) end
+    if #Found ~= 1 then return false, #Found == 0 and "render engine not found" or "render engine ambiguous" end
+    O.EngineGlobal, O.EngineVtable, O.EngineColor = Found[1].Global, Found[1].Vtable, Found[1].Color
+    return true
+end
+
+function GOLDEN.mapCamera()
+    local O = GOLDEN.Offsets
+    local Camera = Workspace.CurrentCamera
+    local address = Camera and Camera.Address
+    if not address then return false, "no camera" end
+    local CF = Camera.CFrame
+    if GOLDEN.rotationAt(address + O.Camera, CF) then return true end
+    for offset = 0x40, 0x300, 4 do
+        if GOLDEN.rotationAt(address + offset, CF) then O.Camera = offset return true end
+    end
+    return false, "camera rotation not found"
+end
+
+GOLDEN.EngineMaps = {
+    {Name = "character body", Map = GOLDEN.mapBody},
+    {Name = "walking", Map = GOLDEN.mapWalk},
+    {Name = "quest text", Map = GOLDEN.mapText},
+    {Name = "3D switch", Map = GOLDEN.mapRender},
+    {Name = "camera", Map = GOLDEN.mapCamera},
+    {Name = "black background", Map = GOLDEN.mapEngine},
+}
+
+function GOLDEN.mapEngineAll()
+    local Failures = {}
+    for _, Entry in ipairs(GOLDEN.EngineMaps) do
+        local ok, found, reason = pcall(Entry.Map)
+        if not (ok and found) then table.insert(Failures, Entry.Name .. ": " .. tostring(ok and reason or found)) end
+    end
+    GOLDEN.applyEngine()
+    return Failures
 end
 
 function GOLDEN.entries(key)
@@ -2339,8 +2752,17 @@ function GOLDEN.mapProto(Protos, full)
 end
 
 function GOLDEN.findLuau(force)
+    local reason = "skill check scripts not found"
+    for _, Invoke in ipairs(GOLDEN.entries("handleInvoke")) do
+        local found, why = GOLDEN.findLuauFrom(Invoke, force)
+        if found then return true end
+        if reason == "skill check scripts not found" then reason = why end
+    end
+    return false, reason
+end
+
+function GOLDEN.findLuauFrom(Invoke, force)
     local O = GOLDEN.Offsets
-    local Invoke = GOLDEN.entries("handleInvoke")[1]
     if not (Invoke and Invoke.addr and Invoke.vtt) then return false, "skill check scripts not found" end
     local functionTag = Invoke.vtt
     local Entries = {Invoke}
@@ -2582,8 +3004,184 @@ function GOLDEN.queueTween()
     end)
 end
 
+function GOLDEN.needsRemap()
+    local Map = GOLDEN.Map
+    if PLACE_MODE ~= "main" or not (SETTINGS.alwaysGolden or SETTINGS.betterBarnaby) then return false end
+    if SETTINGS.autoRemap then return Map.State == "Failed" end
+    if GOLDEN.Busy or Map.State == "Success" or not VantaUI.MemoryAccess() then return false end
+    if not Map.Loaded then GOLDEN.loadMap() end
+    if not Map.SavedBuild then return false end
+    return not Map.Works or Map.SavedBuild ~= GOLDEN.build()
+end
+
+function GOLDEN.closeRemapDialog()
+    local Dialog = GOLDEN.RemapDialog
+    GOLDEN.RemapDialog = false
+    if Dialog then pcall(function() Dialog:Destroy() end) end
+end
+
+function GOLDEN.warnRemap()
+    if GOLDEN.RemapDialog ~= nil or not GOLDEN.needsRemap() then return end
+    local Dialog, Body = UI.dialog("Remap Required", "Dandy's World", "ROBLOX UPDATED", Vector2.new(460, 210), GOLDEN.closeRemapDialog)
+    GOLDEN.RemapDialog = Dialog
+    Body:AddParagraph({Content = "Remapping is required! Go to Memory, press a button \"Remap the memory offsets\"."})
+    Body:AddButton({Title = "Remap now", Primary = true, Callback = function()
+        GOLDEN.closeRemapDialog()
+        GOLDEN.remap()
+    end})
+    Body:AddButton({Title = "OK", Callback = GOLDEN.closeRemapDialog})
+end
+
+function GOLDEN.remapState()
+    local Map = GOLDEN.Map
+    if GOLDEN.Busy then return "Waiting", "Remapping the offsets." end
+    if Map.State == "Failed" then return "Not working", tostring(Map.Reason) end
+    if Map.SavedBuild and (not Map.Works or Map.SavedBuild ~= GOLDEN.build()) and Map.State ~= "Success" then return "Requires a remap", "Roblox updated since the last remap." end
+    return nil
+end
+
+function GOLDEN.goldenStatus()
+    if not SETTINGS.alwaysGolden then return "Off", "" end
+    if PLACE_MODE ~= "main" then return "Waiting", "Checked in the game." end
+    local state, detail = GOLDEN.remapState()
+    if state then return state, detail end
+    local Found, Missing = {}, {}
+    for _, Part in ipairs({{"bar", GOLDEN.Ready}, {"circle", GOLDEN.CircleReady}, {"treadmill", GOLDEN.TreadReady}}) do
+        table.insert(Part[2] and Found or Missing, Part[1])
+    end
+    if #Missing == 0 then return GOLDEN.Map.State == "Success" and "Working (remapped)" or "Working", "Bar, circle and treadmill found." end
+    if #Found > 0 then return "Partly working", "Missing: " .. table.concat(Missing, ", ") .. "." end
+    if GOLDEN.Attempts >= GOLDEN.MaxAttempts then return "Not working", "Skill check code not found." end
+    return "Waiting", "Sets up in the background."
+end
+
+function GOLDEN.barnabyStatus()
+    if not SETTINGS.betterBarnaby then return "Off", "" end
+    local state, detail = GOLDEN.remapState()
+    if state then return state, detail end
+    if SWIMMER.Ready then return GOLDEN.Map.State == "Success" and "Working (remapped)" or "Working", "Barnaby code found." end
+    if SWIMMER.Attempts >= 3 then return "Not working", "Barnaby code not found." end
+    return "Waiting", "Sets up when the Barnaby minigame starts."
+end
+
+function GOLDEN.promptStatus()
+    local Fire = FireProximityPrompt
+    if not Fire then return "Not working", "FireProximityPrompt.lua did not load." end
+    if not SETTINGS.farmHookPrompts then return "Off", "" end
+    if PLACE_MODE ~= "main" then return "Waiting", "Checked in the game." end
+    if FARM.promptHookReady() then
+        local Last = Fire.Last
+        if Last and not Last.Success then return "Partly working", "Last use failed: " .. tostring(Last.Problem) end
+        return "Working", Last and "Last use worked." or "Prompt handler found."
+    end
+    if Fire.Preparing then return "Waiting", "Setting up." end
+    if Fire.SetupProblem then return "Not working", Fire.SetupProblem end
+    return "Waiting", "Sets up on the first prompt."
+end
+
+function GOLDEN.bodyStatus(key)
+    local root = PLACE_MODE == "main" and UI.myPart("HumanoidRootPart")
+    if not root then return "Waiting", "Checked while your character is alive." end
+    local ok, address = pcall(FARM.bodyAddress, root)
+    if ok and address then return "Working", "Character body found." end
+    return "Not working", "Character body layout check failed."
+end
+
+function GOLDEN.walkStatus()
+    local humanoid = PLACE_MODE == "main" and UI.myPart("Humanoid")
+    if not humanoid then return "Waiting", "Checked while your character is alive." end
+    local R = FARM.RUN
+    local ok, works = pcall(function()
+        local address = humanoid.Address
+        local first = memory_read("float", address + R.MoveCheck[1])
+        return first ~= nil and first == memory_read("float", address + R.MoveCheck[2]) and first >= 0 and first <= 100
+    end)
+    if ok and works then return "Working", "Movement fields found." end
+    return "Not working", "Movement layout check failed."
+end
+
+function GOLDEN.renderStatus()
+    local okRender, render = pcall(RENDER.address)
+    local okClear, clear = pcall(RENDER.clearAddress)
+    render, clear = okRender and render, okClear and clear
+    if render and clear then return "Working", "Render switch and background found." end
+    if render then return "Partly working", "Background colour not found, it stays grey." end
+    return "Not working", "Render switch not found."
+end
+
+function GOLDEN.textStatus()
+    local Status = GOLDEN.Status
+    local Label = Status.Label
+    if not (Label and Label.Parent) then
+        Label = nil
+        local Gui = UI.playerGui()
+        local Screen = Gui and Gui:FindFirstChild("ScreenGui")
+        for _, Child in ipairs(Screen and Screen:GetDescendants() or {}) do
+            if Child.ClassName == "TextLabel" then
+                local ok, text = pcall(function() return Child.Text end)
+                if ok and type(text) == "string" and #text > 3 then Label = Child break end
+            end
+        end
+        Status.Label = Label
+    end
+    if not Label then return "Waiting", "No text found to compare." end
+    local ok, text = pcall(function() return Label.Text end)
+    local read = FARM.MASTERY.text(Label)
+    if ok and read == text then return "Working", "Quest text is readable." end
+    return "Not working", "Quest text offset is wrong."
+end
+
+GOLDEN.Status.List = {
+    {Name = "Always hit Golden", Check = GOLDEN.goldenStatus},
+    {Name = "Better Auto Barnaby", Check = GOLDEN.barnabyStatus},
+    {Name = "Hook Proximity Prompts", Check = GOLDEN.promptStatus},
+    {Name = "Write Position using memory", Check = function() return GOLDEN.bodyStatus("farmMemoryPosition") end},
+    {Name = "Turn the character instead of the camera", Check = function() return GOLDEN.bodyStatus("farmTurnBody") end},
+    {Name = "Walk using memory", Check = GOLDEN.walkStatus},
+    {Name = "Disable 3D Rendering", Check = GOLDEN.renderStatus},
+    {Name = "Auto Mastery quest text", Check = GOLDEN.textStatus},
+}
+
+function GOLDEN.updateStatus(now)
+    local Status = GOLDEN.Status
+    if #Status.Rows == 0 or now < Status.At then return end
+    Status.At = now + Status.Every
+    local memory = VantaUI.MemoryAccess()
+    local counts = {Working = 0, Total = 0}
+    for index, Entry in ipairs(Status.List) do
+        local Row = Status.Rows[index]
+        local ok, state, detail = true, "Not working", "Memory access is off."
+        if memory then ok, state, detail = pcall(Entry.Check) end
+        if not ok then state, detail = "Not working", "Check failed: " .. tostring(state):sub(1, 60) end
+        local text = state .. "\n" .. tostring(detail or "")
+        if Row and Row.Text ~= text then
+            Row.Text = text
+            Row.Element:SetContent(text)
+            local Colors = Status.Colors
+            local color = (state == "Working" and Colors.Working) or (state == "Working (remapped)" and Colors.Remapped) or ((state == "Partly working" or state == "Requires a remap") and Colors.Partly) or (state == "Not working" and Colors.Broken) or (state == "Waiting" and Colors.Waiting) or nil
+            if Row.Element.SetColor then Row.Element:SetColor(color, 1) end
+        end
+        if state ~= "Off" then
+            counts.Total = counts.Total + 1
+            if state == "Working" or state == "Working (remapped)" then counts.Working = counts.Working + 1 end
+        end
+    end
+    if Status.Footer then
+        local Map = GOLDEN.Map
+        local build = memory and GOLDEN.build()
+        local match = Map.SavedBuild and build and (Map.SavedBuild ~= build and "Roblox updated since the last remap." or nil) or (not Map.SavedBuild and "No remap saved yet." or nil)
+        local footer = counts.Working .. " of " .. counts.Total .. " enabled features working." .. (match and "\n" .. match or "")
+        if Status.FooterText ~= footer then
+            Status.FooterText = footer
+            Status.Footer:SetContent(footer)
+        end
+    end
+end
+
 function GOLDEN.prepare(now)
     local Map = GOLDEN.Map
+    GOLDEN.warnRemap()
+    GOLDEN.updateStatus(now)
     if now >= Map.StatusAt then
         Map.StatusAt = now + 30
         GOLDEN.showStatus()
@@ -2621,6 +3219,8 @@ function GOLDEN.prepare(now)
         if missing then Map.Waits = Map.Waits + 1 else Map.Tries = Map.Tries + 1 end
         if luau then
             local tween, tweenReason = GOLDEN.mapTween(false)
+            local Engine = GOLDEN.mapEngineAll()
+            if #Engine > 0 then FARM.debugNote("engine offsets not found: " .. table.concat(Engine, ", ")) end
             local changed = GOLDEN.changed(Before)
             GOLDEN.saveMap(changed)
             if tween or tweenReason ~= "tween fields not found" then
@@ -2650,10 +3250,12 @@ function GOLDEN.remap()
         GOLDEN.Cache = {}
         local luau, luauReason = GOLDEN.mapLuau(true)
         local tween, tweenReason = GOLDEN.mapTween(true)
-        if luau or tween then GOLDEN.saveMap(true) end
+        local Engine = GOLDEN.mapEngineAll()
+        GOLDEN.saveMap(true)
         local Failures = {}
         if not luau then table.insert(Failures, "Golden and Barnaby offsets: " .. luauReason) end
         if not tween then table.insert(Failures, "tween offsets: " .. tweenReason) end
+        for _, failure in ipairs(Engine) do table.insert(Failures, failure) end
         GOLDEN.setStatus(#Failures == 0 and "Success" or "Failed", table.concat(Failures, "; "))
         GOLDEN.Cache = nil
         GOLDEN.Map.Tries, GOLDEN.Map.Waits, GOLDEN.Map.NextTry, GOLDEN.Map.TweenNext = 0, 0, 0, 0
@@ -2662,7 +3264,8 @@ function GOLDEN.remap()
         GOLDEN.Busy = false
         local skill = luau and "Skill check and Barnaby offsets found." or "Skill check and Barnaby offsets not found, those features stay off."
         local engine = tween and "Tween offsets found." or "Tween offsets not found yet, retrying during skill checks."
-        VantaUI:Notify("Memory offsets", skill .. " " .. engine, 7)
+        local others = #Engine == 0 and "Every other offset found." or ("Not found: " .. table.concat(Engine, ", ") .. ".")
+        VantaUI:Notify("Memory offsets", skill .. " " .. engine .. " " .. others, 9)
     end)
 end
 
@@ -3494,7 +4097,9 @@ local function doAutoSquirmEscape()
 
     local useLeft = SQUIRM.lastSide ~= "left"
     local key = useLeft and SQUIRM.VK_LEFT or SQUIRM.VK_RIGHT
-    if not KEYS.hold(key, SQUIRM.HOLD) then
+    if HYBRID.on() then
+        if not HYBRID.struggle(useLeft and "left" or "right") then return true end
+    elseif not KEYS.hold(key, SQUIRM.HOLD) then
         return true
     end
     SQUIRM.lastSide = useLeft and "left" or "right"
@@ -5100,7 +5705,8 @@ function FARM.makeBanner()
         { text = "Made by VantaH", size = B.BODY_SIZE },
         { text = "", size = B.STATUS_SIZE, gap = B.STATUS_GAP },
     }
-    if FARM.Debug.Enabled then table.insert(specs, { text = "", size = B.BODY_SIZE }) end
+    for _, Score in ipairs(FARM.TrustScores.List) do table.insert(specs, {text = "", size = B.BODY_SIZE, score = Score}) end
+    if FARM.Debug.Enabled then table.insert(specs, {text = "", size = B.BODY_SIZE, speed = true}) end
 
     local banner = { lines = {}, height = 0, x = 0.5, y = 0.5, moveAt = 0, keyText = nil, statusText = nil }
 
@@ -5108,8 +5714,7 @@ function FARM.makeBanner()
         local drawing = makeText(spec.size)
         safeSet(drawing, "ZIndex", 68)
         drawing.Text = spec.text
-        banner.lines[index] = { drawing = drawing, size = spec.size, gap = spec.gap or B.LINE_GAP }
-        banner.height = banner.height + spec.size + (index < #specs and banner.lines[index].gap or 0)
+        banner.lines[index] = {drawing = drawing, size = spec.size, gap = spec.gap or B.LINE_GAP, Text = spec.text, Score = spec.score, Speed = spec.speed}
     end
 
     banner.titleText = specs[1].text
@@ -5957,12 +6562,18 @@ function FARM.measureSpeed(now)
     local R = FARM.RUN
     if Meter.Position and now > Meter.Time then
         Meter.Value = FARM.flatDistance(Meter.Position, p) / (now - Meter.Time)
-        local target = FARM.travelSpeed(now)
-        if R.TrimPhases[R.phase] and Meter.Phase == R.phase and Meter.Value > target * 0.6 and Meter.Value < target * 2 then
-            R.SpeedTrim = math.clamp(R.SpeedTrim * math.clamp(target / Meter.Value, 0.85, 1.15), R.TrimMin, R.TrimMax)
-        end
     end
-    Meter.Position, Meter.Time, Meter.Phase = p, now, R.phase
+    Meter.Position, Meter.Time = p, now
+    if not R.TrimPhases[R.phase] or Meter.TrimPhase ~= R.phase or not Meter.TrimPosition then
+        Meter.TrimPosition, Meter.TrimTime, Meter.TrimPhase = p, now, R.phase
+    elseif now - Meter.TrimTime >= Meter.TrimEvery then
+        local speed = FARM.flatDistance(Meter.TrimPosition, p) / (now - Meter.TrimTime)
+        local target = FARM.travelSpeed(now)
+        if speed > target * 0.6 and speed < target * 2 then
+            R.SpeedTrim = math.clamp(R.SpeedTrim * math.clamp(target / speed, 1 - Meter.TrimStep, 1 + Meter.TrimStep), R.TrimMin, R.TrimMax)
+        end
+        Meter.TrimPosition, Meter.TrimTime = p, now
+    end
     return Meter.Value
 end
 
@@ -6002,11 +6613,12 @@ function FARM.updateBanner(now)
     end
 
     FARM.measureSpeed(now)
-    if banner.lines[5] then
-        local speedText = FARM.speedText(now)
-        if banner.speedText ~= speedText then
-            banner.speedText = speedText
-            banner.lines[5].drawing.Text = speedText
+    FARM.updateTrustScores(now)
+    for _, line in ipairs(banner.lines) do
+        local text = line.Score and line.Score.Text or (line.Speed and FARM.speedText(now)) or nil
+        if text and line.Text ~= text then
+            line.Text = text
+            line.drawing.Text = text
         end
     end
 
@@ -6016,14 +6628,62 @@ function FARM.updateBanner(now)
         banner.y = 0.5 + (math.random() * 2 - 1) * B.LIMIT
     end
 
+    local Shown = {}
+    local height = 0
+    for _, line in ipairs(banner.lines) do
+        if (line.Score or line.Speed) and line.Text == "" then
+            line.drawing.Visible = false
+        else
+            line.Before = #Shown == 0 and 0 or ((line.Score and B.LINE_GAP) or (line.Speed and B.STATUS_GAP) or Shown[#Shown].gap)
+            table.insert(Shown, line)
+            height = height + line.Before + line.size
+        end
+    end
+
     local viewport = camera.ViewportSize
     local px = viewport.X * banner.x
-    local py = viewport.Y * banner.y - banner.height / 2
+    local py = viewport.Y * banner.y - height / 2
 
-    for _, line in ipairs(banner.lines) do
+    for _, line in ipairs(Shown) do
+        py = py + line.Before
         line.drawing.Position = Vector2.new(px, py)
         line.drawing.Visible = true
-        py = py + line.size + line.gap
+        py = py + line.size
+    end
+end
+
+function FARM.updateTrustScores(now)
+    local Scores = FARM.TrustScores
+    if now < Scores.At then return end
+    Scores.At = now + Scores.Every
+    local fallback = false
+    for _, Score in ipairs(Scores.List) do
+        local ok, value = pcall(function() return LocalPlayer:GetAttribute(Score.Key) end)
+        value = ok and tonumber(value) or nil
+        if value == nil then
+            Score.Previous, Score.Dropped, Score.Text = nil, false, ""
+        else
+            if Score.Previous and value < Score.Previous then Score.Dropped = true end
+            if value >= 2 then Score.Dropped = false end
+            if value >= Scores.Max and Score.Previous and Score.Previous < Scores.Max then Score.FullUntil = now + Scores.FullShow end
+            Score.Previous = value
+            local slow = Score.Speed and (value <= 0 or (value == 1 and Score.Dropped))
+            if slow then fallback = true end
+            local text = string.format("%s Score: %d/%d", Score.Name, value, Scores.Max)
+            if value >= Scores.Max then
+                Score.Text = now < (Score.FullUntil or 0) and text or ""
+            elseif slow then
+                Score.Text = text .. string.format(" (Travel Speed is x%g)", math.min(tonumber(SETTINGS.farmSpeedMultiplier) or FARM.RUN.SprintMultiplier, Scores.FallbackMultiplier))
+            elseif Score.Speed and value == 1 then
+                Score.Text = text .. " (The game only started)"
+            else
+                Score.Text = text
+            end
+        end
+    end
+    if fallback ~= Scores.Fallback then
+        Scores.Fallback = fallback
+        FARM.debugNote(fallback and "SPEED FALLBACK on (speed score low)" or "SPEED FALLBACK off")
     end
 end
 
@@ -6062,7 +6722,33 @@ function FARM.consumeResume()
     return armed and age >= 0 and age <= FARM.RESUME_MAX_AGE
 end
 
+function FARM.debugState(now)
+    local Debug = FARM.Debug
+    if not Debug.Enabled then return end
+    local state
+    if now < FARM.forceOffUntil then
+        state = "forced off"
+    elseif not FARM.active then
+        state = SETTINGS.aggressiveAutoFarm and "waiting for the warning prompt" or "off"
+    elseif FARM.paused then
+        state = "paused by user"
+    elseif now - FARM.armedAt < FARM.BANNER.STARTUP then
+        state = "startup countdown"
+    elseif PLACE_MODE == "lobby" and FARM.MASTERY.running then
+        state = "running (mastery toon select)"
+    else
+        state = "running"
+    end
+    local focused = robloxFocused() and "yes" or "no"
+    local menu = VantaUI.Blocked and "open" or "closed"
+    local key = state .. focused .. menu
+    if key == Debug.StateKey then return end
+    Debug.StateKey = key
+    FARM.debugNote(string.format("FARM STATE %s | place %s, roblox focused %s, menu %s, status %s", state, tostring(PLACE_MODE), focused, menu, tostring(FARM.status)))
+end
+
 function FARM.update(now)
+    FARM.debugState(now)
     if now >= FARM.forceOffUntil and FARM.resumePending then
         FARM.resumePending = false
 
@@ -6136,6 +6822,7 @@ function FARM.update(now)
                 FARM.lobbyStop()
             elseif PLACE_MODE == "lobby" then
                 FARM.lobbyUpdate(now)
+                FARM.debugLobby(now)
             elseif PLACE_MODE == "main" then
                 local started = os.clock()
                 FARM.runUpdate(now)
@@ -6379,6 +7066,12 @@ end
 
 function FARM.sprintUpdate(now, want)
     local L = FARM.LOBBY
+    if HYBRID.on() then
+        KEYS.set(FARM.LOBBY.SHIFT, false)
+        HYBRID.sprint(now, want)
+        return
+    end
+
     if L.sprintMode == nil then
         L.sprintMode = FARM.sprintSetting()
     end
@@ -6493,6 +7186,7 @@ function FARM.moveGuard(root, now, restore)
 
     if now - L.lastCheck >= L.STALL_SAMPLE then
         if moved < L.STALL_DIST then
+            FARM.debugNote(string.format("lobby stalled during %s: moved %.1f studs in %.1f s at (%.1f, %.1f, %.1f)", tostring(restore), moved, now - L.lastCheck, root.Position.X, root.Position.Y, root.Position.Z))
             L.stallFrom = restore
             L.stallUntil = now + L.TIMEOUT
             L.stallTick = -1
@@ -6753,6 +7447,10 @@ end
 
 function FARM.runHoldW(down)
     local R = FARM.RUN
+    if down and SETTINGS.farmFakeWalk and R.FakeWalkOk and tick() - (R.FakeWalkAt or 0) < R.FakeWalkHold then
+        KEYS.set(R.W_KEY, false)
+        return
+    end
     if down and KEYS.Held[R.W_KEY] and type(iskeypressed) == "function" then
         local ok, pressed = pcall(iskeypressed, R.W_KEY)
         local now = tick()
@@ -6784,8 +7482,55 @@ function FARM.runCollide(on)
     end
 end
 
+function FARM.velocityAddress(root)
+    local R = FARM.RUN
+    local now = tick()
+    local ok, key = pcall(function() return root.Address end)
+    if not ok or not key then return nil end
+    if R.VelocityRoot == key and now < R.VelocityCheckAt then return R.VelocityAt end
+    R.VelocityRoot, R.VelocityCheckAt = key, now + R.VelocityCheckEvery
+    local found, address = pcall(function()
+        local primitive = memory_read("uintptr_t", key + R.PrimitiveOffset)
+        if not primitive or primitive < 0x10000 then return nil end
+        local base = primitive + R.VelocityOffset
+        local p, v = root.Position, root.AssemblyLinearVelocity
+        if math.abs(memory_read("float", base - 12) - p.X) > 3 or math.abs(memory_read("float", base - 8) - p.Y) > 3 or math.abs(memory_read("float", base - 4) - p.Z) > 3 then return nil end
+        if math.abs(memory_read("float", base) - v.X) > 2 or math.abs(memory_read("float", base + 4) - v.Y) > 2 or math.abs(memory_read("float", base + 8) - v.Z) > 2 then return nil end
+        return base
+    end)
+    local result = found and address or nil
+    if (result ~= nil) ~= (R.VelocityAt ~= nil) or R.VelocityNoted == nil then
+        R.VelocityNoted = true
+        FARM.debugNote(result and "velocity reset: memory write" or "velocity reset: property write (memory layout check failed)")
+    end
+    R.VelocityAt = result
+    return result
+end
+
+function FARM.bodyVelocity(root, velocity)
+    local address = FARM.bodyAddress(root)
+    if not address then return end
+    address = address + FARM.RUN.BodyVelocityOffset
+    pcall(function()
+        memory_write("float", address, velocity.X)
+        memory_write("float", address + 4, velocity.Y)
+        memory_write("float", address + 8, velocity.Z)
+    end)
+end
+
 function FARM.runFreeze(root)
     local R = FARM.RUN
+    FARM.bodyVelocity(root, Vector3.new(0, 0, 0))
+    local address = FARM.velocityAddress(root)
+    if address then
+        local ok = pcall(function()
+            memory_write("float", address, 0)
+            memory_write("float", address + 4, 0)
+            memory_write("float", address + 8, 0)
+        end)
+        if ok then return end
+        R.VelocityAt, R.VelocityCheckAt = nil, tick() + R.VelocityCheckEvery
+    end
     local now = tick()
     if now < (R.freezeAt or 0) then
         return
@@ -6797,6 +7542,179 @@ function FARM.runFreeze(root)
             root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
         end
     end)
+end
+
+function FARM.bodyAddress(root)
+    local R = FARM.RUN
+    local now = tick()
+    local ok, key = pcall(function() return root.Address end)
+    if not ok or not key then return nil end
+    if R.BodyRoot == key and now < R.BodyCheckAt then return R.BodyAt end
+    R.BodyRoot, R.BodyCheckAt = key, now + R.VelocityCheckEvery
+    local found, address = pcall(function()
+        if not VantaUI.MemoryAccess() then return nil end
+        local primitive = memory_read("uintptr_t", key + R.PrimitiveOffset)
+        if not primitive or primitive < 0x10000 then return nil end
+        local body = memory_read("uintptr_t", primitive + R.BodyOffset)
+        if not body or body < 0x10000 or memory_read("uintptr_t", body + 8) ~= primitive + R.BodyLinkOffset then return nil end
+        local base = body + R.BodyPositionOffset
+        local p = root.Position
+        if math.abs(memory_read("float", base) - p.X) > 3 or math.abs(memory_read("float", base + 4) - p.Y) > 3 or math.abs(memory_read("float", base + 8) - p.Z) > 3 then return nil end
+        return base
+    end)
+    local result = found and address or nil
+    if (result ~= nil) ~= (R.BodyAt ~= nil) or R.BodyNoted == nil then
+        R.BodyNoted = true
+        FARM.debugNote(result and "position write: memory" or "position write: property (memory layout check failed)")
+    end
+    R.BodyAt = result
+    return result
+end
+
+function FARM.setRootPosition(root, position)
+    local R = FARM.RUN
+    if SETTINGS.farmMemoryPosition and root.Parent then
+        local address = FARM.bodyAddress(root)
+        if address then
+            local ok = pcall(function()
+                memory_write("float", address, position.X)
+                memory_write("float", address + 4, position.Y)
+                memory_write("float", address + 8, position.Z)
+            end)
+            if ok then
+                FARM.runPathVelocity(root, position)
+                return
+            end
+            R.BodyAt, R.BodyCheckAt = nil, tick() + R.VelocityCheckEvery
+        end
+    end
+    R.Path = nil
+    root.Position = position
+end
+
+function FARM.runPathPosition(root)
+    local R = FARM.RUN
+    local p = root.Position
+    if not (SETTINGS.farmMemoryPosition and R.BodyAt and R.Path) then return p end
+    if R.PathRoot ~= R.BodyRoot or tick() - R.PathAt > R.PathKeep then return p end
+    if FARM.flatDistance(p, R.Path) > R.PathDrift then return p end
+    return Vector3.new(R.Path.X, p.Y, R.Path.Z)
+end
+
+function FARM.runPathVelocity(root, position)
+    local R = FARM.RUN
+    local now = tick()
+    local velocity = Vector3.new(0, 0, 0)
+    if R.Path and R.PathRoot == R.BodyRoot and now - R.PathAt <= R.PathKeep and now > R.PathAt then
+        local delta = Vector3.new(position.X - R.Path.X, 0, position.Z - R.Path.Z)
+        if delta.Magnitude > 0.001 then
+            velocity = delta.Unit * math.min(delta.Magnitude / (now - R.PathAt), FARM.travelSpeed(now) * 1.2)
+        end
+    end
+    R.Path, R.PathAt, R.PathRoot = position, now, R.BodyRoot
+    FARM.bodyVelocity(root, Vector3.new(velocity.X, 0, velocity.Z))
+    local address = FARM.velocityAddress(root)
+    if not address then return end
+    pcall(function()
+        memory_write("float", address, velocity.X)
+        memory_write("float", address + 4, 0)
+        memory_write("float", address + 8, velocity.Z)
+    end)
+end
+
+function FARM.cameraAddress(camera)
+    local R = FARM.RUN
+    local now = tick()
+    local ok, key = pcall(function() return camera.Address end)
+    if not ok or not key then return nil end
+    if R.CameraRoot == key and now < R.CameraCheckAt then return R.CameraAt end
+    R.CameraRoot, R.CameraCheckAt = key, now + R.VelocityCheckEvery
+    local found, address = pcall(function()
+        if not VantaUI.MemoryAccess() then return nil end
+        local base = key + R.CameraRotationOffset
+        local components = {camera.CFrame:GetComponents()}
+        for i = 4, 12 do
+            if math.abs(memory_read("float", base + (i - 4) * 4) - components[i]) > 0.01 then return nil end
+        end
+        return base
+    end)
+    local result = found and address or nil
+    if (result ~= nil) ~= (R.CameraAt ~= nil) or R.CameraNoted == nil then
+        R.CameraNoted = true
+        FARM.debugNote(result and "camera turn: memory" or "camera turn: mouse (memory layout check failed)")
+    end
+    R.CameraAt = result
+    return result
+end
+
+function FARM.runTurnBody(root, goal)
+    local R = FARM.RUN
+    local address = FARM.bodyAddress(root)
+    if not address then return false end
+    local flat = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
+    if flat.Magnitude < 0.01 then return true end
+    local components = {CFrame.lookAt(Vector3.new(0, 0, 0), flat.Unit):GetComponents()}
+    local rotation = address - R.BodyPositionOffset + R.BodyRotationOffset
+    local spin = address - R.BodyPositionOffset + R.BodySpinOffset
+    return pcall(function()
+        for i = 4, 12 do memory_write("float", rotation + (i - 4) * 4, components[i]) end
+        for i = 0, 2 do memory_write("float", spin + i * 4, 0) end
+    end)
+end
+
+function FARM.runFakeWalk(direction)
+    local R = FARM.RUN
+    local char = LocalPlayer.Character
+    local Humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local ok = pcall(function()
+        if not VantaUI.MemoryAccess() then error("memory off") end
+        local address = Humanoid.Address
+        local first = memory_read("float", address + R.MoveCheck[1])
+        if not (first and first == memory_read("float", address + R.MoveCheck[2]) and first >= 0 and first <= 100) then error("layout") end
+        for _, offset in ipairs(R.MoveOffsets) do
+            memory_write("float", address + offset, direction.X)
+            memory_write("float", address + offset + 4, 0)
+            memory_write("float", address + offset + 8, direction.Z)
+        end
+    end)
+    if ok ~= R.FakeWalkOk then FARM.debugNote(ok and "walking: memory" or "walking: W key (memory layout check failed)") end
+    R.FakeWalkOk = ok
+    return ok
+end
+
+function FARM.runLook(camera, root, goal)
+    if SETTINGS.farmFakeWalk then
+        local flat = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
+        if flat.Magnitude > 0.01 and FARM.runFakeWalk(flat.Unit) then
+            FARM.RUN.FakeWalkAt = tick()
+            FARM.runRmb(false)
+            KEYS.set(FARM.RUN.W_KEY, false)
+            return true
+        end
+    end
+    if not SETTINGS.farmMemoryPosition then return FARM.runFace(camera, root, goal) end
+    if SETTINGS.farmTurnBody and FARM.runTurnBody(root, goal) then
+        FARM.runRmb(false)
+        return true
+    end
+    local address = FARM.cameraAddress(camera)
+    if not address then return FARM.runFace(camera, root, goal) end
+    local cf = camera.CFrame
+    local look = cf.LookVector
+    local flat = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
+    FARM.runRmb(false)
+    if flat.Magnitude < 0.01 then return true end
+    flat = flat.Unit
+    local level = math.sqrt(math.max(1 - look.Y * look.Y, 0))
+    local components = {CFrame.lookAt(cf.Position, cf.Position + Vector3.new(flat.X * level, look.Y, flat.Z * level)):GetComponents()}
+    local ok = pcall(function()
+        for i = 4, 12 do memory_write("float", address + (i - 4) * 4, components[i]) end
+    end)
+    if not ok then
+        FARM.RUN.CameraAt = nil
+        return FARM.runFace(camera, root, goal)
+    end
+    return true
 end
 
 function FARM.runYawError(camera, root, goal)
@@ -6848,6 +7766,8 @@ end
 function FARM.travelSpeed(now)
     local R = FARM.RUN
     local multiplier = tonumber(SETTINGS.farmSpeedMultiplier) or R.SprintMultiplier
+    FARM.updateTrustScores(now)
+    if FARM.TrustScores.Fallback then multiplier = math.min(multiplier, FARM.TrustScores.FallbackMultiplier) end
     local speed = FARM.runSprintSpeed(now) * math.clamp(multiplier, 1, R.SprintMultiplierMax)
     if FARM.MASTERY.travelOnly() then
         speed = math.min(speed, FARM.MASTERY.TRAVEL_SPEED)
@@ -7015,6 +7935,11 @@ end
 function FARM.runPressItem(now, slot)
     local R = FARM.RUN
     if not slot or (R.itemKey and KEYS.Held[R.itemKey]) then
+        return
+    end
+
+    if HYBRID.on() then
+        HYBRID.item(slot)
         return
     end
 
@@ -7393,7 +8318,7 @@ function FARM.runCollectTarget(root, character, itemsOnly)
                 return prompt.Position
             end)
 
-            if ok and position and not R.skip[FARM.runSpotKey(position)] then
+            if ok and position and not R.skip[FARM.runSpotKey(position)] and FARM.hasPrompt(prompt) then
                 local d = (position - root.Position).Magnitude
                 local entry = { model = model, prompt = prompt, kind = kind, name = model.Name, spot = FARM.runSpotKey(position) }
                 if kind == "item" then
@@ -7624,6 +8549,11 @@ function FARM.runStaminaSprint(now, root)
         return
     end
 
+    if HYBRID.on() then
+        FARM.sprintUpdate(now, false)
+        return
+    end
+
     if KEYS.Held[L.SHIFT] then
         KEYS.set(FARM.LOBBY.SHIFT, false)
         return
@@ -7732,7 +8662,7 @@ function FARM.runThreat(root, ignore)
     local generators = map:FindFirstChild("Generators")
 
     local myName = LocalPlayer.Name
-    local research = SETTINGS.farmResearchTwisteds or SETTINGS.farmEventTwisteds or FARM.MASTERY.researchMode()
+    local research = SETTINGS.farmResearchTwisteds or FARM.MASTERY.researchMode()
     for _, monster in ipairs(monsters:GetChildren()) do
         local wasPanic, wasSeen, wasChasing = panic, seen, chasing
         panic, seen, chasing = false, false, false
@@ -8262,7 +9192,7 @@ function FARM.researchDone(name)
 end
 
 function FARM.runFullyResearched(name)
-    if FARM.MASTERY.wants("EncounterMonster") or SETTINGS.farmEventTwisteds then
+    if FARM.MASTERY.wants("EncounterMonster") then
         return false
     end
     if not SETTINGS.farmSkipResearched then
@@ -8284,7 +9214,7 @@ end
 
 function FARM.runResearchTarget(root)
     local R = FARM.RUN
-    if not SETTINGS.farmResearchTwisteds and not SETTINGS.farmEventTwisteds and not FARM.MASTERY.researchMode() then
+    if not SETTINGS.farmResearchTwisteds and not FARM.MASTERY.researchMode() then
         return nil
     end
 
@@ -8367,6 +9297,7 @@ end
 
 function FARM.runSprintOff()
     local L = FARM.LOBBY
+    if HYBRID.on() then HYBRID.sprint(tick(), false) end
     if KEYS.Held[L.SHIFT] then
         KEYS.set(FARM.LOBBY.SHIFT, false)
     end
@@ -8378,6 +9309,7 @@ function FARM.runLeaveMachine(now)
     R.leaveAt = now + 0.2
     for _, machine in ipairs(FARM.runMachines()) do
         if FARM.runEngagedBy(machine) == LocalPlayer.Name then
+            if HYBRID.on() and HYBRID.leave(machine) then R.leaveAt = now + 0.5 return end
             if SKILL.showing() then
                 pressSpace()
                 SKILL.lastPress = os.clock()
@@ -8397,6 +9329,7 @@ function FARM.runDive(root, now, status)
         R.hipOffset = math.clamp(root.Position.Y - floor, 2, 5)
     end
     R.hideUntil = now + R.HIDE_MAX
+    R.AwayY = root.Position.Y
     R.leaveAt = 0
     R.clearSince = nil
     R.elevatorDive = nil
@@ -8412,8 +9345,23 @@ end
 
 function FARM.debugNote(text)
     if not FARM.Debug.Enabled or type(appendfile) ~= "function" then return end
+    local Debug = FARM.Debug
     local now = tick()
-    pcall(appendfile, FARM.Debug.File, os.date("%H:%M:%S", math.floor(now)) .. string.format(".%03d ", math.floor((now % 1) * 1000)) .. text .. "\n")
+    local line = os.date("%H:%M:%S", math.floor(now)) .. string.format(".%03d ", math.floor((now % 1) * 1000)) .. text .. "\n"
+    if not Debug.Bytes then
+        local ok, content = pcall(readfile, Debug.File)
+        Debug.Bytes = ok and type(content) == "string" and #content or 0
+    end
+    Debug.Bytes = Debug.Bytes + #line
+    if Debug.Bytes > Debug.MaxBytes then
+        local ok, content = pcall(readfile, Debug.File)
+        local kept = ok and type(content) == "string" and content:sub(-Debug.KeepBytes) or ""
+        kept = kept:sub((kept:find("\n") or 0) + 1)
+        pcall(writefile, Debug.File, kept .. line)
+        Debug.Bytes = #kept + #line
+        return
+    end
+    pcall(appendfile, Debug.File, line)
 end
 
 function FARM.debugTrust(now)
@@ -8438,6 +9386,8 @@ function FARM.debugTrace(spent)
     local R = FARM.RUN
     local Debug = FARM.Debug
     FARM.debugTrust(tick())
+    local goal = (R.phase == "tween" or R.phase == "toElevator") and R.goalPos or ((R.phase == "dive" or R.phase == "hide") and R.Cover) or nil
+    FARM.debugTravel(tick(), R.phase, goal)
     local status = FARM.status or ""
     if R.phase == Debug.Phase and status == Debug.Status and spent < Debug.Slow then return end
     local slow = spent >= Debug.Slow and "SLOW " or ""
@@ -8453,6 +9403,58 @@ function FARM.debugTrace(spent)
     end
     local cover = R.CoverSpot and string.format("exp %.1f hid %.1f", R.CoverSpot.Exposure, R.CoverSpot.Hidden or 0) or "-"
     FARM.debugNote(string.format("%s%-9s %6.1fms spd=%.1f/%.1f pos=%s twisted=%s cover=%s | %s", slow, tostring(R.phase), spent * 1000, FARM.SpeedMeter.Value, R.SprintSpeed, ok and p and string.format("(%.1f,%.1f,%.1f)", p.X, p.Y, p.Z) or "?", threat, cover, status))
+end
+
+function FARM.debugTravel(now, phase, goal)
+    local Debug = FARM.Debug
+    if not Debug.Enabled or now < Debug.SampleAt then return end
+    Debug.SampleAt = now + Debug.SampleEvery
+    local root = UI.myPart("HumanoidRootPart")
+    local ok, p = pcall(function()
+        return root.Position
+    end)
+    if not (ok and p) then Debug.TravelPosition = nil return end
+    local R = FARM.RUN
+    local target = FARM.travelSpeed(now)
+    local speed = 0
+    if Debug.TravelPosition and now > Debug.TravelTime then
+        local spent = now - Debug.TravelTime
+        local moved = (p - Debug.TravelPosition).Magnitude
+        speed = FARM.flatDistance(Debug.TravelPosition, p) / spent
+        if moved > math.max(10, math.max(target, R.SprintSpeed) * spent * 3) and now >= Debug.JumpAt then
+            Debug.JumpAt = now + 1
+            FARM.debugNote(string.format("position jump %.1f studs in %.2f s (%s): (%.1f, %.1f, %.1f) -> (%.1f, %.1f, %.1f)", moved, spent, tostring(phase), Debug.TravelPosition.X, Debug.TravelPosition.Y, Debug.TravelPosition.Z, p.X, p.Y, p.Z))
+        end
+    end
+    Debug.TravelPosition, Debug.TravelTime = p, now
+    if Debug.Target and math.abs(target - Debug.Target) >= 0.5 then
+        FARM.debugNote(string.format("travel speed target %.1f -> %.1f (limit %.1f, multiplier %s, fallback %s)", Debug.Target, target, R.SprintSpeed, tostring(SETTINGS.farmSpeedMultiplier), tostring(FARM.TrustScores.Fallback)))
+    end
+    Debug.Target = target
+    if speed < 1 or now < Debug.TravelAt then return end
+    Debug.TravelAt = now + Debug.TravelEvery
+    local left = goal and string.format(" goal=(%.1f,%.1f,%.1f) left=%.1f", goal.X, goal.Y, goal.Z, FARM.flatDistance(p, goal)) or ""
+    FARM.debugNote(string.format("moving %-9s spd=%.1f target=%.1f limit=%.1f trim=%.2f memory=%s pos=(%.1f,%.1f,%.1f)%s", tostring(phase), speed, target, R.SprintSpeed, R.SpeedTrim, tostring(R.BodyAt ~= nil), p.X, p.Y, p.Z, left))
+end
+
+function FARM.debugLobby(now)
+    local Debug = FARM.Debug
+    if not Debug.Enabled then return end
+    local L = FARM.LOBBY
+    local status = FARM.status or ""
+    if L.phase ~= Debug.LobbyPhase or (status ~= Debug.LobbyStatus and not status:find("^Timeout")) then
+        Debug.LobbyPhase, Debug.LobbyStatus = L.phase, status
+        FARM.debugNote(string.format("lobby %-9s node=%s | %s", tostring(L.phase), tostring(L.atNode), status))
+    end
+    FARM.debugTravel(now, "lobby " .. tostring(L.phase), nil)
+end
+
+function FARM.noteFall(real, good, phase)
+    local Debug = FARM.Debug
+    local now = tick()
+    if now < (Debug.FallAt or 0) then return end
+    Debug.FallAt = now + 1
+    FARM.debugNote(string.format("falling caught (%s): dropped to (%.1f, %.1f, %.1f), put back at (%.1f, %.1f, %.1f)", tostring(phase), real.X, real.Y, real.Z, good.X, good.Y, good.Z))
 end
 
 function FARM.flatDistance(from, to)
@@ -8472,7 +9474,8 @@ end
 
 function FARM.stepLength(now)
     local R = FARM.RUN
-    return FARM.travelSpeed(now) * R.FrameTime * R.SpeedTrim
+    local trim = (SETTINGS.farmMemoryPosition and R.BodyAt) and 1 or R.SpeedTrim
+    return FARM.travelSpeed(now) * R.FrameTime * trim
 end
 
 function FARM.frameThreats(root, now)
@@ -8580,7 +9583,7 @@ function FARM.coverCount(Room)
     local R = FARM.RUN
     local count = 0
     for _, Child in ipairs(Room:GetChildren()) do
-        if not R.CoverSkip[Child.Name] then count += #Child:GetDescendants() + 1 end
+        if not R.CoverSkip[Child.Name] then count += #Child:GetChildren() + 1 end
     end
     return count
 end
@@ -9178,7 +10181,7 @@ end
 
 function FARM.runGourdyResearch()
     local R = FARM.RUN
-    if not SETTINGS.farmResearchTwisteds and not SETTINGS.farmEventTwisteds and not FARM.MASTERY.researchMode() then return nil end
+    if not SETTINGS.farmResearchTwisteds and not FARM.MASTERY.researchMode() then return nil end
     if FARM.runFullyResearched("GourdyMonster") then return nil end
     local map = UI.map()
     local Monsters = map and map:FindFirstChild("Monsters")
@@ -9335,6 +10338,14 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
         if a.Rank ~= b.Rank then return a.Rank < b.Rank end
         return a.Score < b.Score
     end)
+    local okRay, under = pcall(function()
+        return workspace:Raycast(p, Vector3.new(0, -(R.hipOffset + 3), 0))
+    end)
+    local raysDead = not (okRay and under)
+    if raysDead ~= (R.CoverRaysDead or false) then
+        R.CoverRaysDead = raysDead
+        FARM.debugNote(raysDead and "raycasts see no floor under you, trusting mapped cover zones without the ground check" or "raycasts see the floor again, ground check back on")
+    end
     local checked = 0
     for _, Candidate in ipairs(Candidates) do
         if (goal or escape or sneak) and Candidate.Rank > 1 then break end
@@ -9342,7 +10353,7 @@ function FARM.runFindCover(root, Threats, goal, reach, gain, escape, sneak, towa
         if checked >= R.CoverChecks then break end
         checked += 1
         Candidate.Spot = Vector3.new(Candidate.Data.X, p.Y, Candidate.Data.Z)
-        if FARM.runCoverGround(Candidate.Spot) and not (escape and FARM.runPathSeen(p, Candidate.Spot, Threats)) and not (covert and FARM.runPathVisible(p, Candidate.Spot, Threats)) then
+        if (raysDead or FARM.runCoverGround(Candidate.Spot)) and not (escape and FARM.runPathSeen(p, Candidate.Spot, Threats)) and not (covert and FARM.runPathVisible(p, Candidate.Spot, Threats)) then
             FARM.debugNote(string.format("cover pick (%s): rank %d exposure %.1f hidden %.1f need %.1f travel %.1f, %d candidates, %d threats", escape and "escape" or (sneak and "sneak" or (goal and "hop" or "hide")), Candidate.Rank, Candidate.Data.Exposure, Candidate.Data.Hidden, need, FARM.flatDistance(p, Candidate.Spot), #Candidates, #Threats))
             return Candidate.Spot, Candidate.Data
         end
@@ -9573,6 +10584,13 @@ end
 
 function FARM.runTravelTo(root, position, y)
     local R = FARM.RUN
+    local Debug = FARM.Debug
+    if Debug.Enabled and not (R.goalPos and FARM.flatDistance(R.goalPos, position) < 1) and tick() >= Debug.GoalAt then
+        Debug.GoalAt = tick() + 0.5
+        local p = root.Position
+        FARM.debugNote(string.format("travel to %s at (%.1f, %.1f, %.1f) from (%.1f, %.1f, %.1f), %.1f studs, target speed %.1f", tostring(R.targetKind), position.X, position.Y, position.Z, p.X, p.Y, p.Z, FARM.flatDistance(p, position), FARM.travelSpeed(tick())))
+    end
+    R.travelAt = tick()
     R.goalPos = position
     R.goalY = y
     R.startY = root.Position.Y
@@ -9901,6 +10919,12 @@ function FARM.runVote(now)
         FARM.setStatus("Voting " .. label)
     end
 
+    if HYBRID.on() then
+        R.voteClicked = HYBRID.vote(best.button.Name)
+        if R.voteClicked then FARM.setStatus("Voted " .. label) end
+        return true
+    end
+
     if FARM.clickStep(R.voteClick, now, best.button, 0.5) then
         R.voteClicked = true
         FARM.setStatus("Voted " .. label)
@@ -9945,6 +10969,12 @@ function FARM.runReady(now)
 
     if now - R.readySteady < R.READY_STEADY then
         FARM.setStatus("Waiting for Ready Up")
+        return true
+    end
+
+    if HYBRID.on() then
+        FARM.setStatus("Pressing Ready Up")
+        R.readyClicked = HYBRID.ready()
         return true
     end
 
@@ -10062,13 +11092,13 @@ function FARM.runUpdate(now)
     local nearest, chasing, panic, seen, danger = FARM.runThreat(root, (researching and R.research.key) or hidingFor or nil)
     local hiding = R.phase == "dive" or R.phase == "hide"
 
-    local travelIgnore = SETTINGS.farmIgnoreTwistedsTravel and (R.phase == "tween" or R.phase == "collect")
     local grabbing = R.phase == "collect" and R.collect and R.collectDeadline and now < R.collectDeadline
     local nearMachine = R.current and select(2, pcall(function()
         return FARM.flatDistance(root.Position, R.current.prompt.Position) < R.MachineCover
     end)) == true
     local crowded, touched = false, false
-    if R.TravelPhases[R.phase] then
+    local traveling = R.TravelPhases[R.phase] or researching
+    if traveling then
         local p = root.Position
         local okGoal, goal = pcall(function()
             return R.collect and R.collect.prompt.Position
@@ -10086,8 +11116,8 @@ function FARM.runUpdate(now)
     end
     if crowded and not R.CrowdedNoted then FARM.debugNote(string.format("travel blocked: %s, allowing cover", crowded)) end
     R.CrowdedNoted = crowded or nil
-    local farChase = not danger and R.TravelPhases[R.phase] and not nearMachine and not crowded
-    if (chasing or touched or (panic and now >= R.PanicGraceUntil)) and not hiding and not travelIgnore and not grabbing and not farChase and R.phase ~= "sacrifice" and not FARM.runSafeInElevator(character) then
+    local farChase = not danger and traveling and not nearMachine and not crowded
+    if (chasing or touched or (panic and now >= R.PanicGraceUntil)) and not hiding and not grabbing and not farChase and R.phase ~= "sacrifice" and not FARM.runSafeInElevator(character) then
         FARM.runRmb(false)
         if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
             KEYS.tap(R.E_KEY)
@@ -10142,7 +11172,7 @@ function FARM.runUpdate(now)
     end
 
     if R.phase == "flee" then
-        local p = root.Position
+        local p = FARM.runPathPosition(root)
         local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
         if not tendril then
             FARM.runHoldW(false)
@@ -10155,13 +11185,13 @@ function FARM.runUpdate(now)
         FARM.runHoldW(true)
         local away = Vector3.new(p.X - tendril.X, 0, p.Z - tendril.Z)
         local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
-        FARM.runFace(camera, root, p + direction * 10)
+        FARM.runLook(camera, root, p + direction * 10)
         local step = FARM.stepLength(now)
         local x, z = p.X + direction.X * step, p.Z + direction.Z * step
         local floor = FARM.runFloorY(x, R.fleeY, z)
         local y = floor and (floor + R.hipOffset) or R.fleeY
         R.fleeY = y
-        root.Position = Vector3.new(x, y, z)
+        FARM.setRootPosition(root, Vector3.new(x, y, z))
         return
     end
 
@@ -10172,7 +11202,7 @@ function FARM.runUpdate(now)
     if R.phase == "dive" then
         FARM.runCollide(false)
         FARM.runFreeze(root)
-        local p = root.Position
+        local p = FARM.runPathPosition(root)
         if not R.Cover and now >= R.CoverAt then
             R.CoverAt = now + R.CoverRescan
             R.Cover, R.CoverSpot = FARM.runFindCover(root, FARM.runCoverThreats(root), nil, R.CoverReach, 0)
@@ -10189,9 +11219,12 @@ function FARM.runUpdate(now)
             local away = Vector3.new(p.X - nearest.X, 0, p.Z - nearest.Z)
             local direction = away.Magnitude > 0.1 and away.Unit or Vector3.new(1, 0, 0)
             FARM.runHoldW(true)
-            FARM.runFace(camera, root, p + direction * 10)
+            FARM.runLook(camera, root, p + direction * 10)
             local step = FARM.stepLength(now)
-            root.Position = Vector3.new(p.X + direction.X * step, p.Y, p.Z + direction.Z * step)
+            local x, z = p.X + direction.X * step, p.Z + direction.Z * step
+            local floor = FARM.runFloorY(x, R.AwayY or p.Y, z)
+            R.AwayY = floor and (floor + R.hipOffset) or R.AwayY or p.Y
+            FARM.setRootPosition(root, Vector3.new(x, R.AwayY, z))
             FARM.setStatus("No cover in reach, moving away")
             return
         end
@@ -10199,7 +11232,7 @@ function FARM.runUpdate(now)
         local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z)
         if flat.Magnitude <= R.CoverArrive then
             FARM.runHoldW(false)
-            root.Position = target
+            FARM.setRootPosition(root, target)
             R.phase = "hide"
             R.HideStart = now
             R.WatcherAt = 0
@@ -10211,11 +11244,11 @@ function FARM.runUpdate(now)
             return
         end
         FARM.runHoldW(true)
-        FARM.runFace(camera, root, target)
+        FARM.runLook(camera, root, target)
         local step = math.min(FARM.stepLength(now), flat.Magnitude)
         local direction = FARM.runSteer(root, flat.Unit, now)
         local y = p.Y + math.clamp(target.Y - p.Y, -step, step)
-        root.Position = Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step)
+        FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step))
         FARM.setStatus(R.HopLabel and ("Sneaking through cover to " .. R.HopLabel) or "Twisted near, going into cover")
         return
     end
@@ -10224,8 +11257,10 @@ function FARM.runUpdate(now)
         FARM.runCollide(false)
         FARM.runFreeze(root)
         local p = root.Position
-        local hold = R.Cover or p
-        root.Position = hold
+        if not R.HideHold or FARM.flatDistance(p, R.HideHold) > R.FallCatch or p.Y > R.HideHold.Y then R.HideHold = p end
+        if not R.Cover and R.HideHold.Y - p.Y > R.FallCatch then FARM.noteFall(p, R.HideHold, R.phase) end
+        local hold = R.Cover or R.HideHold
+        FARM.setRootPosition(root, hold)
 
         local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
         if tendril then
@@ -10574,9 +11609,23 @@ function FARM.runUpdate(now)
         FARM.runCollide(false)
         FARM.runFreeze(root)
         FARM.runHoldW(true)
-        FARM.runFace(camera, root, R.goalPos)
+        FARM.runLook(camera, root, R.goalPos)
+        local real = root.Position
+        local Last = R.TravelLast
+        if Last and tick() - R.TravelLastAt <= R.PathKeep and Last.Y - real.Y > R.FallCatch and FARM.flatDistance(real, Last) < R.FallCatch then
+            FARM.noteFall(real, Last, R.phase)
+            FARM.setRootPosition(root, Last)
+            FARM.runFreeze(root)
+            R.TravelLastAt = tick()
+            return
+        end
+        if R.Path and tick() - R.PathAt <= R.PathKeep and (FARM.flatDistance(real, R.Path) > R.MovedByGame or math.abs(real.Y - R.Path.Y) > R.MovedByGame) then
+            FARM.debugNote(string.format("moved by the game (%.1f studs), restarting travel from (%.1f, %.1f, %.1f)", (real - R.Path).Magnitude, real.X, real.Y, real.Z))
+            R.Path = nil
+            FARM.runTravelTo(root, R.goalPos, R.goalY)
+        end
 
-        local p = root.Position
+        local p = FARM.runPathPosition(root)
         local flat = Vector3.new(R.goalPos.X - p.X, 0, R.goalPos.Z - p.Z)
         local distance = flat.Magnitude
         local total = Vector3.new(R.goalPos.X - R.travelStart.X, 0, R.goalPos.Z - R.travelStart.Z).Magnitude
@@ -10584,6 +11633,11 @@ function FARM.runUpdate(now)
         local radius = (R.phase == "toElevator") and R.ELEV_ARRIVE or (collecting and (R.targetKind == "buy" and R.BUY_ARRIVE or R.COLLECT_ARRIVE)) or R.ARRIVE
 
         if distance <= radius then
+            if FARM.Debug.Enabled and R.travelAt then
+                local spent = tick() - R.travelAt
+                FARM.debugNote(string.format("arrived (%s) after %.1f s, %.1f studs, avg %.1f studs/s, target %.1f", R.phase == "toElevator" and "elevator" or tostring(R.targetKind), spent, total, spent > 0 and total / spent or 0, FARM.travelSpeed(now)))
+            end
+            if R.goalY and math.abs(p.Y - R.goalY) > 2 then FARM.setRootPosition(root, Vector3.new(p.X, R.goalY, p.Z)) end
             FARM.runCollide(true)
             FARM.runHoldW(false)
             if R.phase == "toElevator" then
@@ -10620,7 +11674,9 @@ function FARM.runUpdate(now)
         local step = math.min(FARM.stepLength(now), distance)
         local direction = FARM.runSteer(root, flat.Unit, now)
         local t = total > 0 and math.clamp(1 - distance / total, 0, 1) or 1
-        root.Position = Vector3.new(p.X + direction.X * step, R.startY + (R.goalY - R.startY) * t, p.Z + direction.Z * step)
+        local target = Vector3.new(p.X + direction.X * step, R.startY + (R.goalY - R.startY) * t, p.Z + direction.Z * step)
+        FARM.setRootPosition(root, target)
+        R.TravelLast, R.TravelLastAt = target, tick()
         return
     end
 
@@ -10646,6 +11702,14 @@ function FARM.runUpdate(now)
             R.phase = "pick"
         end
 
+        local function escape()
+            if FARM.runDangerous(target.model) then
+                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+            else
+                FARM.setStatus("Got research from " .. label .. ", moving on")
+            end
+        end
+
         if not target or target.model.Parent == nil or not okPosition or not goal then
             finish()
             return
@@ -10668,7 +11732,7 @@ function FARM.runUpdate(now)
             elseif R.researchGrabbed then
                 R.researchGrabbed = nil
                 finish()
-                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+                escape()
                 return
             end
         end
@@ -10684,7 +11748,7 @@ function FARM.runUpdate(now)
                 finish("Got research from " .. label)
             else
                 finish()
-                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+                escape()
             end
             return
         end
@@ -10720,7 +11784,7 @@ function FARM.runUpdate(now)
             standY = floor and (floor + R.hipOffset) or R.researchY
         end
 
-        local p = root.Position
+        local p = FARM.runPathPosition(root)
         local flat = Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
         local distance = flat.Magnitude
         local wait = (target.kind == "grab" and R.RESEARCH_GRAB_WAIT) or (target.kind == "razzle" and R.RESEARCH_RAZZLE_WAIT) or R.COLLECT_TRIES * R.COLLECT_RETRY
@@ -10758,7 +11822,7 @@ function FARM.runUpdate(now)
         end
 
         FARM.setStatus(string.format("Moving to %s for research (%d)", label, math.floor(distance)))
-        FARM.runFace(camera, root, goal)
+        FARM.runLook(camera, root, goal)
         FARM.runHoldW(true)
         FARM.runCollide(false)
         FARM.runFreeze(root)
@@ -10766,7 +11830,7 @@ function FARM.runUpdate(now)
         local step = math.min(speed, distance)
         local direction = distance > 0.01 and FARM.runSteer(root, flat.Unit, now) or Vector3.new(0, 0, 0)
         local y = p.Y + math.clamp(standY - p.Y, -speed, speed)
-        root.Position = Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step)
+        FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step))
         return
     end
 
@@ -10794,13 +11858,13 @@ function FARM.runUpdate(now)
             return
         end
 
-        local p = root.Position
+        local p = FARM.runPathPosition(root)
         local target = part.Position
         local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z)
         local distance = flat.Magnitude
 
         FARM.setStatus(string.format("%s, walking into %s (%d)", R.hurtFrom and "Mastery: taking a hit" or (FARM.MASTERY.passiveDeath() and "Mastery: passive ability" or (FARM.MASTERY.runState == "done" and SETTINGS.masteryEnd and "Mastery done" or "Floor limit reached")), monster.Name, math.floor(distance)))
-        FARM.runFace(camera, root, target)
+        FARM.runLook(camera, root, target)
         FARM.runHoldW(true)
 
         if distance <= R.SACRIFICE_TOUCH then
@@ -10814,7 +11878,7 @@ function FARM.runUpdate(now)
         FARM.runFreeze(root)
         local step = math.min(FARM.stepLength(now), distance)
         local direction = flat.Unit
-        root.Position = Vector3.new(p.X + direction.X * step, R.sacrificeY, p.Z + direction.Z * step)
+        FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, R.sacrificeY, p.Z + direction.Z * step))
         return
     end
 
@@ -10866,6 +11930,14 @@ function FARM.runUpdate(now)
             return
         end
 
+        if target and (target.kind == "item" or target.kind == "capsule" or target.kind == "event") and target.model.Parent ~= nil and not FARM.hasPrompt(target.prompt) then
+            FARM.debugNote(string.format("%s %s has no ProximityPrompt any more, skipping it", target.kind, target.name))
+            R.skip[target.spot] = true
+            R.collect = nil
+            R.phase = "pick"
+            return
+        end
+
         if not target or target.model.Parent == nil or (target.kind ~= "quest" and target.kind ~= "door" and not target.model:FindFirstChild("Prompt")) then
             if target and target.kind == "buy" then
                 R.bought[target.name] = true
@@ -10891,14 +11963,14 @@ function FARM.runUpdate(now)
                 local distance = math.sqrt(dx * dx + dz * dz)
                 if Threat.Name ~= "Hazard" and distance < Threat.Kill + (SETTINGS.farmAvoidAura or R.AvoidMargin) + R.CollectDodge then
                     local away = distance > 0.01 and Vector3.new(dx / distance, 0, dz / distance) or Vector3.new(1, 0, 0)
-                    root.Position = p + away * FARM.stepLength(now)
+                    FARM.setRootPosition(root, p + away * FARM.stepLength(now))
                     FARM.setStatus(string.format("Dodging %s near %s", Threat.Name, target.kind == "capsule" and "Research Capsule" or target.name))
                     return
                 end
             end
         end
 
-        if target.kind == "buy" and okPos and position then
+        if target.kind == "buy" and okPos and position and not FARM.promptHookReady() then
             if FARM.runPromptShows(target.name) == false then
                 target.wrongSince = target.wrongSince or now
                 if now - target.wrongSince < 3 then
@@ -10906,7 +11978,7 @@ function FARM.runUpdate(now)
                     if flat > 1.5 then
                         local direction = Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Unit
                         local step = math.min(flat - 1.5, FARM.stepLength(now))
-                        root.Position = root.Position + direction * step
+                        FARM.setRootPosition(root, root.Position + direction * step)
                     end
                     FARM.setStatus("Aiming at " .. target.name)
                     return
@@ -10932,10 +12004,14 @@ function FARM.runUpdate(now)
                 return
             end
 
-            if target.kind == "door" then
-                if not KEYS.hold(R.E_KEY, R.DoorHold) then return end
-            elseif not KEYS.tap(R.E_KEY) then
-                return
+            local hooked = R.HookKinds[target.kind] and FARM.firePrompt(target.prompt, target.kind == "quest" and target.model or nil)
+            if hooked == "busy" then return end
+            if not hooked then
+                if target.kind == "door" then
+                    if not KEYS.hold(R.E_KEY, R.DoorHold) then return end
+                elseif not KEYS.tap(R.E_KEY) then
+                    return
+                end
             end
             if target.kind == "rodger" then
                 R.skip[target.spot] = true
@@ -10951,6 +12027,14 @@ function FARM.runUpdate(now)
     end
 
     if R.phase == "aim" then
+        local fired = FARM.firePrompt(R.current.prompt)
+        if fired == "busy" then return end
+        if fired then
+            FARM.runRmb(false)
+            R.phase = "working"
+            R.at = now + R.REPRESS
+            return
+        end
         local aligned = FARM.runFace(camera, root, R.current.prompt.Position)
         if aligned or now >= R.at then
             FARM.runRmb(false)
@@ -10985,6 +12069,62 @@ function FARM.runUpdate(now)
         end
         return
     end
+end
+
+function FARM.hasPrompt(Part)
+    local ok, found = pcall(function()
+        if Part:FindFirstChild("ProximityPrompt") then return true end
+        for _, Child in ipairs(Part:GetChildren()) do
+            if Child:FindFirstChild("ProximityPrompt") then return true end
+        end
+        return false
+    end)
+    return ok and found
+end
+
+function FARM.promptHookReady()
+    local Fire = FireProximityPrompt
+    if not (SETTINGS.farmHookPrompts and Fire) or not VantaUI.MemoryAccess() then return false end
+    local State = Fire.State
+    return State.Ready == true and State.JobId == game.JobId and State.Version == Fire.Version
+end
+
+function FARM.firePrompt(Part, Given)
+    local Fire = FireProximityPrompt
+    if not (SETTINGS.farmHookPrompts and Fire and Part) or not VantaUI.MemoryAccess() then return false end
+    if not FARM.promptHookReady() then
+        if not Fire.Preparing and tick() >= (Fire.SetupAt or 0) then
+            Fire.Preparing = true
+            Fire.SetupAt = tick() + 30
+            task.spawn(function()
+                local started = tick()
+                Fire.Yield = true
+                local ok, ready, reason = pcall(Fire.setup)
+                if ok and ready then
+                    pcall(Fire.name, "Attachment")
+                    pcall(Fire.name, "Prompt")
+                    pcall(Fire.name, "ClassName")
+                end
+                Fire.Yield = false
+                Fire.SetupProblem = not (ok and ready) and tostring(reason or ready) or nil
+                FARM.debugNote(ok and ready and string.format("fireproximityprompt setup ok (%.1f s)", tick() - started) or "fireproximityprompt setup failed: " .. tostring(reason))
+                Fire.Preparing = false
+            end)
+        end
+        return false
+    end
+    if Fire.Busy and tick() - (Fire.BusyAt or 0) > 4 then
+        FARM.debugNote("fireproximityprompt stuck busy for " .. string.format("%.1f", tick() - (Fire.BusyAt or 0)) .. " s, resetting")
+    elseif Fire.Busy then
+        return "busy"
+    end
+    local Prompt = Given or Fire.find(Part)
+    if not Prompt then return false end
+    local started, reason = Fire.fire(Prompt, {Callback = function(success)
+        FARM.debugNote("fireproximityprompt finished: " .. (success and "ok" or "error " .. tostring(Fire.Last and Fire.Last.Problem)) .. ", camera " .. (Fire.Last and Fire.Last.Camera and "turned" or "not turned"))
+    end})
+    FARM.debugNote(started and "fireproximityprompt fired " .. Part.Name or "fireproximityprompt refused: " .. tostring(reason))
+    return started == true
 end
 
 function FARM.runStop()
@@ -11427,10 +12567,15 @@ function TOON.confirm(char, now)
     end
 end
 
+function TOON.press()
+    if HYBRID.on() then return HYBRID.ability() end
+    return KEYS.tap(TOON.KEY)
+end
+
 function TOON.update(now)
     if TOON.secondAt and now >= TOON.secondAt then
         TOON.secondAt = nil
-        KEYS.tap(TOON.KEY)
+        if not TOON.press() and HYBRID.on() then TOON.secondAt = now + 0.1 end
     end
     if now < TOON.nextAt then return end
     TOON.nextAt = now + TOON.POLL
@@ -11447,7 +12592,7 @@ function TOON.update(now)
     local Rule = name and TOON.RULES[name]
     local mastery = FARM.MASTERY.abilityMode(name)
     if not ((SETTINGS.autoAbility or mastery) and Rule and FARM.running(now)) then return end
-    if PLACE_MODE ~= "main" or not KEYS.allowed() then return end
+    if PLACE_MODE ~= "main" or not (HYBRID.on() or KEYS.allowed()) then return end
     TOON.confirm(char, now)
     local working = FARM.RUN.phase == "working" and FARM.RUN.current ~= nil
     if Rule.machine and not working then return end
@@ -11458,7 +12603,7 @@ function TOON.update(now)
     if Rule.blackout and not TOON.blackout() then return end
     local okReady, ready = pcall(TOON.ready, char, Rule)
     if not (okReady and ready) then return end
-    KEYS.tap(TOON.KEY)
+    if not TOON.press() then return end
     if Rule.presses == 2 then TOON.secondAt = now + TOON.SECOND_PRESS end
     if perFloor then TOON.pending = {Name = name, Floor = floor, At = now, Instant = Rule.instant} end
     TOON.nextAt = now + TOON.RETRY
@@ -11702,6 +12847,8 @@ function REPORT.send(kind, build, died)
             or (kind == "runEnded" and Given.runEnded.enabled)
             or (kind == "reconnect" and Given.connection.onReconnect)
             or (kind == "lost" and Given.connection.onLost)
+            or (kind == "hit" and Given.events.onHit)
+            or (kind == "floor" and Given.events.onNewFloor)
         if allowed then
             local body = build(Given)
             if kind == "runEnded" and died and Given.runEnded.mentionOnDeath and Hook.Mention ~= "" then
@@ -11712,6 +12859,44 @@ function REPORT.send(kind, build, died)
             end)
         end
     end
+end
+
+function REPORT.nearestTwisted()
+    local root = UI.myPart("HumanoidRootPart")
+    if not root then return nil end
+    local position = root.Position
+    local best, bestDistance
+    for _, Monster in ipairs(UI.roster().Models or {}) do
+        local info = MONSTER_INFO[Monster.Name]
+        local Part = info and (Monster:FindFirstChild("HumanoidRootPart") or Monster.PrimaryPart)
+        if Part then
+            local distance = (Part.Position - position).Magnitude
+            if not bestDistance or distance < bestDistance then best, bestDistance = info.name, distance end
+        end
+    end
+    return best and string.format("%s (%.0f studs)", best, bestDistance) or nil
+end
+
+function REPORT.hit(health, maxHealth, floor)
+    local ok, twisted = pcall(REPORT.nearestTwisted)
+    twisted = ok and twisted or nil
+    return {embeds = {{title = "Got Hit", color = REPORT.LIMIT_COLOR, fields = {
+        REPORT.field("Health:", REPORT.number(health) .. "/" .. REPORT.number(maxHealth or health)),
+        REPORT.field("Floor:", floor > 0 and tostring(floor) or "-"),
+        REPORT.field("Nearest Twisted:", twisted or "Unknown"),
+    }, footer = {text = "VantaH | Dandy's World"}, timestamp = REPORT.stamp()}}}
+end
+
+function REPORT.newFloor(floor)
+    local S = REPORT.session
+    local Run = S.live or {}
+    local gain = S.lastCoin and S.runCoin and S.lastCoin - S.runCoin or 0
+    return {embeds = {{title = "New Floor", color = REPORT.COLOR, fields = {
+        REPORT.field("Floor:", tostring(floor)),
+        REPORT.field("Run Time:", REPORT.duration(UI.clock() - (S.runStartedAt or UI.clock()))),
+        REPORT.field("Ichor:", "+" .. REPORT.number(gain)),
+        REPORT.field("Machines:", REPORT.number(Run.machines or 0) .. " done"),
+    }, footer = {text = "VantaH | Dandy's World"}, timestamp = REPORT.stamp()}}}
 end
 
 function REPORT.finishRun(died)
@@ -11827,7 +13012,24 @@ function REPORT.update(now)
                 S.lastResearch = Research
             end
         end
-        local health = FARM.health()
+        if REPORT.watchedJob ~= game.JobId then
+            REPORT.watchedJob, REPORT.lastFloor, REPORT.lastHealth = game.JobId, nil, nil
+        end
+        if floor > 0 then
+            if REPORT.lastFloor and floor > REPORT.lastFloor then
+                REPORT.send("floor", function()
+                    return REPORT.newFloor(floor)
+                end)
+            end
+            REPORT.lastFloor = math.max(floor, REPORT.lastFloor or 0)
+        end
+        local health, maxHealth = FARM.health()
+        if health and health > 0 and REPORT.lastHealth and health < REPORT.lastHealth then
+            REPORT.send("hit", function()
+                return REPORT.hit(health, maxHealth, floor)
+            end)
+        end
+        REPORT.lastHealth = health
         if health and health <= 0 then
             REPORT.finishRun(true)
         end
@@ -11968,6 +13170,8 @@ local function buildMenu()
     local FarmTab = Window:AddTab("Autofarm")
     local AlertsTab = Window:AddTab("Alerts")
     local WebhookTab = Window:AddTab("Webhook")
+    local ExperimentalTab = Window:AddTab("Experimental")
+    local MemoryTab = Window:AddTab("Memory")
     local SettingsTab = Window:AddTab("Settings")
 
     local function toggle(Section, id, title, key, color)
@@ -12041,17 +13245,43 @@ local function buildMenu()
     slider(SkillCheck, "dw_skillcheck_lead", "Press Lead", "skillCheckLead", 0, 120, 0, " ms")
     slider(SkillCheck, "dw_skillcheck_treadmill_rate", "Treadmill Tap Rate", "treadmillTapRate", 1, 30, 0, " cps")
 
-    local Experimental = AutomationTab:AddSection("Experimental", "Left")
-    toggle(Experimental, "dw_always_golden", "Always hit Golden", "alwaysGolden", Color3.fromRGB(45, 200, 235))
-    Experimental:AddParagraph({Title = "", Content = "This will always hit Golden no matter what. Does not use inputs. Allows you to minimize Roblox."})
-    toggle(Experimental, "dw_better_barnaby", "Better Auto Barnaby", "betterBarnaby", Color3.fromRGB(45, 200, 235))
-    Experimental:AddParagraph({Title = "", Content = "Does not use inputs. Allows you to minimize Roblox."})
-    Experimental:AddButton({Title = "Remap the memory offsets", Callback = GOLDEN.remap})
-    GOLDEN.Map.Label = Experimental:AddParagraph({Title = "", Content = "Status: Unknown"})
-    toggle(Experimental, "dw_auto_remap", "Remap automatically on join", "autoRemap")
+    local ExperimentalGuide = ExperimentalTab:AddSection("READ ME", "Full")
+    ExperimentalGuide:AddParagraph({Content = table.concat({
+        "In this tab, you can enable experimental features to make your experience with this script be smoother or generally better.",
+        "",
+        "Please note that not everything here may work as intended, and some features may cause weird effects. Your Matcha might also lag for 3-5 seconds while it sets them up. Use these with caution.",
+    }, "\n")})
+
+    local ExperimentalFarm = ExperimentalTab:AddSection("Autofarm", "Left")
+    toggle(ExperimentalFarm, "dw_farm_memory_position", "Write Position using memory", "farmMemoryPosition", Color3.fromRGB(45, 200, 235))
+    ExperimentalFarm:AddParagraph({Title = "", Content = "This should feel a lot faster, since it does not rely on Matcha's Position write. May stop working after the next Roblox update. Set your Travel Speed to x1.32 OR LOWER!"})
+    toggle(ExperimentalFarm, "dw_farm_turn_body", "Turn the character instead of the camera", "farmTurnBody", Color3.fromRGB(45, 200, 235))
+    ExperimentalFarm:AddParagraph({Title = "", Content = "Faces where it travels without moving your camera. Needs Write Position using memory."})
+    toggle(ExperimentalFarm, "dw_farm_fake_walk", "Walk using memory", "farmFakeWalk", Color3.fromRGB(45, 200, 235))
+    ExperimentalFarm:AddParagraph({Title = "", Content = "Walks without any inputs."})
+    toggle(ExperimentalFarm, "dw_farm_hook_prompts", "Hook Proximity Prompts", "farmHookPrompts", Color3.fromRGB(45, 200, 235))
+    ExperimentalFarm:AddParagraph({Title = "", Content = "I'm unsure how reliable it is. Allows you to minimize Roblox."})
+
+    local ExperimentalAutomation = ExperimentalTab:AddSection("Automation", "Right")
+    toggle(ExperimentalAutomation, "dw_always_golden", "Always hit Golden", "alwaysGolden", Color3.fromRGB(45, 200, 235))
+    ExperimentalAutomation:AddParagraph({Title = "", Content = "This will always hit Golden no matter what. Does not use inputs. Allows you to minimize Roblox."})
+    toggle(ExperimentalAutomation, "dw_better_barnaby", "Better Auto Barnaby", "betterBarnaby", Color3.fromRGB(45, 200, 235))
+    ExperimentalAutomation:AddParagraph({Title = "", Content = "Does not use inputs. Allows you to minimize Roblox."})
+
+    local Offsets = MemoryTab:AddSection("Offsets", "Left")
+    Offsets:AddButton({Title = "Remap the memory offsets", Callback = GOLDEN.remap})
+    GOLDEN.Map.Label = Offsets:AddParagraph({Title = "", Content = "Status: Unknown"})
+    toggle(Offsets, "dw_auto_remap", "Remap automatically on join", "autoRemap")
     if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
     GOLDEN.showStatus()
-    Experimental:AddParagraph({Title = "", Content = "Finds the memory offsets again after a Roblox update. Press it when the status says Requires a remap."})
+    Offsets:AddParagraph({Title = "", Content = "Finds the memory offsets again after a Roblox update. Press it when the status says Requires a remap."})
+
+    local StatusSection = MemoryTab:AddSection("Status", "Right")
+    for index, Entry in ipairs(GOLDEN.Status.List) do
+        GOLDEN.Status.Rows[index] = {Element = StatusSection:AddParagraph({Title = Entry.Name, Content = "Waiting\nChecking."}), Text = nil}
+    end
+    GOLDEN.Status.Footer = StatusSection:AddParagraph({Title = "", Content = "Checking."})
+    GOLDEN.Status.At = 0
 
     local Barnaby = AutomationTab:AddSection("Barnaby", "Right")
     toggle(Barnaby, "dw_barnaby_enabled", "Auto Barnaby", "autoBarnaby")
@@ -12065,6 +13295,7 @@ local function buildMenu()
 
     local Farm = FarmTab:AddSection("Autofarm", "Left")
     toggle(Farm, FARM.TOGGLE_ID, "Aggressive Auto-farm", "aggressiveAutoFarm", Color3.fromRGB(204, 170, 62))
+    toggle(Farm, "dw_farm_hybrid", "Hybrid Mode support", "hybridMode", Color3.fromRGB(40, 95, 255))
     slider(Farm, "dw_farm_speed", "Travel Speed", "farmSpeedMultiplier", 1, FARM.RUN.SprintMultiplierMax, 2, "x", function(value) return math.clamp(value, 1, FARM.RUN.SprintMultiplierMax) end)
     Farm:AddParagraph({Title = "", Content = "If it pushes you back, try lowering your speed. 1.42x is the maximum speed the game accepts."})
     slider(Farm, "dw_farm_avoid_aura", "Avoid Aura", "farmAvoidAura", 2.5, 12.5, 1, " studs")
@@ -12180,17 +13411,9 @@ local function buildMenu()
     end)
 
     local FarmTwisteds = FarmTab:AddSection("Twisteds", "Left")
-    local SeenResearch = toggle(FarmTwisteds, "dw_farm_research_twisteds", "Let Twisteds see you first [For Research]", "farmResearchTwisteds")
-    local SeenEvent = toggle(FarmTwisteds, "dw_farm_event_twisteds", "Let Twisteds see you first [For Event]", "farmEventTwisteds")
-    FarmTwisteds:AddParagraph({Title = "", Content = "For Research: Only Twisteds you still need Research from\nFor Event: Every Twisted on every floor (+1 Pumpkin)"})
-    SeenResearch:OnChanged(function(value)
-        if value and SeenEvent.Value then SeenEvent:Set(false) end
-    end)
-    SeenEvent:OnChanged(function(value)
-        if value and SeenResearch.Value then SeenResearch:Set(false) end
-    end)
+    toggle(FarmTwisteds, "dw_farm_research_twisteds", "Let Twisteds see you first", "farmResearchTwisteds")
     toggle(FarmTwisteds, "dw_farm_skip_researched", "Skip Twisteds with 100% Research", "farmSkipResearched")
-    toggle(FarmTwisteds, "dw_farm_ignore_twisteds_travel", "Ignore Twisteds while traveling", "farmIgnoreTwistedsTravel")
+    FarmTwisteds:AddParagraph({Title = "", Content = "Turn this off if you wanna grind Quest/Event currency."})
 
     local TwistedAlerts = AlertsTab:AddSection("Twisted Alerts", "Left")
     toggle(TwistedAlerts, "dw_alert_tracers", "Use additional tracers", "alertTracers")
@@ -12225,6 +13448,7 @@ local function buildMenu()
         summary = {enabled = true, intervalMinutes = 20, includeIchor = true, includeResearch = false, includeItems = false, includeTwisteds = false, includeMastery = false},
         runEnded = {enabled = true, mentionOnDeath = false},
         connection = {onReconnect = true, onLost = true},
+        events = {onHit = false, onNewFloor = false},
     }
     local Webhooks = {}
 
@@ -12278,7 +13502,7 @@ local function buildMenu()
 
     local function encodeWebhook(link, mention, Hook)
         local function flag(value) return value and "true" or "false" end
-        local Summary, RunEnded, Connection = Hook.summary, Hook.runEnded, Hook.connection
+        local Summary, RunEnded, Connection, Events = Hook.summary, Hook.runEnded, Hook.connection, Hook.events
         return table.concat({
             "{",
             '\t"webhookLink": ' .. quote(link) .. ",",
@@ -12300,6 +13524,10 @@ local function buildMenu()
             '\t\t"connection": {',
             '\t\t\t"onReconnect": ' .. flag(Connection.onReconnect) .. ",",
             '\t\t\t"onLost": ' .. flag(Connection.onLost),
+            "\t\t},",
+            '\t\t"events": {',
+            '\t\t\t"onHit": ' .. flag(Events.onHit) .. ",",
+            '\t\t\t"onNewFloor": ' .. flag(Events.onNewFloor),
             "\t\t}",
             "\t}",
             "}",
@@ -12413,6 +13641,8 @@ local function buildMenu()
     bind(Notifications:AddTextbox({Title = "User ID (for mentions)", Placeholder = "Your Discord user ID", Numeric = true, MaxLength = 20}), "mentionUserId")
     bind(Notifications:AddToggle({Title = "Send Upon Reconnection", Default = true}), "connection", "onReconnect")
     bind(Notifications:AddToggle({Title = "Send If Connection Lost", Default = true}), "connection", "onLost")
+    bind(Notifications:AddToggle({Title = "Send When Hit", Default = false}), "events", "onHit")
+    bind(Notifications:AddToggle({Title = "Send Upon New Floor", Default = false}), "events", "onNewFloor")
 
     local function loadControls()
         Current = Webhooks[HookPick.Value or ""]
@@ -12620,6 +13850,7 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     FARM.update(tick())
     section("farm")
     TOON.update(tick())
+    HYBRID.update(tick())
     REPORT.update(tick())
     section("toon/report")
     RENDER.update(tick())
@@ -12655,6 +13886,7 @@ _G.DW_CLEANUP = function()
     end
 
     ABILITY.removePrompt()
+    GOLDEN.closeRemapDialog()
     PLAYERS.cleanup()
     FARM.cleanup()
     RENDER.cleanup()
@@ -12673,3 +13905,5 @@ _G.DW_CLEANUP = function()
         VantaUI:Unload()
     end)
 end
+
+if FARM.Debug.Enabled then _G.DWT = {FARM = FARM, UI = UI, GOLDEN = GOLDEN, SWIMMER = SWIMMER} end

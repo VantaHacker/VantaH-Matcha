@@ -516,8 +516,8 @@ function Section:AddParagraph(config)
 		self.Content = value or ""
 		Library.Dirty = true
 	end
-	function Element:SetColor(color)
-		for _, Line in ipairs(self.Lines) do Line.Color = color or Theme.SubText end
+	function Element:SetColor(color, count)
+		for i, Line in ipairs(self.Lines) do Line.Color = color and (not count or i <= count) and color or Theme.SubText end
 	end
 	return Element
 end
