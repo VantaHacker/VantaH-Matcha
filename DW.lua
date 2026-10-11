@@ -14212,11 +14212,15 @@ local function buildMenu()
 
     local Debug = SettingsTab:AddSection("Debug", "Right")
     toggle(Debug, "dw_debug_log", "Debug Log", "debugLog")
-    toggle(Debug, "dw_trace_loading", "Trace Loading", "traceLoading")
+    local Trace = toggle(Debug, "dw_trace_loading", "Trace Loading", "traceLoading")
+    Trace:OnChanged(function(value)
+        Trace.Title = value and "Trace Loading (disables in 3 mins)" or "Trace Loading"
+        VantaUI.Dirty = true
+    end)
 end
 
 FARM.Debug.Enabled = FARM.Debug.Forced or SETTINGS.debugLog == true
-FARM.Crumb = {File = "DW/LastStep.txt", Length = 45, RoomLength = 25, Until = 0, On = false}
+FARM.Crumb = {File = "DW/LastStep.txt", Length = 45, RoomLength = 25, Limit = 180, Until = 0, On = false}
 FARM.LoadedAt = os.clock()
 FARM.Job = game.JobId
 if SETTINGS.traceLoading then
@@ -14277,6 +14281,17 @@ renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
         if Trace.FrameEnd and frameStart - Trace.FrameEnd > Trace.Gap then FARM.trace(string.format("frame %d: %.0f ms passed outside the script", Trace.Frames, (frameStart - Trace.FrameEnd) * 1000)) end
     end
     local Crumb = FARM.Crumb
+    if SETTINGS.traceLoading then
+        Crumb.Since = Crumb.Since or frameStart
+        if frameStart - Crumb.Since > Crumb.Limit then
+            FARM.trace("Trace Loading switched itself off after 3 minutes", true)
+            SETTINGS.traceLoading = false
+            FARM.TraceLate = nil
+            pcall(UI.SetValue, "dw_trace_loading", false)
+        end
+    else
+        Crumb.Since = nil
+    end
     if SETTINGS.traceLoading then
         if Crumb.Job ~= game.JobId then
             if Crumb.Job then FARM.trace("teleport detected: the server changed while this script kept running (place id " .. tostring(game.PlaceId) .. ", loaded as " .. PLACE_MODE .. ")", true) end
