@@ -61,6 +61,7 @@ local FireProximityPrompt = (function()
     return pcall(chunk) and _G.FireProximityPrompt or nil
 end)()
 
+if FireProximityPrompt then FireProximityPrompt.SetupTries = 0 end
 local ITEM_USES = {"Collectible", "Healing", "Machines", "Skill Check", "Speed", "Stamina", "Stealth", "Random Effect", "Distraction"}
 
 local ITEM_INFO = {
@@ -222,6 +223,7 @@ local SETTINGS = {
     farmCapsulesResearch = false,
     farmResearchTwisteds = true,
     farmAvoidAura = 2.5,
+    farmStartupTime = 15,
     farmSkipResearched = true,
     farmSpeedMultiplier = 1.32,
     farmTreadmillRun = true,
@@ -250,6 +252,8 @@ local SETTINGS = {
     alwaysGolden = false,
     betterBarnaby = false,
     autoRemap = false,
+    debugLog = false,
+    traceLoading = false,
     autoBarnaby = true,
     barnabyCollectCoins = true,
     barnabyRiskyCoins = false,
@@ -698,7 +702,7 @@ local FARM = {
     resumeWritten = false,
     resumePending = false,
     FORCE_OFF_WINDOW = 3,
-    Debug = {Enabled = _G.DW_DEBUG == true or (type(isfile) == "function" and select(2, pcall(isfile, "DW/Debug.txt")) == true), File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05, SampleEvery = 0.25, SampleAt = 0, TravelEvery = 2, TravelAt = 0, JumpAt = 0, GoalAt = 0, MaxBytes = 2000000, KeepBytes = 1000000},
+    Debug = {Enabled = _G.DW_DEBUG == true, Forced = _G.DW_DEBUG == true, File = "DW/FarmDebug.txt", Slow = 0.04, Phase = nil, Status = nil, Gap = 0.5, Section = 0.05, SampleEvery = 0.25, SampleAt = 0, TravelEvery = 2, TravelAt = 0, JumpAt = 0, GoalAt = 0, MaxBytes = 2000000, KeepBytes = 1000000},
     RUN = {
         PASSIVE = { RazzleDazzleMonster = true, WaxwellMonster = true, ConnieMonster = true, RodgerMonster = true },
         ARRIVE = 3,
@@ -724,9 +728,26 @@ local FARM = {
         BodyRotationOffset = 0x74,
         BodySpinOffset = 0xB0,
         PathDrift = 3,
+        LandEvery = 0.3,
+        LandGap = 1,
+        LandOff = 2,
         PathKeep = 0.3,
         MovedByGame = 12,
+        GroundUp = 3,
+        GroundDown = 30,
+        GroundHops = 6,
+        GroundEvery = 1.5,
+        GroundKeep = 0.25,
+        PushNear = 8,
+        PushWindow = 4,
+        PushLimit = 3,
+        PushRest = 6,
         FallCatch = 4,
+        FallDrop = 0.5,
+        FallGiveUp = 1,
+        FallPause = 5,
+        SealKeep = 0.5,
+        SealMove = 0.5,
         CameraRotationOffset = 0xC8,
         HookKinds = {item = true, capsule = true, event = true, door = true, quest = true, buy = true},
         MoveOffsets = {0x130, 0x36C},
@@ -771,6 +792,8 @@ local FARM = {
         CoverExit = 1.8,
         CoverAt = 0,
         CoverCell = 16,
+        CoverMaxSize = 600,
+        CoverMaxDistance = 100000,
         CoverStep = 0.3,
         CoverProbe = 6,
         CoverDirections = 16,
@@ -885,8 +908,18 @@ local FARM = {
         RESEARCH_FACE_GAP = 3,
         RESEARCH_FACE_ARRIVE = 4,
         RESEARCH_FACE_REFRESH = 0.25,
-        RESEARCH_RAZZLE_ARRIVE = 15,
-        RESEARCH_RAZZLE_WAIT = 8,
+        RESEARCH_RAZZLE_RAYS = 16,
+        RESEARCH_RAZZLE_MARGIN = 2,
+        RESEARCH_RAZZLE_BACK = 3,
+        RESEARCH_RAZZLE_LEAST = 8,
+        RESEARCH_RAZZLE_TRAVEL = 0.05,
+        RESEARCH_RAZZLE_WALL = 100,
+        RESEARCH_RAZZLE_CIRCLE = 3,
+        RESEARCH_RAZZLE_STEP = 6,
+        RESEARCH_RAZZLE_PATIENCE = 4,
+        RESEARCH_RAZZLE_LEAVE = 8,
+        RESEARCH_RAZZLE_NEAR = 15,
+        RESEARCH_RAZZLE_WAIT = 14,
         BLOT_HAND_RANGE = 12,
         BLOT_HAND_MARGIN = 4,
         BLOT_HAND_RECHECK = 0.25,
@@ -3286,9 +3319,16 @@ function GOLDEN.update(now)
         task.spawn(function()
             local started = os.clock()
             FARM.debugNote(string.format("TASK golden setup start (attempt %d)", GOLDEN.Attempts))
+            FARM.trace("Always hit Golden setup started (heap scan, freezes Matcha while it runs)", true)
+            if GOLDEN.Attempts == 1 then
+                VantaUI:Notify("Always hit Golden", "Setting up, Matcha may freeze for a few seconds.", 4)
+                task.wait(0.3)
+            end
             GOLDEN.Cache = GOLDEN.Cache or {}
             if not GOLDEN.Ready then pcall(GOLDEN.setupBar) end
+            task.wait(0.1)
             if not GOLDEN.CircleReady or not GOLDEN.TreadReady then pcall(GOLDEN.setupHandlers) end
+            FARM.trace(string.format("Always hit Golden setup took %.1f s", os.clock() - started), true)
             GOLDEN.Cache = nil
             if not SETTINGS.alwaysGolden or GOLDEN.Stopped then GOLDEN.restore() end
             GOLDEN.Busy = false
@@ -4904,6 +4944,7 @@ local function refreshSettingsFromUi()
     local Keybind = VantaUI.Options.dw_esp_key
     if Keybind and Keybind.Key then SETTINGS.espKey = Keybind.Key end
     if UI.Window then SETTINGS.menuKey = UI.Window.MenuKey end
+    FARM.Debug.Enabled = FARM.Debug.Forced or SETTINGS.debugLog == true
 
     autoSaveConfig()
 end
@@ -5761,15 +5802,16 @@ function FARM.statusText(now)
     end
 
     local elapsed = now - FARM.armedAt
-    if elapsed < FARM.BANNER.STARTUP then
-        return "Starts in " .. math.ceil(FARM.BANNER.STARTUP - elapsed) .. "s"
+    if elapsed < FARM.startupTime() then
+        if FARM.SetupHold then return "Setting up memory features first" end
+        return "Starts in " .. math.ceil(FARM.startupTime() - elapsed) .. "s"
     end
 
     return FARM.status or "Working"
 end
 
 function FARM.running(now)
-    return FARM.active and not FARM.paused and now - FARM.armedAt >= FARM.BANNER.STARTUP
+    return FARM.active and not FARM.paused and now - FARM.armedAt >= FARM.startupTime()
 end
 
 function FARM.setStatus(text)
@@ -6732,7 +6774,7 @@ function FARM.debugState(now)
         state = SETTINGS.aggressiveAutoFarm and "waiting for the warning prompt" or "off"
     elseif FARM.paused then
         state = "paused by user"
-    elseif now - FARM.armedAt < FARM.BANNER.STARTUP then
+    elseif now - FARM.armedAt < FARM.startupTime() then
         state = "startup countdown"
     elseif PLACE_MODE == "lobby" and FARM.MASTERY.running then
         state = "running (mastery toon select)"
@@ -6810,7 +6852,7 @@ function FARM.update(now)
             FARM.runStop()
         elseif not FARM.pauseWanted and FARM.paused then
             FARM.paused = false
-            if FARM.pausedAt - FARM.armedAt < FARM.BANNER.STARTUP then
+            if FARM.pausedAt - FARM.armedAt < FARM.startupTime() then
                 FARM.armedAt = FARM.armedAt + (now - FARM.pausedAt)
             end
         end
@@ -7551,21 +7593,26 @@ function FARM.bodyAddress(root)
     if not ok or not key then return nil end
     if R.BodyRoot == key and now < R.BodyCheckAt then return R.BodyAt end
     R.BodyRoot, R.BodyCheckAt = key, now + R.VelocityCheckEvery
+    local why = "no memory access"
     local found, address = pcall(function()
         if not VantaUI.MemoryAccess() then return nil end
         local primitive = memory_read("uintptr_t", key + R.PrimitiveOffset)
+        why = "no primitive"
         if not primitive or primitive < 0x10000 then return nil end
         local body = memory_read("uintptr_t", primitive + R.BodyOffset)
+        why = "body is not linked to this part"
         if not body or body < 0x10000 or memory_read("uintptr_t", body + 8) ~= primitive + R.BodyLinkOffset then return nil end
         local base = body + R.BodyPositionOffset
         local p = root.Position
-        if math.abs(memory_read("float", base) - p.X) > 3 or math.abs(memory_read("float", base + 4) - p.Y) > 3 or math.abs(memory_read("float", base + 8) - p.Z) > 3 then return nil end
+        local x, y, z = memory_read("float", base), memory_read("float", base + 4), memory_read("float", base + 8)
+        why = string.format("body at (%.1f, %.1f, %.1f) but the part reads (%.1f, %.1f, %.1f)", x, y, z, p.X, p.Y, p.Z)
+        if math.abs(x - p.X) > 3 or math.abs(y - p.Y) > 3 or math.abs(z - p.Z) > 3 then return nil end
         return base
     end)
     local result = found and address or nil
     if (result ~= nil) ~= (R.BodyAt ~= nil) or R.BodyNoted == nil then
         R.BodyNoted = true
-        FARM.debugNote(result and "position write: memory" or "position write: property (memory layout check failed)")
+        FARM.debugNote(result and "position write: memory" or "position write: property (memory layout check failed: " .. (found and why or tostring(address)) .. ")")
     end
     R.BodyAt = result
     return result
@@ -7573,7 +7620,22 @@ end
 
 function FARM.setRootPosition(root, position)
     local R = FARM.RUN
-    if SETTINGS.farmMemoryPosition and root.Parent then
+    local now = tick()
+    local Land = R.Land
+    if not Land or now - Land.At > 1 then
+        R.Land = {At = now, Real = root.Position, Want = position}
+    elseif now - Land.At >= R.LandEvery then
+        local real = root.Position
+        local wanted, moved, gap = FARM.flatDistance(position, Land.Want), FARM.flatDistance(real, Land.Real), FARM.flatDistance(real, position)
+        local missed = (wanted > 2 and moved < wanted * 0.3) or (wanted <= 0.5 and gap > R.LandGap)
+        if missed and R.BodyAt and now >= (R.MemoryOffUntil or 0) then
+            R.MemoryOffUntil = now + R.LandOff
+            R.BodyCheckAt, R.VelocityCheckAt = 0, 0
+            FARM.debugNote(string.format("position write did not land in phase %s: wanted to move %.1f studs, moved %.1f, now %.1f from the target, normal position write for %d s", tostring(R.phase), wanted, moved, gap, R.LandOff))
+        end
+        R.Land = {At = now, Real = real, Want = position}
+    end
+    if SETTINGS.farmMemoryPosition and root.Parent and tick() >= (R.MemoryOffUntil or 0) then
         local address = FARM.bodyAddress(root)
         if address then
             local ok = pcall(function()
@@ -7590,6 +7652,18 @@ function FARM.setRootPosition(root, position)
     end
     R.Path = nil
     root.Position = position
+end
+
+function FARM.sealPosition(root, position)
+    local R = FARM.RUN
+    local now = tick()
+    if R.Sealed and now - R.SealedAt < R.SealKeep and (R.Sealed - position).Magnitude < R.SealMove then
+        R.SealedAt = now
+        return
+    end
+    R.Sealed, R.SealedAt = position, now
+    local ok = pcall(function() root.Position = position end)
+    FARM.debugNote(string.format("final position %s at (%.1f, %.1f, %.1f)", ok and "written" or "write FAILED", position.X, position.Y, position.Z))
 end
 
 function FARM.runPathPosition(root)
@@ -9025,6 +9099,76 @@ function FARM.runAttr(model, name)
     return ok and value == true
 end
 
+function FARM.runRazzleSpot(target, root)
+    local R = FARM.RUN
+    local T = FARM.twisted(target.model)
+    local ok, origin = pcall(function() return ((T and T.Origin) or target.part).Position end)
+    if not ok or not origin then return nil end
+    local instant = FARM.runChaser(target.model)
+    local reach = math.max(instant - R.RESEARCH_RAZZLE_MARGIN, R.RESEARCH_RAZZLE_LEAST)
+    local Room = UI.map()
+    local Ignore = {Room and Room:FindFirstChild("Generators"), Room and Room:FindFirstChild("Monsters"), workspace:FindFirstChild("InGamePlayers")}
+    local p = root.Position
+    local best, bestScore, bestFree, bestWall
+    for i = 0, R.RESEARCH_RAZZLE_RAYS - 1 do
+        local angle = i * 2 * math.pi / R.RESEARCH_RAZZLE_RAYS
+        local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+        local okRay, hit = pcall(FARM.rayFirst, origin, origin + direction * reach, Ignore, 0.5)
+        local free = okRay and (hit and (hit - origin).Magnitude - R.RESEARCH_RAZZLE_BACK or reach) or 0
+        if free >= R.RESEARCH_RAZZLE_LEAST then
+            local x, z = origin.X + direction.X * free, origin.Z + direction.Z * free
+            local ground = FARM.runGroundY(x, origin.Y, z)
+            if ground and math.abs(ground - origin.Y) < 6 then
+                local score = free - FARM.flatDistance(p, Vector3.new(x, p.Y, z)) * R.RESEARCH_RAZZLE_TRAVEL + (hit and R.RESEARCH_RAZZLE_WALL or 0)
+                if not bestScore or score > bestScore then best, bestScore, bestFree, bestWall = Vector3.new(x, ground, z), score, free, hit ~= nil end
+            end
+        end
+    end
+    return best, bestFree, origin, bestWall
+end
+
+function FARM.runRazzleLeave(root, now, target, label)
+    local R = FARM.RUN
+    local ok, origin = pcall(function() return target.part.Position end)
+    local p = root.Position
+    local instant = FARM.runChaser(target.model)
+    local out = ok and origin and Vector3.new(p.X - origin.X, 0, p.Z - origin.Z)
+    local need = out and instant + R.RESEARCH_RAZZLE_LEAVE - out.Magnitude or 0
+    if need <= 0 then
+        FARM.setStatus("Got research from " .. label .. ", moving on")
+        return
+    end
+    local away = out.Magnitude > 0.1 and out.Unit or Vector3.new(1, 0, 0)
+    local exit
+    for _, turn in ipairs({0, 0.6, -0.6, 1.2, -1.2}) do
+        local c, n = math.cos(turn), math.sin(turn)
+        local direction = Vector3.new(away.X * c - away.Z * n, 0, away.X * n + away.Z * c)
+        local point = Vector3.new(p.X + direction.X * need, p.Y, p.Z + direction.Z * need)
+        if FARM.runGroundY(point.X, p.Y, point.Z) and FARM.runGroundY(p.X + direction.X * need / 2, p.Y, p.Z + direction.Z * need / 2) then
+            exit = point
+            break
+        end
+    end
+    local Threats = FARM.runCoverThreats(root, true)
+    table.insert(Threats, {Position = origin, Kill = instant, Instant = instant, Name = label})
+    local okCover, cover = pcall(FARM.runFindCover, root, Threats, nil, R.CoverReach, 0)
+    cover = okCover and cover or nil
+    FARM.debugNote(string.format("razzle research done %.0f studs from it: %.0f studs to leave its range%s, cover %s", out.Magnitude, need, exit and "" or " (no open floor that way)", cover and string.format("%.0f studs away", FARM.flatDistance(p, cover)) or "none"))
+    if cover and (not exit or FARM.flatDistance(p, cover) < need) then
+        FARM.runDive(root, now, "Got research from " .. label .. ", hiding")
+        return
+    end
+    if not exit then
+        FARM.setStatus("Got research from " .. label .. ", moving on")
+        return
+    end
+    R.current, R.collect = nil, nil
+    R.targetKind = "wander"
+    FARM.runTravelTo(root, exit, p.Y)
+    R.phase = "tween"
+    FARM.setStatus("Got research from " .. label .. ", leaving its range")
+end
+
 function FARM.runRazzleSees(point)
     local map = UI.map()
     local Roster = UI.roster()
@@ -9093,6 +9237,48 @@ function FARM.runFloorY(x, y, z)
         return hit.Position.Y
     end)
     return okY and hitY or nil
+end
+
+function FARM.runGroundY(x, y, z, reach)
+    local R = FARM.RUN
+    local now = tick()
+    local Last = R.Ground
+    reach = reach or 0
+    if Last and now - Last.At <= R.GroundKeep and math.abs(y - Last.From) < 1 and math.abs(reach - Last.Reach) < 1 and math.abs(x - Last.X) + math.abs(z - Last.Z) < R.GroundEvery then return Last.Y end
+    local found
+    pcall(function()
+        local Room = UI.map()
+        local Ignore = {Room and Room:FindFirstChild("Monsters"), workspace:FindFirstChild("InGamePlayers")}
+        local feet = y - R.hipOffset
+        local from = Vector3.new(x, feet + R.GroundUp + reach, z)
+        local bottom = feet - R.GroundDown
+        for _ = 1, R.GroundHops do
+            local length = from.Y - bottom
+            if length <= 0.5 then return end
+            FARM.crumb("ground ray")
+            local hit = workspace:Raycast(from, Vector3.new(0, -length, 0))
+            if not hit or not hit.Instance then return end
+            FARM.crumb("ground hit read")
+            local solid = hit.Instance.CanCollide == true
+            FARM.crumb("ground hit solid " .. tostring(solid))
+            if solid then
+                for _, Folder in pairs(Ignore) do
+                    if FARM.runIsInside(hit.Instance, Folder) then
+                        solid = false
+                        break
+                    end
+                end
+            end
+            if solid then
+                found = hit.Position.Y + R.hipOffset
+                return
+            end
+            from = Vector3.new(x, hit.Position.Y - 0.05, z)
+        end
+    end)
+    FARM.crumb("ground done")
+    R.Ground = {X = x, Z = z, From = y, Reach = reach, Y = found, At = now}
+    return found
 end
 
 function FARM.runLowestFloorY(x, y, z)
@@ -9343,6 +9529,49 @@ function FARM.runDive(root, now, status)
     FARM.setStatus(status)
 end
 
+function FARM.startupTime()
+    return math.clamp(tonumber(SETTINGS.farmStartupTime) or FARM.BANNER.STARTUP, 3, FARM.BANNER.STARTUP)
+end
+
+function FARM.crumb(text)
+    local Crumb = FARM.Crumb
+    if Crumb and Crumb.On then pcall(appendfile, Crumb.File, "  " .. text .. "\n") end
+end
+
+function FARM.trace(text, late)
+    local Trace = FARM.Trace or (late and (FARM.TraceLate or (SETTINGS.traceLoading and {File = "DW/LoadTrace.txt", Start = FARM.LoadedAt})))
+    if not Trace or type(appendfile) ~= "function" then return end
+    pcall(appendfile, Trace.File, string.format("%7.2f s  %s\n", os.clock() - Trace.Start, text))
+end
+
+function FARM.traceEnd()
+    local Trace = FARM.Trace
+    if not Trace then return end
+    local Lines = {}
+    for name, Entry in pairs(Trace.Sections) do
+        table.insert(Lines, string.format("%s total %.0f ms, worst %.0f ms", name, Entry.Total * 1000, Entry.Worst * 1000))
+    end
+    table.sort(Lines)
+    local seconds = os.clock() - Trace.Start
+    FARM.trace(string.format("summary: %d frames in %.1f s (%.1f fps), %d freezes", Trace.Frames, seconds, Trace.Frames / math.max(seconds, 0.001), Trace.Freezes))
+    for _, line in ipairs(Lines) do FARM.trace("  " .. line) end
+    pcall(function()
+        local Room = UI.map()
+        local Monsters = Room and Room:FindFirstChild("Monsters")
+        local Folder = workspace:FindFirstChild("InGamePlayers")
+        local ok, hit = pcall(function() return workspace:Raycast(UI.myPart("HumanoidRootPart").Position, Vector3.new(0, -50, 0)) end)
+        FARM.trace(string.format("  memory access %s, room %s with %d instances, %d twisteds, %d players, raycast %s", tostring(VantaUI.MemoryAllowed), Room and Room.Name or "none", Room and #Room:GetDescendants() or 0, Monsters and #Monsters:GetChildren() or 0, Folder and #Folder:GetChildren() or 0, ok and hit ~= nil and "works" or "sees nothing"))
+        local On = {}
+        for key, value in pairs(SETTINGS) do
+            if value == true then table.insert(On, key) end
+        end
+        table.sort(On)
+        FARM.trace("  enabled: " .. table.concat(On, ", "))
+    end)
+    FARM.TraceLate = {File = Trace.File, Start = Trace.Start}
+    FARM.Trace = nil
+end
+
 function FARM.debugNote(text)
     if not FARM.Debug.Enabled or type(appendfile) ~= "function" then return end
     local Debug = FARM.Debug
@@ -9545,8 +9774,19 @@ function FARM.coverEntry(Item)
     local size = Item.Size
     local smallest = R.CoverMargin * 2
     if size.X < smallest or size.Y < smallest or size.Z < smallest then return nil end
+    local largest = R.CoverMaxSize
+    if not (size.X <= largest and size.Y <= largest and size.Z <= largest) then
+        if not R.CoverHugeNoted then
+            R.CoverHugeNoted = true
+            FARM.debugNote(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(Item.Name), size.X, size.Y, size.Z))
+            FARM.trace(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(Item.Name), size.X, size.Y, size.Z), true)
+        end
+        return nil
+    end
     local cf = Item.CFrame
     local origin = Item.Position
+    local far = R.CoverMaxDistance
+    if not (math.abs(origin.X) <= far and math.abs(origin.Y) <= far and math.abs(origin.Z) <= far) then return nil end
     local axisX = cf.RightVector
     local axisY = cf.UpVector
     local axisZ = -cf.LookVector
@@ -9632,7 +9872,9 @@ function FARM.runCoverCache(Room)
     end
     if now >= R.CoverCheckAt and now - R.CoverStart < R.CoverWatchTime then
         R.CoverCheckAt = now + (R.CoverFilled and R.CoverWatchEvery or R.CoverSettleEvery)
+        FARM.crumb("cover count")
         local ok, count = pcall(FARM.coverCount, Room)
+        FARM.crumb("cover count done")
         if ok then
             R.CoverStable = count == R.CoverCount and R.CoverStable + 1 or 0
             R.CoverCount = count
@@ -9645,11 +9887,14 @@ function FARM.runCoverCache(Room)
     if not R.CoverFilled then
         if R.CoverStable < R.CoverSettleChecks and now - R.CoverStart < R.CoverWatchTime then return end
         FARM.debugNote(string.format("room settled at %d instances after %.1f s", R.CoverCount, now - R.CoverStart))
+        FARM.crumb("cover fill")
         FARM.coverFill(Room)
+        FARM.crumb("cover fill done")
     end
     local Queue = R.CoverQueue
     if not Queue then return end
     local last = math.min(R.CoverIndex + R.CoverBatch - 1, #Queue)
+    FARM.crumb("cover batch " .. R.CoverIndex .. " to " .. last .. " of " .. #Queue)
     for i = R.CoverIndex, last do
         local Item = Queue[i]
         pcall(function()
@@ -9971,7 +10216,9 @@ function FARM.coverPreload()
         R.Mapping = nil
         return
     end
+    FARM.crumb("cover cache")
     FARM.runCoverCache(Room)
+    FARM.crumb("cover cache done")
     if R.CoverPreloaded == R.CoverMap and not R.CoverQueue then
         R.Mapping = nil
         return
@@ -9980,12 +10227,16 @@ function FARM.coverPreload()
         R.Mapping = 0
         return
     end
+    FARM.crumb("cover heights")
     local Heights = FARM.coverHeights(Room)
+    FARM.crumb("cover heights done, " .. #Heights)
     if #Heights == 0 then return end
     local budget = (not FARM.active or R.phase == "waitFloor" or R.phase == "idle") and R.CoverPreloadBudget or R.CoverLevelBudget
     local total, done = #Heights * math.max(#R.CoverParts, 1), 0
     for _, standY in ipairs(Heights) do
+        FARM.crumb("cover level " .. tostring(standY))
         local Level = FARM.coverLevel(standY, nil, budget)
+        FARM.crumb("cover level done")
         if not Level then return end
         done += math.min(Level.Index - 1, #R.CoverParts)
         if Level.Index <= #R.CoverParts then
@@ -10595,6 +10846,10 @@ function FARM.runTravelTo(root, position, y)
     R.goalY = y
     R.startY = root.Position.Y
     R.travelStart = root.Position
+    if FARM.flatDistance(R.travelStart, position) > R.PathDrift and tick() >= (R.TravelCheckAt or 0) then
+        R.TravelCheckAt = tick() + 0.5
+        R.BodyCheckAt, R.VelocityCheckAt = 0, 0
+    end
 end
 
 function FARM.clickStep(State, now, button, settle, aim, hold)
@@ -10623,6 +10878,41 @@ function FARM.runHalt()
     if FARM.RUN.noCollide then
         FARM.runCollide(true)
     end
+end
+
+function FARM.runLeaveMachine()
+    local R = FARM.RUN
+    if R.phase ~= "tween" then return FARM.runHalt() end
+    R.Adrift = true
+    FARM.runRmb(false)
+    FARM.runHoldW(false)
+end
+
+function FARM.runSettle(root, now)
+    local R = FARM.RUN
+    if not R.Adrift then return false end
+    local p = root.Position
+    local Threats = FARM.runCoverThreats(root, true)
+    local spot, y, nearest
+    for _, machine in ipairs(FARM.runMachines()) do
+        local ok, stand = pcall(function() return machine.stand.Position end)
+        if ok and stand and not FARM.runConnie(machine) and not FARM.runBlotMachine(machine, root, now) and not FARM.runGuarded(machine, Threats) then
+            local distance = FARM.flatDistance(p, stand)
+            if not nearest or distance < nearest then spot, y, nearest = stand, stand.Y + R.STAND_Y, distance end
+        end
+    end
+    if not spot then
+        local base = FARM.runElevatorBase()
+        if base then spot, y = base.Position, base.Position.Y + 3 end
+    end
+    if not spot then return false end
+    R.current, R.collect = nil, nil
+    R.targetKind = "wander"
+    FARM.runTravelTo(root, spot, y)
+    R.phase = "tween"
+    FARM.setStatus("Moving to solid ground to wait")
+    FARM.debugNote(string.format("stopped mid-flight, moving to solid ground at (%.1f, %.1f, %.1f) before waiting", spot.X, y, spot.Z))
+    return true
 end
 
 function FARM.runClick(button)
@@ -11199,6 +11489,18 @@ function FARM.runUpdate(now)
         return
     end
 
+    if GOLDEN.Busy or (FireProximityPrompt and FireProximityPrompt.Preparing) then
+        R.SetupSpot = R.SetupSpot or ((R.phase == "hide" and R.Cover) or root.Position)
+        FARM.runHoldW(false)
+        if R.noCollide then
+            FARM.runFreeze(root)
+            FARM.setRootPosition(root, R.SetupSpot)
+        end
+        FARM.setStatus("Setting up memory features, staying put")
+        return
+    end
+    R.SetupSpot = nil
+
     if R.phase == "dive" then
         FARM.runCollide(false)
         FARM.runFreeze(root)
@@ -11261,6 +11563,7 @@ function FARM.runUpdate(now)
         if not R.Cover and R.HideHold.Y - p.Y > R.FallCatch then FARM.noteFall(p, R.HideHold, R.phase) end
         local hold = R.Cover or R.HideHold
         FARM.setRootPosition(root, hold)
+        if R.Cover then FARM.sealPosition(root, hold) end
 
         local tendril = FARM.runHazardNear(p, now, R.SPROUT_FLEE_MARGIN)
         if tendril then
@@ -11382,7 +11685,7 @@ function FARM.runUpdate(now)
     end
 
     if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runConnie(R.current) then
-        FARM.runHalt()
+        FARM.runLeaveMachine()
         R.current = nil
         R.phase = "pick"
         FARM.setStatus("Connie got into the machine, leaving")
@@ -11390,7 +11693,7 @@ function FARM.runUpdate(now)
     end
 
     if R.current and R.targetKind == "machine" and (R.phase == "tween" or R.phase == "aim" or R.phase == "working") and FARM.runTaken(R.current) then
-        FARM.runHalt()
+        FARM.runLeaveMachine()
         R.current = nil
         R.phase = "pick"
         FARM.setStatus("Another player took the machine, leaving")
@@ -11403,7 +11706,9 @@ function FARM.runUpdate(now)
         if R.phase == "working" then
             KEYS.tap(R.E_KEY)
         end
-        if R.noCollide then
+        if R.phase == "tween" then
+            R.Adrift = true
+        elseif R.noCollide then
             FARM.runCollide(true)
         end
         R.current = nil
@@ -11413,7 +11718,15 @@ function FARM.runUpdate(now)
     end
 
     if R.phase == "pick" then
-        if not R.InCover then FARM.runCollide(true) end
+        if R.Adrift then
+            FARM.runCollide(false)
+            FARM.runFreeze(root)
+            if not R.AdriftHold or tick() - R.AdriftHoldAt > R.PathKeep then R.AdriftHold = root.Position end
+            R.AdriftHoldAt = tick()
+            FARM.setRootPosition(root, R.AdriftHold)
+        elseif not R.InCover then
+            FARM.runCollide(true)
+        end
         FARM.runRmb(false)
         FARM.runHoldW(false)
 
@@ -11482,6 +11795,7 @@ function FARM.runUpdate(now)
             R.researchY = root.Position.Y
             R.researchStart = now
             R.researchArrived = nil
+            R.RazzleSpot, R.RazzleOrigin, R.RazzleFree, R.RazzleAt, R.RazzleStepAt = nil, nil, nil, 0, nil
             R.facePoint = nil
             R.faceAt = 0
             R.researchGrabbed = nil
@@ -11543,6 +11857,7 @@ function FARM.runUpdate(now)
             R.GuardSince = R.GuardSince or now
             if now - R.GuardSince < R.GuardWait then
                 R.current = nil
+                if FARM.runSettle(root, now) then return end
                 FARM.setStatus(string.format("%s is near the machine, waiting (%ds)", Guard.Name, math.ceil(R.GuardWait - (now - R.GuardSince))))
                 return
             end
@@ -11551,12 +11866,14 @@ function FARM.runUpdate(now)
 
         if not best and blocked then
             R.current = nil
+            if FARM.runSettle(root, now) then return end
             FARM.setStatus("Connie is inside the last machine, waiting")
             return
         end
 
         if not best and takenBlocked then
             R.current = nil
+            if FARM.runSettle(root, now) then return end
             FARM.setStatus("Another player is on the last machine, waiting")
             return
         end
@@ -11565,7 +11882,7 @@ function FARM.runUpdate(now)
             R.current = nil
             if FARM.runBlotHandNear(root.Position, root) then
                 FARM.runDive(root, now, "Blot hand next to the machine, diving")
-            else
+            elseif not FARM.runSettle(root, now) then
                 FARM.setStatus("Unsafe machine, waiting")
             end
             return
@@ -11581,6 +11898,7 @@ function FARM.runUpdate(now)
                 end
                 if now < R.GourdyWaitUntil then
                     R.current = nil
+                    if FARM.runSettle(root, now) then return end
                     FARM.setStatus(string.format("Waiting for Twisted Gourdy to emerge for research (%ds)", math.ceil(R.GourdyWaitUntil - now)))
                     return
                 end
@@ -11605,6 +11923,7 @@ function FARM.runUpdate(now)
         return
     end
 
+    FARM.crumb("phase " .. tostring(R.phase))
     if R.phase == "tween" or R.phase == "toElevator" then
         FARM.runCollide(false)
         FARM.runFreeze(root)
@@ -11612,17 +11931,46 @@ function FARM.runUpdate(now)
         FARM.runLook(camera, root, R.goalPos)
         local real = root.Position
         local Last = R.TravelLast
-        if Last and tick() - R.TravelLastAt <= R.PathKeep and Last.Y - real.Y > R.FallCatch and FARM.flatDistance(real, Last) < R.FallCatch then
-            FARM.noteFall(real, Last, R.phase)
-            FARM.setRootPosition(root, Last)
-            FARM.runFreeze(root)
-            R.TravelLastAt = tick()
-            return
+        local dropping = R.FallRealY ~= nil and real.Y < R.FallRealY - R.FallDrop
+        R.FallRealY = real.Y
+        if Last and dropping and tick() >= (R.FallOffUntil or 0) and tick() - R.TravelLastAt <= R.PathKeep and Last.Y - real.Y > R.FallCatch and FARM.flatDistance(real, Last) < R.FallCatch then
+            local caught = tick()
+            if caught - (R.FallCaughtAt or 0) > R.FallGiveUp then R.FallBurstAt = caught end
+            R.FallCaughtAt = caught
+            if caught - R.FallBurstAt > R.FallGiveUp then
+                R.FallOffUntil = caught + R.FallPause
+                FARM.debugNote(string.format("fall catch kept firing for %.1f s at (%.1f, %.1f, %.1f), letting travel continue for %d s", R.FallGiveUp, real.X, real.Y, real.Z, R.FallPause))
+            else
+                FARM.noteFall(real, Last, R.phase)
+                FARM.setRootPosition(root, Last)
+                FARM.runFreeze(root)
+                R.TravelLastAt = tick()
+                return
+            end
         end
         if R.Path and tick() - R.PathAt <= R.PathKeep and (FARM.flatDistance(real, R.Path) > R.MovedByGame or math.abs(real.Y - R.Path.Y) > R.MovedByGame) then
             FARM.debugNote(string.format("moved by the game (%.1f studs), restarting travel from (%.1f, %.1f, %.1f)", (real - R.Path).Magnitude, real.X, real.Y, real.Z))
             R.Path = nil
             FARM.runTravelTo(root, R.goalPos, R.goalY)
+            local pushed = tick()
+            R.PushCount = (R.PushSpot and pushed - R.PushAt <= R.PushWindow and FARM.flatDistance(real, R.PushSpot) <= R.PushNear) and R.PushCount + 1 or 1
+            R.PushSpot, R.PushAt = real, pushed
+            if R.PushCount >= R.PushLimit then
+                R.PushCount = 0
+                R.PushRestUntil = pushed + R.PushRest
+                FARM.debugNote(string.format("pushed back %d times at the same spot, resting %d s before travelling on", R.PushLimit, R.PushRest))
+            end
+        end
+        if R.PushRestUntil and tick() < R.PushRestUntil then
+            FARM.runHoldW(false)
+            local ground = FARM.runGroundY(real.X, real.Y, real.Z)
+            if ground and math.abs(ground - real.Y) > 0.2 then
+                local limit = FARM.stepLength(now)
+                FARM.setRootPosition(root, Vector3.new(real.X, real.Y + math.clamp(ground - real.Y, -limit, limit), real.Z))
+            end
+            R.travelStart, R.startY = real, real.Y
+            FARM.setStatus(string.format("Pushed back by the game, waiting (%ds)", math.ceil(R.PushRestUntil - tick())))
+            return
         end
 
         local p = FARM.runPathPosition(root)
@@ -11638,6 +11986,8 @@ function FARM.runUpdate(now)
                 FARM.debugNote(string.format("arrived (%s) after %.1f s, %.1f studs, avg %.1f studs/s, target %.1f", R.phase == "toElevator" and "elevator" or tostring(R.targetKind), spent, total, spent > 0 and total / spent or 0, FARM.travelSpeed(now)))
             end
             if R.goalY and math.abs(p.Y - R.goalY) > 2 then FARM.setRootPosition(root, Vector3.new(p.X, R.goalY, p.Z)) end
+            FARM.sealPosition(root, Vector3.new(p.X, (R.goalY and math.abs(p.Y - R.goalY) > 2) and R.goalY or p.Y, p.Z))
+            R.Adrift = false
             FARM.runCollide(true)
             FARM.runHoldW(false)
             if R.phase == "toElevator" then
@@ -11674,7 +12024,13 @@ function FARM.runUpdate(now)
         local step = math.min(FARM.stepLength(now), distance)
         local direction = FARM.runSteer(root, flat.Unit, now)
         local t = total > 0 and math.clamp(1 - distance / total, 0, 1) or 1
-        local target = Vector3.new(p.X + direction.X * step, R.startY + (R.goalY - R.startY) * t, p.Z + direction.Z * step)
+        local y = R.startY + (R.goalY - R.startY) * t
+        local ground = FARM.runGroundY(p.X, p.Y, p.Z, R.goalY > R.startY + 2 and math.max(y - p.Y, 0) or 0)
+        if ground then
+            local limit = FARM.stepLength(now)
+            y = p.Y + math.clamp(ground - p.Y, -limit, limit)
+        end
+        local target = Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step)
         FARM.setRootPosition(root, target)
         R.TravelLast, R.TravelLastAt = target, tick()
         return
@@ -11703,7 +12059,9 @@ function FARM.runUpdate(now)
         end
 
         local function escape()
-            if FARM.runDangerous(target.model) then
+            if target.kind == "razzle" then
+                FARM.runRazzleLeave(root, now, target, label)
+            elseif FARM.runDangerous(target.model) then
                 FARM.runDive(root, now, "Got research from " .. label .. ", diving")
             else
                 FARM.setStatus("Got research from " .. label .. ", moving on")
@@ -11762,7 +12120,22 @@ function FARM.runUpdate(now)
         elseif target.kind == "near" then
             radius = R.RESEARCH_NEAR[target.name]
         elseif target.kind == "razzle" then
-            radius = R.RESEARCH_RAZZLE_ARRIVE
+            if not R.researchArrived and now >= (R.RazzleAt or 0) then
+                R.RazzleAt = now + 2
+                local spot, free, origin, wall = FARM.runRazzleSpot(target, root)
+                if spot then
+                    if not R.RazzleSpot or FARM.flatDistance(spot, R.RazzleSpot) > 2 then FARM.debugNote(string.format("razzle spot: %.0f studs from it with a clear line at (%.1f, %.1f, %.1f), %s", free, spot.X, spot.Y, spot.Z, wall and "in front of a wall or prop" or "open floor, nothing to hide at")) end
+                    R.RazzleSpot, R.RazzleFree, R.RazzleOrigin = spot, free, origin
+                elseif not R.RazzleSpot then
+                    FARM.debugNote("razzle spot: no clear line found, going close instead")
+                end
+            end
+            if R.RazzleSpot then
+                goal = R.RazzleSpot
+                radius = R.RESEARCH_FACE_ARRIVE
+            else
+                radius = R.RESEARCH_RAZZLE_NEAR
+            end
         else
             local instant = FARM.runChaser(target.model)
             radius = math.max(instant * R.RESEARCH_SEEN_SCALE, 4)
@@ -11785,6 +12158,7 @@ function FARM.runUpdate(now)
         end
 
         local p = FARM.runPathPosition(root)
+        standY = FARM.runGroundY(p.X, p.Y, p.Z, math.max(goal.Y - p.Y, 0)) or standY
         local flat = Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
         local distance = flat.Magnitude
         local wait = (target.kind == "grab" and R.RESEARCH_GRAB_WAIT) or (target.kind == "razzle" and R.RESEARCH_RAZZLE_WAIT) or R.COLLECT_TRIES * R.COLLECT_RETRY
@@ -11805,10 +12179,21 @@ function FARM.runUpdate(now)
                 FARM.runCollide(true)
             end
             if target.kind == "razzle" then
-                FARM.runFace(camera, root, goal)
+                if R.RazzleSpot and R.RazzleOrigin and now >= (R.RazzleStepAt or R.researchArrived + R.RESEARCH_RAZZLE_PATIENCE) and R.RazzleFree > R.RESEARCH_RAZZLE_LEAST then
+                    R.RazzleStepAt = now + R.RESEARCH_RAZZLE_PATIENCE
+                    R.RazzleFree = math.max(R.RazzleFree - R.RESEARCH_RAZZLE_STEP, R.RESEARCH_RAZZLE_LEAST)
+                    local line = Vector3.new(R.RazzleSpot.X - R.RazzleOrigin.X, 0, R.RazzleSpot.Z - R.RazzleOrigin.Z)
+                    if line.Magnitude > 0.1 then R.RazzleSpot = Vector3.new(R.RazzleOrigin.X + line.Unit.X * R.RazzleFree, R.RazzleSpot.Y, R.RazzleOrigin.Z + line.Unit.Z * R.RazzleFree) end
+                    FARM.debugNote(string.format("razzle not awake yet, stepping in to %.0f studs", R.RazzleFree))
+                end
+                local center = R.RazzleSpot or p
+                local out = Vector3.new(p.X - center.X, 0, p.Z - center.Z)
+                local away = out.Magnitude > 0.1 and out.Unit or Vector3.new(1, 0, 0)
+                local heading = Vector3.new(-away.Z, 0, away.X) + away * math.clamp((R.RESEARCH_RAZZLE_CIRCLE - out.Magnitude) / 2, -1, 1)
+                FARM.runFace(camera, root, p + heading.Unit * 10)
                 FARM.runHoldW(true)
                 FARM.sprintUpdate(now, true)
-                FARM.setStatus(string.format("Sprinting to wake %s (%.1fs)", label, math.max(wait - (now - R.researchArrived), 0)))
+                FARM.setStatus(string.format("Sprinting in sight of %s to wake it (%.1fs)", label, math.max(wait - (now - R.researchArrived), 0)))
                 return
             end
             FARM.runHoldW(false)
@@ -11886,6 +12271,7 @@ function FARM.runUpdate(now)
 
     if R.phase == "waitFloor" then
         FARM.runRmb(false)
+        if FARM.runSafeInElevator(character) then FARM.promptHookPrepare() end
         for _, machine in ipairs(FARM.runMachines()) do
             if not FARM.runDone(machine) then
                 R.phase = "pick"
@@ -12051,6 +12437,8 @@ function FARM.runUpdate(now)
         FARM.setStatus(valid and string.format("Working %d/%d", math.floor(cur), math.floor(req)) or "Working")
 
         if FARM.runDone(R.current) then
+            R.BodyCheckAt, R.VelocityCheckAt = 0, 0
+            FARM.debugNote(string.format("machine finished at (%.1f, %.1f, %.1f), position write was %s", root.Position.X, root.Position.Y, root.Position.Z, R.BodyAt and "memory" or "property"))
             R.phase = "pick"
             return
         end
@@ -12089,28 +12477,54 @@ function FARM.promptHookReady()
     return State.Ready == true and State.JobId == game.JobId and State.Version == Fire.Version
 end
 
+function FARM.setupFirst(now)
+    FARM.SetupHold = false
+    if PLACE_MODE ~= "main" then return end
+    local Fire = FireProximityPrompt
+    local counting = FARM.active and not FARM.paused and now - FARM.armedAt < FARM.startupTime()
+    if counting and os.clock() - FARM.LoadedAt > 2 then FARM.promptHookPrepare() end
+    if counting and (GOLDEN.Busy or (Fire and Fire.Preparing)) then
+        FARM.SetupHold = true
+        FARM.armedAt = math.max(FARM.armedAt, now - FARM.startupTime() + 1)
+    end
+end
+
+function FARM.promptHookPrepare()
+    local Fire = FireProximityPrompt
+    if not (SETTINGS.farmHookPrompts and Fire) or not VantaUI.MemoryAccess() or FARM.promptHookReady() then return end
+    if Fire.Preparing or tick() < (Fire.SetupAt or 0) or (Fire.SetupTries or 0) >= 3 then return end
+    Fire.Preparing = true
+    Fire.SetupTries = (Fire.SetupTries or 0) + 1
+    Fire.SetupAt = tick() + 30 * Fire.SetupTries
+    task.spawn(function()
+        local started = tick()
+        FARM.trace("Hook Proximity Prompts setup started (heap scan, freezes Matcha while it runs)", true)
+        if Fire.SetupTries == 1 then
+            VantaUI:Notify("Hook Proximity Prompts", "Setting up, Matcha may freeze for a few seconds.", 4)
+            task.wait(0.3)
+        end
+        Fire.Yield = true
+        local ok, ready, reason = pcall(Fire.setup)
+        if ok and ready then
+            pcall(Fire.name, "Attachment")
+            pcall(Fire.name, "Prompt")
+            pcall(Fire.name, "ClassName")
+        end
+        Fire.Yield = false
+        Fire.SetupProblem = not (ok and ready) and tostring(reason or ready) or nil
+        if ok and ready then Fire.SetupTries = 0 end
+        FARM.trace(string.format("Hook Proximity Prompts setup %s after %.1f s", ok and ready and "worked" or "failed (" .. tostring(reason or ready) .. ")", tick() - started), true)
+        if Fire.SetupProblem and Fire.SetupTries >= 3 then VantaUI:Notify("Hook Proximity Prompts", "Setup failed 3 times, so it stays off until the script is reloaded. The farm presses E instead.", 8) end
+        FARM.debugNote(ok and ready and string.format("fireproximityprompt setup ok (%.1f s)", tick() - started) or "fireproximityprompt setup failed: " .. tostring(reason))
+        Fire.Preparing = false
+    end)
+end
+
 function FARM.firePrompt(Part, Given)
     local Fire = FireProximityPrompt
     if not (SETTINGS.farmHookPrompts and Fire and Part) or not VantaUI.MemoryAccess() then return false end
     if not FARM.promptHookReady() then
-        if not Fire.Preparing and tick() >= (Fire.SetupAt or 0) then
-            Fire.Preparing = true
-            Fire.SetupAt = tick() + 30
-            task.spawn(function()
-                local started = tick()
-                Fire.Yield = true
-                local ok, ready, reason = pcall(Fire.setup)
-                if ok and ready then
-                    pcall(Fire.name, "Attachment")
-                    pcall(Fire.name, "Prompt")
-                    pcall(Fire.name, "ClassName")
-                end
-                Fire.Yield = false
-                Fire.SetupProblem = not (ok and ready) and tostring(reason or ready) or nil
-                FARM.debugNote(ok and ready and string.format("fireproximityprompt setup ok (%.1f s)", tick() - started) or "fireproximityprompt setup failed: " .. tostring(reason))
-                Fire.Preparing = false
-            end)
-        end
+        FARM.promptHookPrepare()
         return false
     end
     if Fire.Busy and tick() - (Fire.BusyAt or 0) > 4 then
@@ -12137,6 +12551,7 @@ function FARM.runStop()
     end
     FARM.runReleaseItemKey(0, true)
     R.phase = "idle"
+    R.Adrift = false
     R.current = nil
     R.elevatorDive = nil
     R.Cover, R.CoverSpot, R.HopLabel = nil, nil, nil
@@ -12854,9 +13269,13 @@ function REPORT.send(kind, build, died)
             if kind == "runEnded" and died and Given.runEnded.mentionOnDeath and Hook.Mention ~= "" then
                 body.content = "<@" .. Hook.Mention .. ">"
             end
-            task.spawn(function()
-                REPORT.post(Hook, body)
-            end)
+            if kind == "hit" then
+                REPORT.enqueue(Hook, body)
+            else
+                task.spawn(function()
+                    REPORT.post(Hook, body)
+                end)
+            end
         end
     end
 end
@@ -13303,6 +13722,7 @@ local function buildMenu()
     toggle(Farm, "dw_farm_unlimited", "Unlimited Floors", "unlimitedFloors")
     toggle(Farm, "dw_farm_auto_resume", "Resume after teleport", "farmAutoResume")
     toggle(Farm, "dw_farm_hide_teleport", "Hide the interface post-teleporting", "farmHideOnTeleport")
+    slider(Farm, "dw_farm_startup_time", "Startup Time", "farmStartupTime", 3, FARM.BANNER.STARTUP, 0, "s")
 
     local FarmPlayers = FarmTab:AddSection("Players", "Left")
     toggle(FarmPlayers, "dw_farm_with_players", "Allow everyone (Ignore Whitelist)", "allowFarmWithPlayers", Color3.fromRGB(214, 84, 72))
@@ -13789,10 +14209,27 @@ local function buildMenu()
             pcall(cleanup)
         end
     end})
+
+    local Debug = SettingsTab:AddSection("Debug", "Right")
+    toggle(Debug, "dw_debug_log", "Debug Log", "debugLog")
+    toggle(Debug, "dw_trace_loading", "Trace Loading", "traceLoading")
 end
 
+FARM.Debug.Enabled = FARM.Debug.Forced or SETTINGS.debugLog == true
+FARM.Crumb = {File = "DW/LastStep.txt", Length = 45, RoomLength = 25, Until = 0, On = false}
+FARM.LoadedAt = os.clock()
+FARM.Job = game.JobId
+if SETTINGS.traceLoading then
+    FARM.Trace = {File = "DW/LoadTrace.txt", Start = os.clock(), Length = 45, Detail = 3, Gap = 0.3, Frames = 0, Freezes = 0, Sections = {}}
+    UI.folder(CONFIG_FOLDER)
+    pcall(writefile, FARM.Trace.File, os.date("%Y-%m-%d %H:%M:%S") .. " script started, place " .. PLACE_MODE .. ", FireProximityPrompt " .. tostring(FireProximityPrompt ~= nil) .. "\n")
+end
+FARM.trace("building the menu")
 buildMenu()
+FARM.trace("menu built, starting the session report")
 REPORT.start()
+FARM.trace("session report started")
+GOLDEN.NextScan = tick() + 8
 
 SETTINGS.aggressiveAutoFarm = false
 FARM.forceOffUntil = tick() + FARM.FORCE_OFF_WINDOW
@@ -13800,29 +14237,98 @@ FARM.resumePending = FARM.consumeResume()
 pcall(UI.SetValue, FARM.TOGGLE_ID, false)
 
 ABILITY.startIconCache()
+FARM.trace("load finished, waiting for the first frame")
 
-local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+local renderConnection
+renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+    if FARM.Gone then return end
+    if game.JobId ~= FARM.Job then
+        FARM.Gone = true
+        FARM.trace("server changed under the running script, stopping it", true)
+        FARM.debugNote("server changed under the running script, stopping it")
+        pcall(function() renderConnection:Disconnect() end)
+        _G.DW_CLEANUP = nil
+        KEYS.releaseAll()
+        pcall(mouse2release)
+        if SQUIRM.warnDrawing then pcall(function() SQUIRM.warnDrawing:Remove() end) end
+        for _, entry in pairs(ABILITY.entries) do pcall(ABILITY.removeCard, entry) end
+        pcall(PLAYERS.cleanup)
+        for _, line in ipairs(FARM.banner and FARM.banner.lines or {}) do
+            pcall(function() line.drawing:Remove() end)
+        end
+        for key, visual in pairs(tracked) do
+            pcall(removeVisual, visual)
+            tracked[key] = nil
+        end
+        pcall(function() VantaUI:Unload() end)
+        if type(notify) == "function" then pcall(notify, "Dandy's World", "The server changed, so the script stopped. Run it again.", 6) end
+        return
+    end
     local Profile = FARM.Debug
     local frameStart = os.clock()
     if Profile.FrameEnd and frameStart - Profile.FrameEnd > Profile.Gap then
         FARM.debugNote(string.format("FREEZE %.0f ms between frames", (frameStart - Profile.FrameEnd) * 1000))
     end
     local Sections = Profile.Enabled and {} or nil
+    local Trace = FARM.Trace
     local mark = frameStart
+    if Trace then
+        Trace.Frames = Trace.Frames + 1
+        if Trace.FrameEnd and frameStart - Trace.FrameEnd > Trace.Gap then FARM.trace(string.format("frame %d: %.0f ms passed outside the script", Trace.Frames, (frameStart - Trace.FrameEnd) * 1000)) end
+    end
+    local Crumb = FARM.Crumb
+    if SETTINGS.traceLoading then
+        if Crumb.Job ~= game.JobId then
+            if Crumb.Job then FARM.trace("teleport detected: the server changed while this script kept running (place id " .. tostring(game.PlaceId) .. ", loaded as " .. PLACE_MODE .. ")", true) end
+            Crumb.Until = Crumb.Job and frameStart + Crumb.Length or 0
+            Crumb.Job = game.JobId
+        end
+        if Crumb.Map ~= FARM.RUN.CoverMap then
+            Crumb.Map = FARM.RUN.CoverMap
+            Crumb.Until = math.max(Crumb.Until, frameStart + Crumb.RoomLength)
+        end
+        Crumb.On = frameStart < Crumb.Until or PLACE_MODE ~= "main" or FARM.RUN.dead == true or FARM.RUN.phase == "idle" or not FARM.running(tick())
+        if Crumb.On then
+            if UI.Frame % 300 == 0 then pcall(writefile, Crumb.File, "") end
+            pcall(appendfile, Crumb.File, "frame " .. UI.Frame .. " started\n")
+        end
+    else
+        Crumb.On = false
+    end
     local function section(name)
-        if not Sections then return end
+        if Crumb.On then pcall(appendfile, Crumb.File, "frame " .. UI.Frame .. " finished " .. name .. "\n") end
+        if not Sections and not Trace then return end
         local now = os.clock()
-        if now - mark > Profile.Section then table.insert(Sections, string.format("%s %.0f ms", name, (now - mark) * 1000)) end
+        local spent = now - mark
+        if Sections and spent > Profile.Section then table.insert(Sections, string.format("%s %.0f ms", name, spent * 1000)) end
+        if Trace then
+            local Entry = Trace.Sections[name]
+            if not Entry then
+                Entry = {Total = 0, Worst = 0}
+                Trace.Sections[name] = Entry
+            end
+            Entry.Total, Entry.Worst = Entry.Total + spent, math.max(Entry.Worst, spent)
+            if Trace.Frames <= Trace.Detail then
+                FARM.trace(string.format("frame %d: %s done in %.0f ms", Trace.Frames, name, spent * 1000))
+            elseif spent > Trace.Gap then
+                Trace.Freezes = Trace.Freezes + 1
+                FARM.trace(string.format("frame %d: FREEZE %.0f ms in %s", Trace.Frames, spent * 1000, name))
+            end
+        end
         mark = now
     end
 
     UI.Frame = UI.Frame + 1
+    FARM.crumb("keys")
     KEYS.update(tick())
     lastUiRefresh = lastUiRefresh + deltaTime
     if lastUiRefresh >= UI_REFRESH_INTERVAL then
         lastUiRefresh = 0
+        FARM.crumb("settings refresh")
         refreshSettingsFromUi()
+        FARM.crumb("unsafe warning")
         FARM.updateUnsafeWarning()
+        FARM.crumb("mastery")
         FARM.MASTERY.update()
         FARM.MASTERY.runUpdate()
     end
@@ -13844,21 +14350,36 @@ local renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     section("drawAll")
     ABILITY.update()
     section("ability")
+    FARM.crumb("squirm warning")
     SQUIRM.updateWarning()
+    FARM.crumb("players")
     PLAYERS.update(tick())
     section("players")
+    FARM.crumb("farm update")
     FARM.update(tick())
     section("farm")
+    FARM.crumb("toon")
     TOON.update(tick())
+    FARM.crumb("hybrid")
     HYBRID.update(tick())
+    FARM.crumb("report")
     REPORT.update(tick())
     section("toon/report")
+    FARM.crumb("render")
     RENDER.update(tick())
+    FARM.crumb("golden prepare")
     GOLDEN.prepare(tick())
+    FARM.crumb("golden update")
     GOLDEN.update(tick())
+    FARM.crumb("setup first")
+    FARM.setupFirst(tick())
     section("render/golden")
 
     Profile.FrameEnd = os.clock()
+    if Trace then
+        Trace.FrameEnd = Profile.FrameEnd
+        if Profile.FrameEnd - Trace.Start > Trace.Length then FARM.traceEnd() end
+    end
     if Sections and #Sections > 0 then FARM.debugNote("SLOW SECTIONS " .. table.concat(Sections, ", ")) end
 end)
 
