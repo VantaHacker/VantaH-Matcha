@@ -6839,7 +6839,7 @@ function FARM.update(now)
         FARM.pauseWanted = false
     end
 
-    if PLACE_MODE == "main" then pcall(FARM.coverPreload) end
+    if PLACE_MODE == "main" and FARM.active then pcall(FARM.coverPreload) end
 
     if FARM.active then
         FARM.pollPause()
