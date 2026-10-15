@@ -729,6 +729,7 @@ local FARM = {
         BodySpinOffset = 0xB0,
         PathDrift = 3,
         PathDriftSteps = 2,
+        Stat = {Frames = 0, Time = 0, Capped = 0, Fallback = 0, Steered = 0, Wrote = 0},
         LandEvery = 0.3,
         LandGap = 1,
         LandOff = 2,
@@ -903,7 +904,9 @@ local FARM = {
         RESEARCH_NEAR = { WaxwellMonster = 5, ConnieMonster = 8, GlistenMonster = 8 },
         RESEARCH_GRAB_ARRIVE = 6,
         RESEARCH_GRAB_WAIT = 10,
-        RESEARCH_BLOT_ARRIVE = 3,
+        RESEARCH_BLOT_ARRIVE = 1.5,
+        RESEARCH_BLOT_WAIT = 8,
+        RESEARCH_BLOT_INSET = 0.5,
         RESEARCH_SEEN_SCALE = 0.5,
         RESEARCH_TRAVEL_MAX = 30,
         RESEARCH_BLOT_ZONES = 10,
@@ -928,6 +931,8 @@ local FARM = {
         BLOT_HAND_RANGE = 12,
         BLOT_HAND_MARGIN = 4,
         BLOT_HAND_RECHECK = 0.25,
+        HandUp = {Cooldown = false, Returning = false, Searching = false},
+        GalaMultiplier = 1.2,
         SPROUT_RANGE = 18,
         RODGER_ACTIVE_RANGE = 34,
         RODGER_RISE = 3,
@@ -6618,7 +6623,7 @@ function FARM.measureSpeed(now)
     elseif now - Meter.TrimTime >= Meter.TrimEvery then
         local speed = FARM.flatDistance(Meter.TrimPosition, p) / (now - Meter.TrimTime)
         local target = FARM.travelSpeed(now)
-        if speed > target * 0.6 and speed < target * 2 then
+        if speed > target * 0.6 and speed < target * 2 and not (FARM.memoryMove() and R.BodyAt) then
             R.SpeedTrim = math.clamp(R.SpeedTrim * math.clamp(target / speed, 1 - Meter.TrimStep, 1 + Meter.TrimStep), R.TrimMin, R.TrimMax)
         end
         Meter.TrimPosition, Meter.TrimTime = p, now
@@ -7630,9 +7635,9 @@ function FARM.setRootPosition(root, position)
     local now = tick()
     local Land = R.Land
     if not Land or now - Land.At > 1 then
-        R.Land = {At = now, Real = root.Position, Want = position}
+        R.Land = {At = now, Real = FARM.rootPosition(root), Want = position}
     elseif now - Land.At >= R.LandEvery then
-        local real = root.Position
+        local real = FARM.rootPosition(root)
         local wanted, moved, gap = FARM.flatDistance(position, Land.Want), FARM.flatDistance(real, Land.Real), FARM.flatDistance(real, position)
         local missed = (wanted > 2 and moved < wanted * 0.3) or (wanted <= 0.5 and gap > R.LandGap)
         if missed and R.BodyAt and now >= (R.MemoryOffUntil or 0) then
@@ -7642,7 +7647,7 @@ function FARM.setRootPosition(root, position)
         end
         R.Land = {At = now, Real = real, Want = position}
     end
-    if SETTINGS.farmMemoryPosition and root.Parent and tick() >= (R.MemoryOffUntil or 0) then
+    if FARM.memoryMove() and root.Parent and tick() >= (R.MemoryOffUntil or 0) then
         local address = FARM.bodyAddress(root)
         if address then
             local ok = pcall(function()
@@ -7659,6 +7664,7 @@ function FARM.setRootPosition(root, position)
     end
     R.Path = nil
     root.Position = position
+    R.PropLast, R.PropAt = position, now
 end
 
 function FARM.sealPosition(root, position)
@@ -7673,12 +7679,42 @@ function FARM.sealPosition(root, position)
     FARM.debugNote(string.format("final position %s at (%.1f, %.1f, %.1f)", ok and "written" or "write FAILED", position.X, position.Y, position.Z))
 end
 
+function FARM.memoryMove()
+    return SETTINGS.farmMemoryPosition and not FARM.RUN.GalaFloor
+end
+
+function FARM.rootPosition(root)
+    local R = FARM.RUN
+    local address = R.BodyAt
+    if address and FARM.memoryMove() then
+        local ok, x, y, z = pcall(function()
+            return memory_read("float", address), memory_read("float", address + 4), memory_read("float", address + 8)
+        end)
+        if ok and type(x) == "number" and x == x and y == y and z == z and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5 then
+            return Vector3.new(x, y, z)
+        end
+    end
+    return root.Position
+end
+
 function FARM.runPathPosition(root)
     local R = FARM.RUN
-    local p = root.Position
-    if not (SETTINGS.farmMemoryPosition and R.BodyAt and R.Path) then return p end
+    local p = FARM.rootPosition(root)
+    if not FARM.memoryMove() then
+        local Last = R.PropLast
+        if not Last or tick() - R.PropAt > R.PathKeep then return p end
+        if FARM.flatDistance(p, Last) > math.max(R.PathDrift, FARM.stepLength(tick()) * R.PathDriftSteps + 1) then
+            R.Stat.Fallback = R.Stat.Fallback + 1
+            return p
+        end
+        return Vector3.new(Last.X, p.Y, Last.Z)
+    end
+    if not (R.BodyAt and R.Path) then return p end
     if R.PathRoot ~= R.BodyRoot or tick() - R.PathAt > R.PathKeep then return p end
-    if FARM.flatDistance(p, R.Path) > math.max(R.PathDrift, FARM.stepLength(tick()) * R.PathDriftSteps + 1) then return p end
+    if FARM.flatDistance(p, R.Path) > math.max(R.PathDrift, FARM.stepLength(tick()) * R.PathDriftSteps + 1) then
+        R.Stat.Fallback = R.Stat.Fallback + 1
+        return p
+    end
     return Vector3.new(R.Path.X, p.Y, R.Path.Z)
 end
 
@@ -7775,7 +7811,7 @@ function FARM.runLook(camera, root, goal)
             return true
         end
     end
-    if not SETTINGS.farmMemoryPosition then return FARM.runFace(camera, root, goal) end
+    if not FARM.memoryMove() then return FARM.runFace(camera, root, goal) end
     if SETTINGS.farmTurnBody and FARM.runTurnBody(root, goal) then
         FARM.runRmb(false)
         return true
@@ -7856,7 +7892,10 @@ function FARM.floorNote(Room)
     pcall(function()
         decor = Room:FindFirstChild("HauntedGalaDecor") ~= nil
     end)
-    FARM.debugNote(string.format("FLOOR %s map %s | gala floor %s (decor folder), event flag %s, mode %s", tostring(FARM.currentFloor()), tostring(Room and Room.Name), decor and "yes" or "no", active and "on" or "off", tostring(mode)))
+    local R = FARM.RUN
+    if decor and not R.GalaFloor then R.SpeedTrim = math.min(R.SpeedTrim, 1) end
+    R.GalaFloor = decor
+    FARM.debugNote(string.format("FLOOR %s map %s | gala floor %s (decor folder), event flag %s, mode %s, position writes %s", tostring(FARM.currentFloor()), tostring(Room and Room.Name), decor and "yes" or "no", active and "on" or "off", tostring(mode), FARM.memoryMove() and "memory" or "normal"))
 end
 
 function FARM.travelSpeed(now)
@@ -7864,6 +7903,7 @@ function FARM.travelSpeed(now)
     local multiplier = tonumber(SETTINGS.farmSpeedMultiplier) or R.SprintMultiplier
     FARM.updateTrustScores(now)
     if FARM.TrustScores.Fallback then multiplier = math.min(multiplier, FARM.TrustScores.FallbackMultiplier) end
+    if R.GalaFloor then multiplier = math.min(multiplier, R.GalaMultiplier) end
     local speed = FARM.runSprintSpeed(now) * math.clamp(multiplier, 1, R.SprintMultiplierMax)
     if FARM.MASTERY.travelOnly() then
         speed = math.min(speed, FARM.MASTERY.TRAVEL_SPEED)
@@ -8945,6 +8985,29 @@ function FARM.runHandWall(zone, from, eye, generators)
     return ok and hit ~= nil and (hit - start).Magnitude < (eye - start).Magnitude - 1
 end
 
+function FARM.runHandEdge(zone, point)
+    local R = FARM.RUN
+    local ok, cf, size = pcall(function() return zone.CFrame, zone.Size end)
+    if not ok or not cf or not size then return nil end
+    local offset = FARM.objectSpace(cf, point)
+    local halfX, halfZ = size.X / 2, size.Z / 2
+    local x, z = math.clamp(offset.X, -halfX, halfX), math.clamp(offset.Z, -halfZ, halfZ)
+    if math.abs(offset.X) <= halfX and math.abs(offset.Z) <= halfZ then
+        if halfX - math.abs(offset.X) < halfZ - math.abs(offset.Z) then
+            x = (offset.X >= 0 and 1 or -1) * halfX
+        else
+            z = (offset.Z >= 0 and 1 or -1) * halfZ
+        end
+    end
+    local inward = Vector3.new(-x, 0, -z)
+    if inward.Magnitude > 0.01 then
+        local step = inward.Unit * math.min(R.RESEARCH_BLOT_INSET, inward.Magnitude)
+        x, z = x + step.X, z + step.Z
+    end
+    local world = cf.Position + cf.RightVector * x - cf.LookVector * z
+    return Vector3.new(world.X, cf.Position.Y, world.Z)
+end
+
 function FARM.objectSpace(cf, point)
     local offset = point - cf.Position
     return Vector3.new(offset:Dot(cf.RightVector), offset:Dot(cf.UpVector), -offset:Dot(cf.LookVector))
@@ -9696,7 +9759,11 @@ function FARM.debugTravel(now, phase, goal)
     if speed < 1 or now < Debug.TravelAt then return end
     Debug.TravelAt = now + Debug.TravelEvery
     local left = goal and string.format(" goal=(%.1f,%.1f,%.1f) left=%.1f", goal.X, goal.Y, goal.Z, FARM.flatDistance(p, goal)) or ""
-    FARM.debugNote(string.format("moving %-9s spd=%.1f target=%.1f limit=%.1f trim=%.2f memory=%s pos=(%.1f,%.1f,%.1f)%s", tostring(phase), speed, target, R.SprintSpeed, R.SpeedTrim, tostring(R.BodyAt ~= nil), p.X, p.Y, p.Z, left))
+    local Stat = R.Stat
+    local frames = Stat.Frames
+    local stats = string.format(" | frames %d avg %.0f ms, capped %d, fallback %d, steered %d, wrote %.1f studs", frames, frames > 0 and Stat.Time / frames * 1000 or 0, Stat.Capped, Stat.Fallback, Stat.Steered, Stat.Wrote)
+    R.Stat = {Frames = 0, Time = 0, Capped = 0, Fallback = 0, Steered = 0, Wrote = 0}
+    FARM.debugNote(string.format("moving %-9s spd=%.1f target=%.1f limit=%.1f trim=%.2f memory=%s pos=(%.1f,%.1f,%.1f)%s%s", tostring(phase), speed, target, R.SprintSpeed, R.SpeedTrim, tostring(R.BodyAt ~= nil), p.X, p.Y, p.Z, left, stats))
 end
 
 function FARM.debugLobby(now)
@@ -9736,7 +9803,7 @@ end
 
 function FARM.stepLength(now)
     local R = FARM.RUN
-    local trim = (SETTINGS.farmMemoryPosition and R.BodyAt) and 1 or R.SpeedTrim
+    local trim = (FARM.memoryMove() and R.BodyAt) and 1 or R.SpeedTrim
     return FARM.travelSpeed(now) * R.FrameTime * trim
 end
 
@@ -9762,7 +9829,7 @@ function FARM.runBlotHandSpots(now)
         local zone = map:FindFirstChild("BlotHandZone_" .. index)
         if zone and zone ~= Target then
             for _, child in ipairs(zone:GetChildren()) do
-                if child.ClassName == "Model" and child.Name:sub(1, 8) == "BlotHand" then
+                if child.ClassName == "Model" and child.Name:sub(1, 8) == "BlotHand" and R.HandUp[tostring(child:GetAttribute("HandState"))] ~= false then
                     pcall(function()
                         local cf, size = zone.CFrame, zone.Size
                         table.insert(Spots, {CFrame = cf, HalfX = size.X / 2, HalfZ = size.Z / 2})
@@ -9791,7 +9858,7 @@ function FARM.runHandThreat(Spot, p)
     return {Position = Vector3.new(near.X, p.Y, near.Z), Kill = R.BLOT_HAND_MARGIN, Name = "BlotHand"}
 end
 
-function FARM.runSteer(root, direction, now)
+function FARM.runSteer(root, direction, now, goal)
     local R = FARM.RUN
     local p = root.Position
     local aura = SETTINGS.farmAvoidAura or R.AvoidMargin
@@ -9802,8 +9869,14 @@ function FARM.runSteer(root, direction, now)
     local Hazards = FARM.runHazards(now)
     if #Spots > 0 or #Hazards > 0 then
         Threats = table.clone(Threats)
-        for _, Spot in ipairs(Spots) do table.insert(Threats, FARM.runHandThreat(Spot, p)) end
-        for _, Hazard in ipairs(Hazards) do table.insert(Threats, {Position = Hazard.position, Kill = Hazard.range, Name = "Hazard"}) end
+        local aura = SETTINGS.farmAvoidAura or R.AvoidMargin
+        for _, Spot in ipairs(Spots) do
+            local inside = goal and FARM.flatDistance(goal, FARM.runHandThreat(Spot, goal).Position) <= R.BLOT_HAND_MARGIN + aura
+            if not inside then table.insert(Threats, FARM.runHandThreat(Spot, p)) end
+        end
+        for _, Hazard in ipairs(Hazards) do
+            if not (goal and FARM.flatDistance(goal, Hazard.position) <= Hazard.range + aura) then table.insert(Threats, {Position = Hazard.position, Kill = Hazard.range, Name = "Hazard"}) end
+        end
     end
     for _, Threat in ipairs(Threats) do
         local dx, dz = p.X - Threat.Position.X, p.Z - Threat.Position.Z
@@ -9827,6 +9900,7 @@ function FARM.runSteer(root, direction, now)
         return direction
     end
     R.SteerAt = now
+    R.Stat.Steered = R.Stat.Steered + 1
     local lateralX, lateralZ = direction.Z, -direction.X
     if not R.SteerSide then R.SteerSide = Best.X * lateralX + Best.Z * lateralZ >= 0 and 1 or -1 end
     local wantX, wantZ = direction.X + lateralX * R.SteerSide * R.SteerLean, direction.Z + lateralZ * R.SteerSide * R.SteerLean
@@ -11422,7 +11496,11 @@ function FARM.runUpdate(now)
     end
 
     R.deathClick.stage = 0
-    R.FrameTime = math.clamp(now - (R.FrameAt or now), 0.001, 0.1)
+    local spent = now - (R.FrameAt or now)
+    R.FrameTime = math.clamp(spent, 0.001, 0.1)
+    local Stat = R.Stat
+    Stat.Frames, Stat.Time = Stat.Frames + 1, Stat.Time + spent
+    if spent > 0.1 then Stat.Capped = Stat.Capped + 1 end
     R.FrameAt = now
     local Room = UI.map()
     if Room and SETTINGS.farmSpecialItems then FARM.runQuestScan(Room) end
@@ -11671,7 +11749,7 @@ function FARM.runUpdate(now)
         FARM.runHoldW(true)
         FARM.runLook(camera, root, target)
         local step = math.min(FARM.stepLength(now), flat.Magnitude)
-        local direction = FARM.runSteer(root, flat.Unit, now)
+        local direction = FARM.runSteer(root, flat.Unit, now, target)
         local y = p.Y + math.clamp(target.Y - p.Y, -step, step)
         FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step))
         FARM.setStatus(R.HopLabel and ("Sneaking through cover to " .. R.HopLabel) or "Twisted near, going into cover")
@@ -11925,6 +12003,7 @@ function FARM.runUpdate(now)
             R.facePoint = nil
             R.faceAt = 0
             R.researchGrabbed = nil
+            R.BlotEdge = nil
             R.researchCount = FARM.runResearchCount()
             R.phase = "research"
             FARM.setStatus("Moving to " .. FARM.runResearchName(study.name) .. " for research")
@@ -12061,7 +12140,7 @@ function FARM.runUpdate(now)
         FARM.crumb("travel look")
         FARM.runLook(camera, root, R.goalPos)
         FARM.crumb("travel read position")
-        local real = root.Position
+        local real = FARM.rootPosition(root)
         local Last = R.TravelLast
         local dropping = R.FallRealY ~= nil and real.Y < R.FallRealY - R.FallDrop
         R.FallRealY = real.Y
@@ -12155,8 +12234,9 @@ function FARM.runUpdate(now)
         end
 
         local step = math.min(FARM.stepLength(now), distance)
+        R.Stat.Wrote = R.Stat.Wrote + step
         FARM.crumb("travel steer")
-        local direction = FARM.runSteer(root, flat.Unit, now)
+        local direction = FARM.runSteer(root, flat.Unit, now, R.goalPos)
         local t = total > 0 and math.clamp(1 - distance / total, 0, 1) or 1
         local y = R.startY + (R.goalY - R.startY) * t
         FARM.crumb("travel ground")
@@ -12210,10 +12290,24 @@ function FARM.runUpdate(now)
             return
         end
 
-        if target.kind == "blot" and R.researchArrived then
-            finish()
-            FARM.runDive(root, now, "Got research from " .. label .. ", diving")
-            return
+        if target.kind == "blot" then
+            local count = FARM.runResearchCount()
+            if count and R.researchCount and count > R.researchCount then
+                FARM.debugNote(string.format("blot research confirmed (%d -> %d), running away", R.researchCount, count))
+                finish()
+                FARM.runDive(root, now, "Got research from " .. label .. ", diving")
+                return
+            end
+            if R.researchArrived and now - R.researchArrived >= R.RESEARCH_BLOT_WAIT then
+                FARM.debugNote("blot research not confirmed at the hand edge, leaving to retry later")
+                finish(nil, true)
+                FARM.runDive(root, now, "No research from " .. label .. " yet, diving")
+                return
+            end
+            if not R.BlotEdge then
+                R.BlotEdge = FARM.runHandEdge(target.part, root.Position)
+            end
+            if R.BlotEdge then goal = R.BlotEdge end
         end
 
         if target.kind == "grab" then
@@ -12298,7 +12392,7 @@ function FARM.runUpdate(now)
         standY = FARM.runGroundY(p.X, p.Y, p.Z, math.max(goal.Y - p.Y, 0)) or standY
         local flat = Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
         local distance = flat.Magnitude
-        local wait = (target.kind == "grab" and R.RESEARCH_GRAB_WAIT) or (target.kind == "razzle" and R.RESEARCH_RAZZLE_WAIT) or R.COLLECT_TRIES * R.COLLECT_RETRY
+        local wait = (target.kind == "grab" and R.RESEARCH_GRAB_WAIT) or (target.kind == "razzle" and R.RESEARCH_RAZZLE_WAIT) or (target.kind == "blot" and R.RESEARCH_BLOT_WAIT + 1) or R.COLLECT_TRIES * R.COLLECT_RETRY
 
         if R.researchArrived and now - R.researchArrived >= wait then
             finish("No research from " .. label .. ", skipping")
@@ -12350,7 +12444,8 @@ function FARM.runUpdate(now)
         FARM.runFreeze(root)
         local speed = FARM.stepLength(now)
         local step = math.min(speed, distance)
-        local direction = distance > 0.01 and FARM.runSteer(root, flat.Unit, now) or Vector3.new(0, 0, 0)
+        R.Stat.Wrote = R.Stat.Wrote + step
+        local direction = distance > 0.01 and FARM.runSteer(root, flat.Unit, now, goal) or Vector3.new(0, 0, 0)
         local y = p.Y + math.clamp(standY - p.Y, -speed, speed)
         FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step))
         return
