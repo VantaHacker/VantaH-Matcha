@@ -214,6 +214,7 @@ local SETTINGS = {
     masteryEnd = true,
     farmAutoResume = true,
     farmHideOnTeleport = true,
+    farmUseMappings = true,
     farmEventItems = true,
     farmSpecialItems = true,
     farmTrickOrTreat = true,
@@ -787,6 +788,19 @@ local FARM = {
         FrameTime = 0.016,
         CoverSkip = {Generators = true, Monsters = true, Items = true, Waypoints = true, TriggerZones = true, SpawnPoints = true, MonsterSpawnPoints = true, GeneratorSpawnPoints = true, ItemSpawnPoints = true, GeneratorSpawnPointsCache = true, HolidayPickups = true, Puddles = true, Sounds = true, TrickOrTreatDoors = true},
         CoverBatch = 150,
+        CoverBatchBudget = 0.006,
+        CoverMappingFolder = "DW/Mappings",
+        CoverMappingBundle = "DW/autofarmMappings.json",
+        CoverMappingUrl = "https://raw.githubusercontent.com/VantaHacker/VantaH-Matcha/refs/heads/main/autofarmMappings.json",
+        CoverMappingFormat = 2,
+        CoverMappingMinVersion = 3,
+        CoverMappingRetry = 60,
+        CoverBakeChunk = 40,
+        CoverBakeTryEvery = 0.2,
+        CoverCustomDelay = 3,
+        CoverBakeLoaded = 0.8,
+        GalaCheckEvery = 0.25,
+        GalaWatchTime = 30,
         CoverMargin = 1.05,
         CoverReach = 60,
         CoverNear = 4,
@@ -938,6 +952,7 @@ local FARM = {
         RODGER_RISE = 3,
         SPROUT_FLEE_MARGIN = 4,
         RollMargin = 8,
+        PuddleMargin = 0.5,
         SPROUT_RECHECK = 0.2,
         sproutAt = 0,
         sprouts = {},
@@ -2366,6 +2381,7 @@ function GOLDEN.loadMap()
     if not (ok and type(Data) == "table") then return end
     GOLDEN.apply(Data)
     if Data.Build == "-1271071924:152203264" and GOLDEN.Offsets.EngineColor == 0x1A8 then GOLDEN.Offsets.EngineColor = 0x1AC end
+    if Data.Build == "-41930363:154238976" and GOLDEN.Offsets.EngineGlobal == 0x8CB32D8 then GOLDEN.Offsets.EngineGlobal, GOLDEN.Offsets.EngineVtable, GOLDEN.Offsets.EngineColor = 0x8CB55C8, 0x71087D8, 0x19C end
     GOLDEN.Map.LastRun, GOLDEN.Map.Works, GOLDEN.Map.SavedBuild = tonumber(Data.LastRun), Data.Works == true, type(Data.Build) == "string" and Data.Build or nil
     GOLDEN.Map.TweenSaved = Data.TweenElapsed ~= nil and Data.TweenList ~= nil and Data.TweenTime ~= nil
     GOLDEN.applyEngine()
@@ -3150,7 +3166,7 @@ function GOLDEN.renderStatus()
     local okClear, clear = pcall(RENDER.clearAddress)
     render, clear = okRender and render, okClear and clear
     if render and clear then return "Working", "Render switch and background found." end
-    if render then return "Partly working", "Background colour not found, it stays grey." end
+    if render then return "Partly working", "Background colour not found." end
     return "Not working", "Render switch not found."
 end
 
@@ -5809,8 +5825,13 @@ function FARM.statusText(now)
         return "Roblox is not focused"
     end
 
-    if FARM.RUN.Mapping then
-        return string.format("Mapping the room %d%%", math.floor(FARM.RUN.Mapping * 100))
+    local R = FARM.RUN
+    local wait = R.CoverCustomUntil and not R.CoverFilled and R.CoverCustomUntil - tick()
+    if wait and wait > 0 then
+        return string.format("No mapping found for this room. Using a custom method in %ds.", math.ceil(wait))
+    end
+    if R.Mapping then
+        return string.format("Mapping the room %d%%", math.floor(R.Mapping * 100))
     end
 
     local elapsed = now - FARM.armedAt
@@ -7685,13 +7706,21 @@ end
 
 function FARM.rootPosition(root)
     local R = FARM.RUN
+    local now = tick()
     local address = R.BodyAt
     if address and FARM.memoryMove() then
         local ok, x, y, z = pcall(function()
             return memory_read("float", address), memory_read("float", address + 4), memory_read("float", address + 8)
         end)
-        if ok and type(x) == "number" and x == x and y == y and z == z and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5 then
+        if ok and type(x) == "number" and x == x and y == y and z == z and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5 and not (x == 0 and y == 0 and z == 0) then
             return Vector3.new(x, y, z)
+        end
+        if ok and x == 0 and y == 0 and z == 0 then
+            R.BodyCheckAt = 0
+            if now - (R.ZeroNotedAt or 0) > 5 then
+                R.ZeroNotedAt = now
+                FARM.debugNote("own position read from memory was (0, 0, 0), using the property and checking the body again")
+            end
         end
     end
     return root.Position
@@ -9109,7 +9138,54 @@ function FARM.runHazards(now)
     for _, Roller in ipairs(map and FARM.runRollingPumpkins(map) or {}) do
         list[#list + 1] = Roller
     end
+    for _, Puddle in ipairs(map and FARM.runIchorPuddles(map) or {}) do
+        list[#list + 1] = Puddle
+    end
     R.sprouts = list
+    return list
+end
+
+function FARM.runIchorPuddles(map)
+    local R = FARM.RUN
+    local list = {}
+    local Puddles = map:FindFirstChild("Puddles")
+    local Children = Puddles and Puddles:GetChildren() or {}
+    local Fish = {}
+    for _, Model in ipairs(Children) do
+        local ok, position = pcall(function()
+            if not Model.Name:find("Barnaby") then return nil end
+            local Part = Model:FindFirstChildWhichIsA("BasePart")
+            return Part and Part.Position
+        end)
+        if ok and position then table.insert(Fish, position) end
+    end
+    if #Fish == 0 then return list end
+    for _, Model in ipairs(Children) do
+        pcall(function()
+            if Model.ClassName ~= "Model" or not Model.Name:find("Ichor") then return end
+            if Model:GetAttribute("Stage") == 0 or Model:GetAttribute("FadingOut") or Model:GetAttribute("ShrinkingOut") then return end
+            local Part = Model:FindFirstChild("ManualZone") or Model:FindFirstChild("Ichor_Puddle_S")
+            if not Part then return end
+            local frame, size = Part.CFrame, Part.Size
+            local found = false
+            for _, position in ipairs(Fish) do
+                local p = frame:PointToObjectSpace(position)
+                if math.abs(p.X) <= size.X / 2 and math.abs(p.Z) <= size.Z / 2 then found = true end
+            end
+            if not found then return end
+            local long, short, axis = size.X, size.Z, frame.RightVector
+            if size.Z > size.X then long, short, axis = size.Z, size.X, frame.LookVector end
+            axis = Vector3.new(axis.X, 0, axis.Z).Unit
+            local count = math.ceil(long / short) + 1
+            local step = long / count
+            local range = math.sqrt((step / 2) ^ 2 + (short / 2) ^ 2) + R.PuddleMargin
+            local centre = Part.Position
+            local key = FARM.runKey(Model) or tostring(centre)
+            for i = 1, count do
+                list[#list + 1] = {position = centre + axis * (step * (i - 0.5) - long / 2), range = range, Puddle = key}
+            end
+        end)
+    end
     return list
 end
 
@@ -9157,12 +9233,12 @@ function FARM.runRollingPumpkins(map)
     return list
 end
 
-function FARM.runHazardNear(point, now, extra)
+function FARM.runHazardNear(point, now, extra, skipPuddles)
     local best, bestDistance
     for _, hazard in ipairs(FARM.runHazards(now)) do
         local position = hazard.position
         local d = Vector3.new(point.X - position.X, 0, point.Z - position.Z).Magnitude
-        if d <= hazard.range + (extra or 0) and (not bestDistance or d < bestDistance) then
+        if not (skipPuddles and hazard.Puddle) and d <= hazard.range + (extra or 0) and (not bestDistance or d < bestDistance) then
             best, bestDistance = position, d
         end
     end
@@ -9292,7 +9368,7 @@ function FARM.runBlotMachine(machine, root, now)
         return machine.stand.Position
     end)
     local eye = ok and stand and (stand + Vector3.new(0, R.STAND_Y, 0)) or nil
-    machine.blotNear = (eye and (FARM.runHazardNear(stand, now) ~= nil or FARM.runBlotHandNear(eye, root) or FARM.runRazzleSees(eye))) or false
+    machine.blotNear = (eye and (FARM.runHazardNear(stand, now, nil, true) ~= nil or FARM.runBlotHandNear(eye, root) or FARM.runRazzleSees(eye))) or false
     return machine.blotNear
 end
 
@@ -9874,8 +9950,12 @@ function FARM.runSteer(root, direction, now, goal)
             local inside = goal and FARM.flatDistance(goal, FARM.runHandThreat(Spot, goal).Position) <= R.BLOT_HAND_MARGIN + aura
             if not inside then table.insert(Threats, FARM.runHandThreat(Spot, p)) end
         end
+        local Inside = {}
         for _, Hazard in ipairs(Hazards) do
-            if not (goal and FARM.flatDistance(goal, Hazard.position) <= Hazard.range + aura) then table.insert(Threats, {Position = Hazard.position, Kill = Hazard.range, Name = "Hazard"}) end
+            if Hazard.Puddle and goal and FARM.flatDistance(goal, Hazard.position) <= Hazard.range + aura then Inside[Hazard.Puddle] = true end
+        end
+        for _, Hazard in ipairs(Hazards) do
+            if not (Inside[Hazard.Puddle or false] or goal and FARM.flatDistance(goal, Hazard.position) <= Hazard.range + aura) then table.insert(Threats, {Position = Hazard.position, Kill = Hazard.range, Name = "Hazard"}) end
         end
     end
     for _, Threat in ipairs(Threats) do
@@ -9934,23 +10014,28 @@ function FARM.partShape(Item)
 end
 
 function FARM.coverEntry(Item)
-    local R = FARM.RUN
     local shape = FARM.partShape(Item)
+    if shape and shape ~= FARM.RUN.ShapeBlock then return nil end
+    local Entry = FARM.coverEntryData(Item.CFrame, Item.Size, shape, Item.Name)
+    if Entry then Entry.Part = Item end
+    return Entry
+end
+
+function FARM.coverEntryData(cf, size, shape, name)
+    local R = FARM.RUN
     if shape and shape ~= R.ShapeBlock then return nil end
-    local size = Item.Size
     local smallest = R.CoverMargin * 2
     if size.X < smallest or size.Y < smallest or size.Z < smallest then return nil end
     local largest = R.CoverMaxSize
     if not (size.X <= largest and size.Y <= largest and size.Z <= largest) then
         if not R.CoverHugeNoted then
             R.CoverHugeNoted = true
-            FARM.debugNote(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(Item.Name), size.X, size.Y, size.Z))
-            FARM.trace(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(Item.Name), size.X, size.Y, size.Z), true)
+            FARM.debugNote(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(name), size.X, size.Y, size.Z))
+            FARM.trace(string.format("cover skipped an oversized part %s (%.0f, %.0f, %.0f)", tostring(name), size.X, size.Y, size.Z), true)
         end
         return nil
     end
-    local cf = Item.CFrame
-    local origin = Item.Position
+    local origin = cf.Position
     local far = R.CoverMaxDistance
     if not (math.abs(origin.X) <= far and math.abs(origin.Y) <= far and math.abs(origin.Z) <= far) then return nil end
     local axisX = cf.RightVector
@@ -9958,7 +10043,6 @@ function FARM.coverEntry(Item)
     local axisZ = -cf.LookVector
     if math.max(math.abs(axisX.Y), math.abs(axisY.Y), math.abs(axisZ.Y)) < R.CoverUpright then return nil end
     return {
-        Part = Item,
         Ox = origin.X, Oy = origin.Y, Oz = origin.Z,
         Xx = axisX.X, Xy = axisX.Y, Xz = axisX.Z,
         Yx = axisY.X, Yy = axisY.Y, Yz = axisY.Z,
@@ -9994,25 +10078,407 @@ function FARM.coverCount(Room)
     return count
 end
 
-function FARM.coverFill(Room)
+function FARM.coverReset()
     local R = FARM.RUN
     R.CoverParts = {}
     R.CoverCells = {}
     R.CoverLevels = {}
+    R.CoverFamilies = {}
     R.CoverHeights = nil
     R.CoverPreloaded = nil
     R.CoverQueue = {}
     R.CoverIndex = 1
+    R.CoverFilled = true
+    R.CoverBuiltCount = R.CoverCount
+    R.CoverBakeMissed = 0
+    R.CoverBakeMatched = 0
+    R.CoverBakeUnknown = 0
+    R.CoverBakeRoom = nil
+    R.CoverBakeLevels = {}
+end
+
+function FARM.coverQueueLive(Root)
+    local Queue = FARM.RUN.CoverQueue
+    if Root.ClassName == "Part" then table.insert(Queue, Root) end
+    for _, Descendant in ipairs(Root:GetDescendants()) do
+        table.insert(Queue, Descendant)
+    end
+end
+
+function FARM.coverFill(Room)
+    local R = FARM.RUN
+    FARM.coverReset()
     for _, Child in ipairs(Room:GetChildren()) do
-        if not R.CoverSkip[Child.Name] then
-            if Child.ClassName == "Part" then table.insert(R.CoverQueue, Child) end
-            for _, Descendant in ipairs(Child:GetDescendants()) do
-                table.insert(R.CoverQueue, Descendant)
+        if not R.CoverSkip[Child.Name] then table.insert(R.CoverQueue, {Task = true, Live = Child}) end
+    end
+end
+
+FARM.Mapping = {}
+
+function FARM.coverBake(name)
+    local R = FARM.RUN
+    local Cache = R.CoverBakeCache
+    if Cache and Cache.Name == name then return Cache.Data or nil end
+    if not FARM.mappingUsable() then
+        R.CoverBakeCache = {Name = name, Data = false}
+        local version = FARM.mappingVersion()
+        FARM.debugNote(version and string.format("pre-mapped rooms are version %d, this script needs %d or newer, mapping %s live", version, R.CoverMappingMinVersion, tostring(name)) or "no pre-mapped rooms downloaded, mapping " .. tostring(name) .. " live")
+        return nil
+    end
+    local path = R.CoverMappingFolder .. "/" .. tostring(name) .. ".json"
+    local started = os.clock()
+    local ok, Data = pcall(function()
+        if not isfile(path) then return nil end
+        return HttpService:JSONDecode(readfile(path))
+    end)
+    Data = ok and type(Data) == "table" and type(Data.Static) == "table" and Data or false
+    R.CoverBakeCache = {Name = name, Data = Data}
+    FARM.debugNote(Data and string.format("pre-mapped room %s loaded in %.0f ms", tostring(name), (os.clock() - started) * 1000) or "no pre-mapped file for " .. tostring(name))
+    return Data or nil
+end
+
+function FARM.mappingVersion()
+    local Mapping = FARM.Mapping
+    if Mapping.Version == nil then
+        local ok, text = pcall(function()
+            local path = FARM.RUN.CoverMappingFolder .. "/version.txt"
+            return isfile(path) and readfile(path) or nil
+        end)
+        Mapping.Version = ok and tonumber(text) or false
+    end
+    return Mapping.Version or nil
+end
+
+function FARM.mappingUsable()
+    local version = FARM.mappingVersion()
+    return version ~= nil and version >= FARM.RUN.CoverMappingMinVersion
+end
+
+function FARM.mappingEnsure()
+    local R = FARM.RUN
+    local Mapping = FARM.Mapping
+    if not SETTINGS.farmUseMappings or Mapping.Busy or FARM.mappingUsable() then return end
+    local now = tick()
+    if now < (Mapping.RetryAt or 0) then return end
+    Mapping.RetryAt = now + R.CoverMappingRetry
+    FARM.mappingDownload(true)
+end
+
+function FARM.mappingStatus(text)
+    local Label = FARM.Mapping.Label
+    if Label then pcall(Label.SetText, Label, text) end
+end
+
+function FARM.mappingShowVersion()
+    local version = FARM.mappingVersion()
+    local minimum = FARM.RUN.CoverMappingMinVersion
+    if not version then
+        FARM.mappingStatus("Version: none")
+    elseif version < minimum then
+        FARM.mappingStatus(string.format("Version: %d (needs %d, updating)", version, minimum))
+    else
+        FARM.mappingStatus("Version: " .. version)
+    end
+end
+
+function FARM.mappingSplit(text, minimum)
+    local R = FARM.RUN
+    local head = text:sub(1, 300)
+    local format = tonumber(head:match('"Format"%s*:%s*(%d+)'))
+    local version = tonumber(head:match('"Version"%s*:%s*(%d+)'))
+    if format ~= R.CoverMappingFormat or not version then return nil, "unknown file format" end
+    if minimum and version < minimum then return nil, string.format("version %d is older than %d", version, minimum) end
+    local stop = text:find("\n  }\n}%s*$")
+    if not stop then return nil, "file is cut off" end
+    local Rooms = {}
+    local at = 1
+    while true do
+        local first, last, name = text:find('\n    "([%w_]+)": {', at)
+        if not first or first > stop then break end
+        table.insert(Rooms, {Name = name, First = first, Start = last})
+        at = last
+    end
+    if #Rooms == 0 then return nil, "no rooms in the file" end
+    UI.folder(R.CoverMappingFolder)
+    local Saved = {}
+    for i, Room in ipairs(Rooms) do
+        local finish = (Rooms[i + 1] and Rooms[i + 1].First or stop) - 1
+        while finish > Room.Start do
+            local char = text:sub(finish, finish)
+            if char == "," or char == " " or char == "\n" or char == "\r" then finish -= 1 else break end
+        end
+        writefile(R.CoverMappingFolder .. "/" .. Room.Name .. ".json", text:sub(Room.Start, finish))
+        Saved[Room.Name .. ".json"] = true
+        FARM.mappingStatus(string.format("Saving rooms %d/%d", i, #Rooms))
+        if coroutine.isyieldable() then task.wait() end
+    end
+    pcall(function()
+        for _, path in ipairs(listfiles(R.CoverMappingFolder)) do
+            local file = path:match("([^/\\]+)$")
+            if file and file:match("%.json$") and not Saved[file] then delfile(path) end
+        end
+    end)
+    writefile(R.CoverMappingFolder .. "/version.txt", tostring(version))
+    FARM.Mapping.Version = version
+    return version, #Rooms
+end
+
+function FARM.mappingDownload(auto)
+    local R = FARM.RUN
+    local Mapping = FARM.Mapping
+    if Mapping.Busy then return end
+    Mapping.Busy = true
+    task.spawn(function()
+        FARM.mappingStatus("Downloading from GitHub...")
+        local minimum = auto and R.CoverMappingMinVersion or nil
+        local ok, body = pcall(httpget, R.CoverMappingUrl .. "?v=" .. tostring(UI.clock()))
+        local source = "GitHub"
+        local version, result
+        if ok and type(body) == "string" and #body > 0 then
+            version, result = FARM.mappingSplit(body, minimum)
+        end
+        if not version then
+            FARM.debugNote("pre-mapped rooms: GitHub download failed (" .. tostring(result or body) .. ")")
+            local okLocal, Bundle = pcall(function()
+                return isfile(R.CoverMappingBundle) and readfile(R.CoverMappingBundle) or nil
+            end)
+            if okLocal and type(Bundle) == "string" then
+                source = R.CoverMappingBundle
+                version, result = FARM.mappingSplit(Bundle, minimum)
+            end
+        end
+        Mapping.Busy = false
+        if version then
+            R.CoverBakeCache = nil
+            R.CoverMap = nil
+            FARM.debugNote(string.format("pre-mapped rooms version %d saved from %s: %d rooms", version, source, result))
+            FARM.mappingShowVersion()
+            if not auto then VantaUI:Notify("Pre-mapped rooms", string.format("Version %d, %d rooms", version, result), 4) end
+        else
+            if FARM.mappingVersion() then FARM.mappingShowVersion() else FARM.mappingStatus("Download failed") end
+            if not FARM.mappingUsable() then FARM.debugNote(string.format("pre-mapped rooms still below version %d, retrying in %d s", R.CoverMappingMinVersion, R.CoverMappingRetry)) end
+            if not auto then VantaUI:Notify("Pre-mapped rooms", "Download failed: " .. tostring(result or "no response"), 5) end
+        end
+    end)
+end
+
+function FARM.coverBakeNodes(Root, path)
+    local Found = {Root}
+    for name in string.gmatch(path, "[^/]+") do
+        local Next = {}
+        for _, Node in ipairs(Found) do
+            for _, Child in ipairs(Node:GetChildren()) do
+                if Child.Name == name then table.insert(Next, Child) end
+            end
+        end
+        Found = Next
+    end
+    local Nodes = {}
+    for _, Node in ipairs(Found) do
+        local ok, size = pcall(function()
+            return Node.Size
+        end)
+        if ok and size then table.insert(Nodes, {Part = Node, Size = size}) end
+    end
+    return Nodes
+end
+
+function FARM.coverBakeFits(Node, Key)
+    local Size = type(Key) == "table" and Key.Size
+    if type(Size) ~= "table" then return false end
+    return math.abs(Node.Size.X - Size[1]) < 0.05 and math.abs(Node.Size.Y - Size[2]) < 0.05 and math.abs(Node.Size.Z - Size[3]) < 0.05
+end
+
+function FARM.coverBakeKey(Root, Key)
+    if type(Key) ~= "table" then return nil end
+    for _, Node in ipairs(FARM.coverBakeNodes(Root, tostring(Key.Path))) do
+        if FARM.coverBakeFits(Node, Key) then return Node.Part end
+    end
+    return nil
+end
+
+function FARM.coverBakeMatch(Prop)
+    local R = FARM.RUN
+    local List = R.CoverBakePool[Prop.Name .. "|" .. #Prop:GetChildren()]
+    local Live = {}
+    for i, Group in ipairs(List or {}) do
+        local Key = Group.Key
+        local path = tostring(Key.Path)
+        local Match
+        if #Group.Entries == 0 and path == "" and Key.Size[1] == 0 then
+            Match = true
+        else
+            Live[path] = Live[path] or FARM.coverBakeNodes(Prop, path)
+            for _, Node in ipairs(Live[path]) do
+                if FARM.coverBakeFits(Node, Key) then
+                    Match = Node.Part
+                    break
+                end
+            end
+        end
+        if Match then
+            table.remove(List, i)
+            R.CoverBakeMatched += 1
+            if #Group.Entries > 0 then FARM.coverBakeGroup({Group = Group, Root = Prop, Key = Match}) end
+            return
+        end
+    end
+    R.CoverBakeUnknown += 1
+    FARM.coverQueueLive(Prop)
+end
+
+function FARM.coverBakeGroup(Task)
+    local R = FARM.RUN
+    local Group, Root = Task.Group, Task.Root
+    local Key = Task.Key or FARM.coverBakeKey(Root, Group.Key)
+    if not Key then
+        R.CoverBakeMissed += 1
+        FARM.coverQueueLive(Root)
+        return
+    end
+    local kx, ky, kz, a00, a01, a02, a10, a11, a12, a20, a21, a22 = Key.CFrame:GetComponents()
+    local Rows = Group.Parts
+    local function world(index)
+        local Row = Rows[index]
+        local x, y, z = Row[1], Row[2], Row[3]
+        local b00, b01, b02, b10, b11, b12, b20, b21, b22 = Row[4], Row[5], Row[6], Row[7], Row[8], Row[9], Row[10], Row[11], Row[12]
+        local cf = CFrame.new(
+            kx + a00 * x + a01 * y + a02 * z,
+            ky + a10 * x + a11 * y + a12 * z,
+            kz + a20 * x + a21 * y + a22 * z,
+            a00 * b00 + a01 * b10 + a02 * b20, a00 * b01 + a01 * b11 + a02 * b21, a00 * b02 + a01 * b12 + a02 * b22,
+            a10 * b00 + a11 * b10 + a12 * b20, a10 * b01 + a11 * b11 + a12 * b21, a10 * b02 + a11 * b12 + a12 * b22,
+            a20 * b00 + a21 * b10 + a22 * b20, a20 * b01 + a21 * b11 + a22 * b21, a20 * b02 + a21 * b12 + a22 * b22
+        )
+        return cf, Vector3.new(Row[13], Row[14], Row[15]), Row[16] >= 0 and Row[16] or nil
+    end
+    local Families, Made = {}, {}
+    local from, to = Task.From or 1, Task.To or #Group.Entries
+    for i = from, to do
+        local Pair = Group.Entries[i]
+        local cf, size, shape = world(Pair[1])
+        local Entry = FARM.coverEntryData(cf, size, shape, Root.Name)
+        if Entry then
+            Entry.Index = i
+            Made[i] = Entry
+            for _, Level in pairs(R.CoverBakeLevels) do Level.Done[Entry] = true end
+            local Visuals = Families[Pair[2]]
+            if not Visuals then
+                Visuals = {}
+                for _, index in ipairs(Group.Families[Pair[2]] or {}) do
+                    local visualCf, visualSize, visualShape = world(index)
+                    FARM.coverVisualData(visualCf, visualSize, visualShape, Visuals)
+                end
+                Families[Pair[2]] = Visuals
+            end
+            Entry.Visuals = Visuals
+            table.insert(R.CoverParts, Entry)
+            FARM.coverIndex(Entry)
+        end
+    end
+    for _, Row in ipairs(Group.Zones or {}) do
+        local Entry, Level = Made[Row[2]], R.CoverBakeLevels[Row[1]]
+        if Entry and Level then
+            local x, y, z = Row[3], Row[4], Row[5]
+            local ax = a00 * Row[6] + a01 * Row[7] + a02 * Row[8]
+            local az = a20 * Row[6] + a21 * Row[7] + a22 * Row[8]
+            local bx = a00 * Row[9] + a01 * Row[10] + a02 * Row[11]
+            local bz = a20 * Row[9] + a21 * Row[10] + a22 * Row[11]
+            local lengthA, lengthB = math.sqrt(ax * ax + az * az), math.sqrt(bx * bx + bz * bz)
+            local Rects = {}
+            for k = 14, #Row - 3, 4 do table.insert(Rects, {Row[k], Row[k + 1], Row[k + 2], Row[k + 3]}) end
+            if lengthA > 0 and lengthB > 0 and #Rects > 0 then
+                FARM.coverAddZone(Level, {
+                    Entry = Entry,
+                    X = kx + a00 * x + a01 * y + a02 * z,
+                    Z = kz + a20 * x + a21 * y + a22 * z,
+                    Ax = ax / lengthA, Az = az / lengthA,
+                    Bx = bx / lengthB, Bz = bz / lengthB,
+                    Ha = Row[12], Hb = Row[13],
+                    Rects = Rects,
+                })
             end
         end
     end
-    R.CoverFilled = true
-    R.CoverBuiltCount = R.CoverCount
+end
+
+function FARM.coverBaked(Room)
+    local R = FARM.RUN
+    if not SETTINGS.farmUseMappings then return false end
+    local Bake = FARM.coverBake(Room.Name)
+    if not Bake then return false end
+    local Key = FARM.coverBakeKey(Room, Bake.Static.Key)
+    if not Key then
+        FARM.debugNote(string.format("cover bake for %s found no anchor, mapping live", Room.Name))
+        return false
+    end
+    FARM.coverReset()
+    local keyY = Key.CFrame.Position.Y
+    for i, height in ipairs(Bake.Heights or {}) do
+        local Level = {Y = keyY + height, Zones = {}, Cells = {}, Index = 1, Done = {}}
+        table.insert(R.CoverLevels, Level)
+        R.CoverBakeLevels[i] = Level
+    end
+    local count = #Bake.Static.Entries
+    for from = 1, count, R.CoverBakeChunk do
+        table.insert(R.CoverQueue, {Task = true, Group = Bake.Static, Root = Room, Key = Key, From = from, To = math.min(from + R.CoverBakeChunk - 1, count)})
+    end
+    local Known = {}
+    for _, name in ipairs(Bake.Static.Folders or {}) do Known[name] = true end
+    R.CoverBakePool = {}
+    for _, Group in ipairs(Bake.Props or {}) do
+        local key = tostring(Group.Name) .. "|" .. tostring(Group.Children)
+        R.CoverBakePool[key] = R.CoverBakePool[key] or {}
+        table.insert(R.CoverBakePool[key], Group)
+    end
+    local props, folders = 0, 0
+    for _, Child in ipairs(Room:GetChildren()) do
+        if not R.CoverSkip[Child.Name] then
+            if Child.Name == "FreeArea" then
+                for _, Prop in ipairs(Child:GetChildren()) do
+                    props += 1
+                    table.insert(R.CoverQueue, {Task = true, Match = Prop})
+                end
+            elseif not Known[Child.Name] then
+                folders += 1
+                table.insert(R.CoverQueue, {Task = true, Live = Child})
+            end
+        end
+    end
+    R.CoverBakeRoom = Room.Name
+    FARM.debugNote(string.format("cover bake %s: matching %d props, %d new folders mapped live", Room.Name, props, folders))
+    return true
+end
+
+function FARM.coverUnmapped(Room)
+    if not SETTINGS.farmUseMappings or FARM.Mapping.Busy then return false end
+    return FARM.coverBake(Room.Name) == nil
+end
+
+function FARM.coverBakeReady(Room)
+    if not SETTINGS.farmUseMappings then return false end
+    local Bake = FARM.coverBake(Room.Name)
+    if not Bake then return false end
+    local FreeArea = Room:FindFirstChild("FreeArea")
+    if not FreeArea or #FreeArea:GetChildren() < #(Bake.Props or {}) * FARM.RUN.CoverBakeLoaded then return false end
+    return FARM.coverBakeKey(Room, Bake.Static.Key) ~= nil
+end
+
+function FARM.galaCheck(Room, now)
+    local R = FARM.RUN
+    if R.GalaFloor or now < (R.GalaCheckAt or 0) or now - R.CoverStart > R.GalaWatchTime then return end
+    R.GalaCheckAt = now + R.GalaCheckEvery
+    local ok, decor = pcall(function()
+        return Room:FindFirstChild("HauntedGalaDecor") ~= nil
+    end)
+    if ok and decor then
+        FARM.debugNote(string.format("gala decor appeared %.1f s after the room, switching to normal position writes", now - R.CoverStart))
+        FARM.floorNote(Room)
+    end
+end
+
+function FARM.coverBuild(Room)
+    if not FARM.coverBaked(Room) then FARM.coverFill(Room) end
 end
 
 function FARM.runCoverCache(Room)
@@ -10029,13 +10495,16 @@ function FARM.runCoverCache(Room)
         R.CoverParts = {}
         R.CoverCells = {}
         R.CoverLevels = {}
+        R.CoverFamilies = {}
         R.CoverHeights = nil
         R.CoverPreloaded = nil
         R.CoverQueue = {}
         R.CoverIndex = 1
         R.CoverFilled = false
         R.CoverStart, R.CoverCheckAt, R.CoverCount, R.CoverStable = now, 0, -1, 0
+        R.GalaFloor, R.GalaCheckAt = false, 0
     end
+    FARM.galaCheck(Room, now)
     if now >= R.CoverCheckAt and now - R.CoverStart < R.CoverWatchTime then
         R.CoverCheckAt = now + (R.CoverFilled and R.CoverWatchEvery or R.CoverSettleEvery)
         FARM.crumb("cover count")
@@ -10046,36 +10515,59 @@ function FARM.runCoverCache(Room)
             R.CoverCount = count
             if R.CoverFilled and count - R.CoverBuiltCount >= R.CoverGrowth then
                 FARM.debugNote(string.format("room grew from %d to %d instances, remapping cover", R.CoverBuiltCount, count))
-                FARM.coverFill(Room)
+                FARM.coverBuild(Room)
             end
         end
     end
     if not R.CoverFilled then
-        if R.CoverStable < R.CoverSettleChecks and now - R.CoverStart < R.CoverWatchTime then return end
-        FARM.debugNote(string.format("room settled at %d instances after %.1f s", R.CoverCount, now - R.CoverStart))
+        R.CoverCustomUntil = FARM.coverUnmapped(Room) and R.CoverStart + R.CoverCustomDelay or nil
+        if R.CoverCustomUntil and now < R.CoverCustomUntil then return end
+        local waiting = R.CoverStable < R.CoverSettleChecks and now - R.CoverStart < R.CoverWatchTime
+        if waiting then
+            if R.CoverCount < 0 or now < (R.CoverBakeTryAt or 0) then return end
+            R.CoverBakeTryAt = now + R.CoverBakeTryEvery
+            if not FARM.coverBakeReady(Room) then return end
+        end
+        FARM.debugNote(waiting and string.format("room %s is pre-mapped, mapping without waiting (%d instances after %.1f s)", Room.Name, R.CoverCount, now - R.CoverStart) or string.format("room settled at %d instances after %.1f s", R.CoverCount, now - R.CoverStart))
         FARM.floorNote(Room)
         FARM.crumb("cover fill")
-        FARM.coverFill(Room)
+        FARM.coverBuild(Room)
         FARM.crumb("cover fill done")
     end
     local Queue = R.CoverQueue
     if not Queue then return end
-    local last = math.min(R.CoverIndex + R.CoverBatch - 1, #Queue)
-    FARM.crumb("cover batch " .. R.CoverIndex .. " to " .. last .. " of " .. #Queue)
-    for i = R.CoverIndex, last do
-        local Item = Queue[i]
-        pcall(function()
-            if Item.ClassName ~= "Part" or not Item.CanCollide or R.CoverSkipNames[Item.Name] then return end
-            local Entry = FARM.coverEntry(Item)
-            if not Entry then return end
-            table.insert(R.CoverParts, Entry)
-            FARM.coverIndex(Entry)
-        end)
+    FARM.crumb("cover batch from " .. R.CoverIndex .. " of " .. #Queue)
+    local started, done = os.clock(), 0
+    while R.CoverIndex <= #Queue and done < R.CoverBatch and os.clock() - started < R.CoverBatchBudget do
+        local Item = Queue[R.CoverIndex]
+        R.CoverIndex += 1
+        done += 1
+        if type(Item) == "table" and rawget(Item, "Task") then
+            if Item.Live then
+                pcall(FARM.coverQueueLive, Item.Live)
+            elseif Item.Match then
+                pcall(FARM.coverBakeMatch, Item.Match)
+            else
+                pcall(FARM.coverBakeGroup, Item)
+            end
+        else
+            pcall(function()
+                if Item.ClassName ~= "Part" or not Item.CanCollide or R.CoverSkipNames[Item.Name] then return end
+                local Entry = FARM.coverEntry(Item)
+                if not Entry then return end
+                table.insert(R.CoverParts, Entry)
+                FARM.coverIndex(Entry)
+                FARM.coverVisuals(Entry)
+            end)
+        end
     end
-    R.CoverIndex = last + 1
     if R.CoverIndex > #Queue then
         R.CoverQueue = nil
-        FARM.debugNote(string.format("cover parts ready: %d", #R.CoverParts))
+        if R.CoverBakeRoom then
+            FARM.debugNote(string.format("cover parts ready: %d from the %s bake (%.1f s after the room appeared; props %d baked, %d mapped live; %d groups missed their key)", #R.CoverParts, R.CoverBakeRoom, tick() - R.CoverStart, R.CoverBakeMatched, R.CoverBakeUnknown, R.CoverBakeMissed))
+        else
+            FARM.debugNote(string.format("cover parts ready: %d mapped live (%.1f s after the room appeared)", #R.CoverParts, tick() - R.CoverStart))
+        end
     end
 end
 
@@ -10145,9 +10637,12 @@ end
 function FARM.coverVisual(Item, Visuals)
     local R = FARM.RUN
     if not R.HideClasses[Item.ClassName] or R.CoverSkipNames[Item.Name] or FARM.partTransparency(Item) >= 1 then return end
-    local size = Item.Size
-    local cf = Item.CFrame
-    local origin = Item.Position
+    FARM.coverVisualData(Item.CFrame, Item.Size, FARM.partShape(Item), Visuals)
+end
+
+function FARM.coverVisualData(cf, size, shape, Visuals)
+    local R = FARM.RUN
+    local origin = cf.Position
     local Axes = {
         cf.RightVector,
         cf.UpVector,
@@ -10159,7 +10654,6 @@ function FARM.coverVisual(Item, Visuals)
         if math.abs(Axes[i].Y) > math.abs(Axes[up].Y) then up = i end
     end
     if math.abs(Axes[up].Y) < R.CoverUpright then return end
-    local shape = FARM.partShape(Item)
     if shape and shape ~= R.ShapeBlock and not (shape == R.ShapeCylinder and up == 1) then return end
     local a, b = up == 1 and 2 or 1, up == 3 and 2 or 3
     table.insert(Visuals, {
@@ -10176,14 +10670,25 @@ function FARM.coverVisuals(Entry)
     local R = FARM.RUN
     local Visuals = {}
     local Item = Entry.Part
-    pcall(FARM.coverVisual, Item, Visuals)
+    if not Item then
+        Entry.Visuals = Visuals
+        return Visuals
+    end
     local Parent = Item.Parent
+    local key = Parent and FARM.runKey(Parent)
+    local family = key ~= nil and key ~= R.CoverMap and #Parent:GetChildren() <= R.HideFamily
+    if family and R.CoverFamilies and R.CoverFamilies[key] then
+        Entry.Visuals = R.CoverFamilies[key]
+        return Entry.Visuals
+    end
+    pcall(FARM.coverVisual, Item, Visuals)
     if Parent then
         pcall(FARM.coverVisual, Parent, Visuals)
-        if #Parent:GetChildren() <= R.HideFamily then
+        if family then
             for _, Other in ipairs(Parent:GetDescendants()) do
                 if Other ~= Item then pcall(FARM.coverVisual, Other, Visuals) end
             end
+            if R.CoverFamilies then R.CoverFamilies[key] = Visuals end
         end
     end
     Entry.Visuals = Visuals
@@ -10266,10 +10771,15 @@ function FARM.coverZone(Level, Entry)
         if #Next == 0 then return end
         Rects = Next
     end
-    local Zone = {Entry = Entry, X = ox, Z = oz, Ax = ax, Az = az, Bx = bx, Bz = bz, Ha = First.H, Hb = Second.H, Rects = Rects}
+    FARM.coverAddZone(Level, {Entry = Entry, X = ox, Z = oz, Ax = ax, Az = az, Bx = bx, Bz = bz, Ha = First.H, Hb = Second.H, Rects = Rects})
+end
+
+function FARM.coverAddZone(Level, Zone)
+    local R = FARM.RUN
     table.insert(Level.Zones, Zone)
     local cell = R.CoverCell
-    local reach = math.sqrt(First.H * First.H + Second.H * Second.H)
+    local ox, oz = Zone.X, Zone.Z
+    local reach = math.sqrt(Zone.Ha * Zone.Ha + Zone.Hb * Zone.Hb)
     for cx = math.floor((ox - reach) / cell), math.floor((ox + reach) / cell) do
         for cz = math.floor((oz - reach) / cell), math.floor((oz + reach) / cell) do
             local key = cx .. ":" .. cz
@@ -10378,6 +10888,7 @@ end
 
 function FARM.coverPreload()
     local R = FARM.RUN
+    FARM.mappingEnsure()
     local Room = UI.map()
     if not Room then
         R.Mapping = nil
@@ -11641,7 +12152,7 @@ function FARM.runUpdate(now)
     end
 
     if not hiding and R.phase ~= "flee" and R.phase ~= "sacrifice" then
-        local tendril = FARM.runHazardNear(root.Position, now)
+        local tendril = FARM.runHazardNear(root.Position, now, nil, R.current ~= nil or R.collect ~= nil and R.collect.kind ~= "rodger")
         if tendril then
             FARM.runRmb(false)
             if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
@@ -11653,7 +12164,7 @@ function FARM.runUpdate(now)
             R.research = nil
             R.fleeY = root.Position.Y
             R.phase = "flee"
-            FARM.setStatus("Sprout tendril or active Rodger near, moving away")
+            FARM.setStatus("Hazard near (tendril, Rodger, pumpkin or ichor puddle), moving away")
             return
         end
     end
@@ -11961,7 +12472,7 @@ function FARM.runUpdate(now)
         end
 
         local grab = FARM.runCollectTarget(root, character)
-        if grab and FARM.runHazardNear(grab.prompt.Position, now) then
+        if grab and FARM.runHazardNear(grab.prompt.Position, now, nil, grab.kind ~= "rodger") then
             grab = nil
         end
         if grab then
@@ -12160,6 +12671,14 @@ function FARM.runUpdate(now)
             end
         end
         if R.Path and tick() - R.PathAt <= R.PathKeep and (FARM.flatDistance(real, R.Path) > R.MovedByGame or math.abs(real.Y - R.Path.Y) > R.MovedByGame) then
+            local okCheck, check = pcall(function()
+                return root.Position
+            end)
+            if okCheck and check and FARM.flatDistance(check, R.Path) <= R.MovedByGame and math.abs(check.Y - R.Path.Y) <= R.MovedByGame then
+                FARM.debugNote(string.format("ignored a bad position read (%.1f, %.1f, %.1f), the part is still at (%.1f, %.1f, %.1f)", real.X, real.Y, real.Z, check.X, check.Y, check.Z))
+                R.BodyCheckAt = 0
+                return
+            end
             FARM.debugNote(string.format("moved by the game (%.1f studs), restarting travel from (%.1f, %.1f, %.1f)", (real - R.Path).Magnitude, real.X, real.Y, real.Z))
             R.Path = nil
             FARM.runTravelTo(root, R.goalPos, R.goalY)
@@ -13817,6 +14336,15 @@ function RENDER.update(now)
     if not VantaUI.MemoryAccess() then return end
     local ok, done = pcall(RENDER.set, not SETTINGS.disable3d)
     if ok and done then RENDER.Applied = SETTINGS.disable3d end
+    local okClear, clear = pcall(RENDER.clearAddress)
+    if SETTINGS.disable3d and not (okClear and clear) and not RENDER.Rescanned then
+        RENDER.Rescanned = true
+        task.spawn(function()
+            local okMap, found = pcall(GOLDEN.mapEngine)
+            if okMap and found then GOLDEN.applyEngine() end
+        end)
+        return
+    end
     pcall(RENDER.setClear, SETTINGS.disable3d)
 end
 
@@ -13971,6 +14499,19 @@ local function buildMenu()
     toggle(Farm, "dw_farm_auto_resume", "Resume after teleport", "farmAutoResume")
     toggle(Farm, "dw_farm_hide_teleport", "Hide the interface post-teleporting", "farmHideOnTeleport")
     slider(Farm, "dw_farm_startup_time", "Startup Time", "farmStartupTime", 3, FARM.BANNER.STARTUP, 0, "s")
+
+    local MappingSection = FarmTab:AddSection("Mapping", "Right")
+    toggle(MappingSection, "dw_farm_use_mappings", "Use pre-mapped rooms", "farmUseMappings"):OnChanged(function(value)
+        FARM.RUN.CoverMap = nil
+        FARM.RUN.CoverBakeCache = nil
+        if value then FARM.mappingEnsure() end
+    end)
+    MappingSection:AddButton({Title = "Load pre-mapped rooms from Github", Callback = function()
+        FARM.mappingDownload(false)
+    end})
+    FARM.Mapping.Label = MappingSection:AddLabel("Version: none")
+    FARM.mappingShowVersion()
+    FARM.mappingEnsure()
 
     local FarmPlayers = FarmTab:AddSection("Players", "Left")
     toggle(FarmPlayers, "dw_farm_with_players", "Allow everyone (Ignore Whitelist)", "allowFarmWithPlayers", Color3.fromRGB(214, 84, 72))
