@@ -953,6 +953,7 @@ local FARM = {
         SPROUT_FLEE_MARGIN = 4,
         RollMargin = 8,
         PuddleMargin = 0.5,
+        PuddleRefresh = 0.25,
         SPROUT_RECHECK = 0.2,
         sproutAt = 0,
         sprouts = {},
@@ -9147,7 +9148,12 @@ end
 
 function FARM.runIchorPuddles(map)
     local R = FARM.RUN
+    local now = tick()
+    local key = FARM.runKey(map)
+    local Cache = R.PuddleCache
+    if Cache and Cache.Key == key and now - Cache.At < R.PuddleRefresh then return Cache.List end
     local list = {}
+    R.PuddleCache = {Key = key, At = now, List = list}
     local Puddles = map:FindFirstChild("Puddles")
     local Children = Puddles and Puddles:GetChildren() or {}
     local Fish = {}
@@ -9163,16 +9169,19 @@ function FARM.runIchorPuddles(map)
     for _, Model in ipairs(Children) do
         pcall(function()
             if Model.ClassName ~= "Model" or not Model.Name:find("Ichor") then return end
-            if Model:GetAttribute("Stage") == 0 or Model:GetAttribute("FadingOut") or Model:GetAttribute("ShrinkingOut") then return end
             local Part = Model:FindFirstChild("ManualZone") or Model:FindFirstChild("Ichor_Puddle_S")
             if not Part then return end
             local frame, size = Part.CFrame, Part.Size
+            local px, py, pz, r00, r01, r02, r10, r11, r12, r20, r21, r22 = frame:GetComponents()
             local found = false
             for _, position in ipairs(Fish) do
-                local p = frame:PointToObjectSpace(position)
-                if math.abs(p.X) <= size.X / 2 and math.abs(p.Z) <= size.Z / 2 then found = true end
+                local dx, dy, dz = position.X - px, position.Y - py, position.Z - pz
+                local x = r00 * dx + r10 * dy + r20 * dz
+                local z = r02 * dx + r12 * dy + r22 * dz
+                if math.abs(x) <= size.X / 2 and math.abs(z) <= size.Z / 2 then found = true end
             end
             if not found then return end
+            if Model:GetAttribute("Stage") == 0 or Model:GetAttribute("FadingOut") or Model:GetAttribute("ShrinkingOut") then return end
             local long, short, axis = size.X, size.Z, frame.RightVector
             if size.Z > size.X then long, short, axis = size.Z, size.X, frame.LookVector end
             axis = Vector3.new(axis.X, 0, axis.Z).Unit
