@@ -344,6 +344,6 @@ function Fire.fire(Prompt, Options)
     return true
 end
 
-_G.fireproximityprompt = function(Prompt, Options)
+_G.hookproximityprompt = function(Prompt, Options)
     return Fire.fire(Prompt, Options)
 end

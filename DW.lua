@@ -53,6 +53,7 @@ if not VantaUI then
     return
 end
 
+local NativeFireProximityPrompt = type(fireproximityprompt) == "function" and fireproximityprompt or nil
 local FireProximityPrompt = (function()
     local ok, source = pcall(readfile, "FireProximityPrompt.lua")
     if not (ok and type(source) == "string" and #source > 0) then ok, source = pcall(httpget, "https://raw.githubusercontent.com/VantaHacker/VantaH-Matcha/refs/heads/main/FireProximityPrompt.lua") end
@@ -3499,6 +3500,7 @@ function GOLDEN.barnabyStatus()
 end
 
 function GOLDEN.promptStatus()
+    if FARM.nativePrompt() then return "Working", "Hybrid Mode uses Matcha's fireproximityprompt." end
     local Fire = FireProximityPrompt
     if not Fire then return "Not working", "FireProximityPrompt.lua did not load." end
     if not SETTINGS.farmHookPrompts then return "Off", "" end
@@ -13591,7 +13593,7 @@ function FARM.runUpdate(now)
             target.wrongSince = nil
         end
 
-        if (target.kind == "quest" or target.kind == "door") and okPos and position then
+        if (target.kind == "quest" or target.kind == "door") and okPos and position and not FARM.nativePrompt() then
             FARM.runFace(camera, root, position)
         end
 
@@ -13704,7 +13706,7 @@ end
 
 function FARM.promptHookPrepare()
     local Fire = FireProximityPrompt
-    if not (SETTINGS.farmHookPrompts and Fire) or not VantaUI.MemoryAccess() or FARM.promptHookReady() then return end
+    if not (SETTINGS.farmHookPrompts and Fire) or FARM.nativePrompt() or not VantaUI.MemoryAccess() or FARM.promptHookReady() then return end
     if Fire.Preparing or tick() < (Fire.SetupAt or 0) or (Fire.SetupTries or 0) >= 3 then return end
     Fire.Preparing = true
     Fire.SetupTries = (Fire.SetupTries or 0) + 1
@@ -13733,9 +13735,29 @@ function FARM.promptHookPrepare()
     end)
 end
 
+function FARM.nativePrompt()
+    return HYBRID.on() and NativeFireProximityPrompt ~= nil
+end
+
+function FARM.fireNative(Part, Given)
+    local Prompt = Given or Part:FindFirstChild("ProximityPrompt")
+    if not Prompt then
+        for _, Child in ipairs(Part:GetChildren()) do
+            Prompt = Child:FindFirstChild("ProximityPrompt")
+            if Prompt then break end
+        end
+    end
+    if not Prompt then return false end
+    local ok, result = pcall(NativeFireProximityPrompt, Prompt)
+    FARM.debugNote(ok and result ~= false and "native fireproximityprompt fired " .. Part.Name or "native fireproximityprompt failed: " .. tostring(result))
+    return ok and result ~= false
+end
+
 function FARM.firePrompt(Part, Given)
+    if not Part then return false end
+    if FARM.nativePrompt() then return FARM.fireNative(Part, Given) end
     local Fire = FireProximityPrompt
-    if not (SETTINGS.farmHookPrompts and Fire and Part) or not VantaUI.MemoryAccess() then return false end
+    if not (SETTINGS.farmHookPrompts and Fire) or not VantaUI.MemoryAccess() then return false end
     if not FARM.promptHookReady() then
         FARM.promptHookPrepare()
         return false
@@ -14902,7 +14924,7 @@ local function buildMenu()
     toggle(ExperimentalFarm, "dw_farm_fake_walk", "Walk using memory", "farmFakeWalk", Color3.fromRGB(45, 200, 235))
     ExperimentalFarm:AddParagraph({Title = "", Content = "Walks without any inputs."})
     toggle(ExperimentalFarm, "dw_farm_hook_prompts", "Hook Proximity Prompts", "farmHookPrompts", Color3.fromRGB(45, 200, 235))
-    ExperimentalFarm:AddParagraph({Title = "", Content = "I'm unsure how reliable it is. Allows you to minimize Roblox."})
+    ExperimentalFarm:AddParagraph({Title = "", Content = "I'm unsure how reliable it is. Allows you to minimize Roblox. WILL NOT BE USED IF HYBRID MODE SUPPORT IS ENABLED!!!"})
 
     local ExperimentalAutomation = ExperimentalTab:AddSection("Automation", "Right")
     toggle(ExperimentalAutomation, "dw_always_golden", "Always hit Golden", "alwaysGolden", Color3.fromRGB(45, 200, 235))
