@@ -4,7 +4,7 @@ local plr = plrs.LocalPlayer
 local Fire = _G.FireProximityPrompt or {}
 _G.FireProximityPrompt = Fire
 
-Fire.Offsets = {Tag = 0, ValueTag = 12, StringTag = 6, FunctionTag = 8, StringLength = 20, StringText = 24, Proto = 0x18, Code = 0x28, CodeSize = 0xA8, Constants = 0x20, ConstantCount = 0xAC, PromptDistance = 0x118, PromptHold = 0x110, CameraRotation = 0xC8}
+Fire.Offsets = {Tag = 0, ValueTag = 12, StringTag = 6, FunctionTag = 8, StringLength = 20, StringText = 24, Proto = 0x18, Code = 0x28, CodeSize = 0xA8, Constants = 0x20, ConstantCount = 0xAC, PromptDistance = 0x110, PromptHold = 0x108, CameraRotation = 0xC8}
 Fire.Code = {Index = 22, Move = 23, Shape = {[21] = {A = 5}, [22] = {A = 6, B = 1, C = 0}, [23] = {A = 8, B = 5}, [24] = {A = 9, D = 4}, [25] = {A = 6, B = 6}}, Aux = {[26] = 5}}
 Fire.Window = {Hide = 0.04, Show = 0.6}
 Fire.State = Fire.State or {}

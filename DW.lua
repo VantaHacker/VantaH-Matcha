@@ -635,7 +635,7 @@ local NO_RARITY_CATEGORIES = { Tapes = true, Special = true, Doors = true }
 local COMPLETION_TTL = 0.5
 
 local STRINGS = {
-    OFFSET = 0xA8,
+    OFFSET = 0xA0,
 }
 
 local NAME_RETRY_INTERVAL = 5
@@ -835,8 +835,8 @@ local FARM = {
         HideToward = 0.3,
         CoverRootOffset = 2.85,
         CoverFloorRange = 6,
-        ShapeOffset = 0x1A8,
-        TransparencyOffset = 0x120,
+        ShapeOffset = 0x1A0,
+        TransparencyOffset = 0x118,
         InvisibleNames = {NoClip = true, NoClip_Collider = true, Collider = true, HumanoidRootPart = true, RootPart = true},
         ShapeBlock = 1,
         ShapeCylinder = 2,
@@ -1080,15 +1080,15 @@ local FARM = {
     },
 }
 
-FARM.GUI = {positionOffset = 0xFC}
+FARM.GUI = {positionOffset = 0xF4}
 FARM.CURSOR = {Map = nil, At = -math.huge, Viewport = nil, Busy = false, Failures = 0, RetryAt = 0, GuiScale = nil}
 
 FARM.UNSAFE = { interval = 3, checkedAt = -math.huge, probing = false, enabled = false }
 
 FARM.MASTERY = {
-    VISIBLE = 0x59D,
+    VISIBLE = 0x595,
     TEXT = 0xBA0,
-    STATE = 0x568,
+    STATE = 0x560,
     QUESTS = {
         { "ActiveAbilityActivate", "ability", "Active Ability", "Use Active Ability %s times" },
         { "PassiveAbilityActivate", "passive", "Passive Ability", "Activate Passive Ability %s times" },
@@ -1205,7 +1205,7 @@ function UI.read(holder)
     if not holder then return nil end
     local Kind = UI.ValueKinds[holder.ClassName]
     if Kind and VantaUI.MemoryAccess() then
-        local ok, value = pcall(memory_read, Kind, tonumber(holder.Address) + 0xA8)
+        local ok, value = pcall(memory_read, Kind, tonumber(holder.Address) + 0xA0)
         if ok and type(value) == "number" then
             if Kind == "byte" then return value ~= 0 end
             return value
@@ -1217,7 +1217,7 @@ end
 function UI.bool(holder)
     if not holder then return nil end
     if VantaUI.MemoryAccess() then
-        local ok, value = pcall(memory_read, "byte", tonumber(holder.Address) + 0xA8)
+        local ok, value = pcall(memory_read, "byte", tonumber(holder.Address) + 0xA0)
         if ok and (value == 0 or value == 1) then return value == 1 end
     end
     local ok, value = pcall(function() return holder.Value end)
@@ -1404,7 +1404,7 @@ end
 function UI.valuePlayer(holder)
     if not holder then return nil end
     local ok, target = false, nil
-    if VantaUI.MemoryAccess() then ok, target = pcall(memory_read, "uintptr_t", tonumber(holder.Address) + 0xA8) end
+    if VantaUI.MemoryAccess() then ok, target = pcall(memory_read, "uintptr_t", tonumber(holder.Address) + 0xA0) end
     if ok and type(target) == "number" then
         if target <= 4096 then return nil end
         return UI.playerAt(target)

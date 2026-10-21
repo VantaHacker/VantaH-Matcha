@@ -2176,7 +2176,7 @@ function Library.MemoryAccess(recheck)
 	return allowed
 end
 
-Library.FocusMap = 0x02A0
+Library.FocusMap = 0x0298
 Library.FocusRecord = 0x48
 
 local function focusedAddress()
