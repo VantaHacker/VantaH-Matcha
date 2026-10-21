@@ -457,7 +457,7 @@ local SKILL = {
 local GOLDEN = {PressDelay = 0.65, Ready = false, CircleReady = false, TreadReady = false, Busy = false, Slots = {}, NextScan = 0, NextCheck = 0, Sweep = 2, Attempts = 0, MaxAttempts = 3, RetryDelay = 30}
 GOLDEN.Offsets = {Tag = 0, Nups = 6, ValueTag = 12, StringTag = 6, FunctionTag = 8, NumberTag = 3, ProtoTag = 15, StringLength = 20, StringText = 24, Upvalues = 0x20, Upvalue = 0x70, Proto = 0x18, Code = 0x28, CodeSize = 0xA8, Constants = 0x20, ConstantCount = 0xAC, Children = 0x48, ChildCount = 0xA0, TweenList = 0xE0, TweenTime = 0xB8, TweenElapsed = 0x124, TweenTarget = 0xE0}
 GOLDEN.Offsets.Encoding = {Proto = 0, Code = 0, Constants = 0, Children = 0}
-GOLDEN.Engine = {Primitive = 0x178, PrimitivePosition = 0xD4, Body = 0x140, BodyLink = 0x68, BodyPosition = 0x98, BodyRotation = 0x74, MoveCheckA = 0x1C0, MoveCheckB = 0x39C, MoveA = 0x130, MoveB = 0x36C, LabelText = 0xBA0, RenderSwitch = 0x190, RenderCheck = 0x1D8, EngineGlobal = 0x8656E40, EngineVtable = 0x6D6CD48, EngineHolder = 0xBC0, EngineColor = 0x1AC, Camera = 0xC8}
+GOLDEN.Engine = {Primitive = 0x178, PrimitivePosition = 0xD4, Body = 0x140, BodyLink = 0x68, BodyPosition = 0x98, BodyRotation = 0x74, MoveCheckA = 0x1C0, MoveCheckB = 0x39C, MoveA = 0x130, MoveB = 0x36C, LabelText = 0xBA0, RenderSwitch = 0x190, RenderCheck = 0x1D8, EngineGlobal = 0x8656E40, EngineVtable = 0x6D6CD48, EngineHolder = 0xBC0, EngineColor = 0x1AC, Camera = 0xC8, ValueField = 0xA0, GuiPosition = 0xF4, GuiVisible = 0x595, GuiState = 0x560, PartTransparency = 0x118, PartShape = 0x1A0, PromptDistance = 0x110, PromptHold = 0x108, FocusMap = 0x298}
 for key, value in pairs(GOLDEN.Engine) do GOLDEN.Offsets[key] = value end
 GOLDEN.Status = {Rows = {}, At = 0, Every = 2}
 GOLDEN.Status.Colors = {Waiting = Color3.fromRGB(175, 225, 180), Working = Color3.fromRGB(80, 200, 110), Remapped = Color3.fromRGB(45, 200, 235), Partly = Color3.fromRGB(204, 170, 62), Broken = Color3.fromRGB(230, 80, 80)}
@@ -1205,7 +1205,7 @@ function UI.read(holder)
     if not holder then return nil end
     local Kind = UI.ValueKinds[holder.ClassName]
     if Kind and VantaUI.MemoryAccess() then
-        local ok, value = pcall(memory_read, Kind, tonumber(holder.Address) + 0xA0)
+        local ok, value = pcall(memory_read, Kind, tonumber(holder.Address) + GOLDEN.Offsets.ValueField)
         if ok and type(value) == "number" then
             if Kind == "byte" then return value ~= 0 end
             return value
@@ -1217,7 +1217,7 @@ end
 function UI.bool(holder)
     if not holder then return nil end
     if VantaUI.MemoryAccess() then
-        local ok, value = pcall(memory_read, "byte", tonumber(holder.Address) + 0xA0)
+        local ok, value = pcall(memory_read, "byte", tonumber(holder.Address) + GOLDEN.Offsets.ValueField)
         if ok and (value == 0 or value == 1) then return value == 1 end
     end
     local ok, value = pcall(function() return holder.Value end)
@@ -1404,7 +1404,7 @@ end
 function UI.valuePlayer(holder)
     if not holder then return nil end
     local ok, target = false, nil
-    if VantaUI.MemoryAccess() then ok, target = pcall(memory_read, "uintptr_t", tonumber(holder.Address) + 0xA0) end
+    if VantaUI.MemoryAccess() then ok, target = pcall(memory_read, "uintptr_t", tonumber(holder.Address) + GOLDEN.Offsets.ValueField) end
     if ok and type(target) == "number" then
         if target <= 4096 then return nil end
         return UI.playerAt(target)
@@ -2325,10 +2325,10 @@ function GOLDEN.changed(Before)
     return false
 end
 
-function GOLDEN.saveMap(ran)
+function GOLDEN.saveMap(ran, keepBuild)
     local Map = GOLDEN.Map
     if ran or not Map.LastRun then Map.LastRun = os.time() end
-    Map.Works, Map.SavedBuild = Map.Luau, GOLDEN.build()
+    if not keepBuild then Map.Works, Map.SavedBuild = Map.Luau, GOLDEN.build() end
     if type(writefile) ~= "function" then return end
     local Data = GOLDEN.snapshot()
     Data.LastRun, Data.Works, Data.Build = Map.LastRun, Map.Works, Map.SavedBuild
@@ -2396,12 +2396,16 @@ function GOLDEN.applyEngine()
     R.MoveCheck, R.MoveOffsets = {O.MoveCheckA, O.MoveCheckB}, {O.MoveA, O.MoveB}
     R.CameraRotationOffset = O.Camera
     R.BodyRoot, R.BodyAt, R.VelocityRoot, R.VelocityAt = nil, nil, nil, nil
-    FARM.MASTERY.TEXT = O.LabelText
+    FARM.MASTERY.TEXT, FARM.MASTERY.VISIBLE, FARM.MASTERY.STATE = O.LabelText, O.GuiVisible, O.GuiState
+    STRINGS.OFFSET, FARM.GUI.positionOffset = O.ValueField, O.GuiPosition
+    R.TransparencyOffset, R.ShapeOffset, R.TransparencyWorks, R.ShapeBroken = O.PartTransparency, O.PartShape, nil, nil
+    VantaUI.FocusMap, VantaUI.InputAddress = O.FocusMap, nil
     RENDER.Offset, RENDER.CheckOffset = O.RenderSwitch, O.RenderCheck
     local Clear = RENDER.Clear
     Clear.Global, Clear.VisualEngine, Clear.Holder, Clear.Color = O.EngineGlobal, O.EngineVtable, O.EngineHolder, O.EngineColor
     local Fire = FireProximityPrompt
     if not (Fire and Fire.Offsets) then return end
+    Fire.Offsets.PromptDistance, Fire.Offsets.PromptHold = O.PromptDistance, O.PromptHold
     for _, mode in pairs(O.Encoding) do
         if mode ~= 0 then return end
     end
@@ -2563,6 +2567,27 @@ function GOLDEN.clearColor(holder)
     end
 end
 
+function GOLDEN.engineHolder(engine, current)
+    local holder = memory_read("uintptr_t", engine + current)
+    local color = GOLDEN.heap(holder) and GOLDEN.clearColor(holder)
+    if color then return current, color end
+    for offset = 0xB00, 0xD00, 8 do
+        holder = memory_read("uintptr_t", engine + offset)
+        color = GOLDEN.heap(holder) and GOLDEN.clearColor(holder)
+        if color then return offset, color end
+    end
+end
+
+function GOLDEN.engineScreen(engine)
+    local Camera = Workspace.CurrentCamera
+    local viewport = Camera and Camera.ViewportSize
+    if not viewport then return true end
+    for offset = 0x800, 0xD00, 4 do
+        if memory_read("float", engine + offset) == viewport.X and memory_read("float", engine + offset + 4) == viewport.Y then return true end
+    end
+    return false
+end
+
 function GOLDEN.mapEngine()
     local O = GOLDEN.Offsets
     pcall(RENDER.setClear, false)
@@ -2605,9 +2630,8 @@ function GOLDEN.mapEngine()
                 local vtable = memory_read("uintptr_t", engine)
                 local relative = vtable and vtable - base
                 if relative and relative >= Read.Start and relative < Read.Start + Read.Size then
-                    local holder = memory_read("uintptr_t", engine + O.EngineHolder)
-                    local color = GOLDEN.heap(holder) and GOLDEN.clearColor(holder)
-                    if color then table.insert(Found, {Global = offset, Vtable = relative, Color = color}) end
+                    local holderOffset, color = GOLDEN.engineHolder(engine, O.EngineHolder)
+                    if color and GOLDEN.engineScreen(engine) then table.insert(Found, {Global = offset, Vtable = relative, Holder = holderOffset, Color = color}) end
                 end
             end
         end
@@ -2616,7 +2640,7 @@ function GOLDEN.mapEngine()
     local Found = scan(O.EngineGlobal - 0x400000, O.EngineGlobal + 0x400000)
     if #Found ~= 1 then Found = scan(Data.Start, Data.Start + Data.Size) end
     if #Found ~= 1 then return false, #Found == 0 and "render engine not found" or "render engine ambiguous" end
-    O.EngineGlobal, O.EngineVtable, O.EngineColor = Found[1].Global, Found[1].Vtable, Found[1].Color
+    O.EngineGlobal, O.EngineVtable, O.EngineHolder, O.EngineColor = Found[1].Global, Found[1].Vtable, Found[1].Holder, Found[1].Color
     return true
 end
 
@@ -2633,7 +2657,344 @@ function GOLDEN.mapCamera()
     return false, "camera rotation not found"
 end
 
+function GOLDEN.valueSamples()
+    local List = {}
+    local Data = game:GetService("ReplicatedStorage"):FindFirstChild("PlayerData")
+    Data = Data and LocalPlayer and Data:FindFirstChild(tostring(LocalPlayer.UserId))
+    for _, Root in ipairs({UI.myPart("Stats"), Data}) do
+        for _, Item in ipairs(Root and Root:GetDescendants() or {}) do
+            if Item.ClassName == "NumberValue" then
+                local ok, value = pcall(function() return Item.Value end)
+                if ok and type(value) == "number" and value ~= 0 and value == value then table.insert(List, {Address = tonumber(Item.Address), Value = value, Item = Item}) end
+            end
+            if #List >= 12 then return List end
+        end
+    end
+    return List
+end
+
+function GOLDEN.guiSamples()
+    local Gui, Placed, Buttons = {}, {}, {}
+    local Root = UI.playerGui()
+    for _, Item in ipairs(Root and Root:GetDescendants() or {}) do
+        local class = Item.ClassName
+        if class == "Frame" or class == "TextLabel" or class == "TextButton" or class == "ImageLabel" or class == "ImageButton" then
+            local Entry = {Address = tonumber(Item.Address), Item = Item}
+            local ok, position = pcall(function() return Item.AbsolutePosition end)
+            if ok and position and (position.X ~= 0 or position.Y ~= 0) then
+                Entry.Position = position
+                table.insert(Placed, Entry)
+            end
+            table.insert(Gui, Entry)
+            if class == "TextButton" or class == "ImageButton" then table.insert(Buttons, Entry) end
+            if #Gui >= 60 then break end
+        end
+    end
+    return Gui, Placed, Buttons
+end
+
+function GOLDEN.promptSamples(light)
+    local List = {}
+    local Room = Workspace:FindFirstChild("CurrentRoom") or not light and Workspace
+    for index, Item in ipairs(Room and Room:GetDescendants() or {}) do
+        if Item.ClassName == "ProximityPrompt" then table.insert(List, {Address = tonumber(Item.Address), Item = Item}) end
+        if #List >= 10 then break end
+        if light and index % 1000 == 0 then task.wait() end
+    end
+    return List
+end
+
+function GOLDEN.instanceChecks(light)
+    local O = GOLDEN.Offsets
+    local Checks = {}
+    local Values = GOLDEN.valueSamples()
+    if #Values >= 3 then
+        Checks.ValueField = function(offset)
+            local Seen, count = {}, 0
+            for _, Item in ipairs(Values) do
+                if memory_read("double", Item.Address + offset) ~= Item.Value then return false end
+                if not Seen[Item.Value] then Seen[Item.Value], count = true, count + 1 end
+            end
+            return count >= 2
+        end
+    end
+    if light then task.wait() end
+    local Gui, Placed, Buttons = GOLDEN.guiSamples()
+    if light then task.wait() end
+    if #Placed >= 3 then
+        Checks.GuiPosition = function(offset)
+            for _, Item in ipairs(Placed) do
+                if not FARM.guiMatches(Item.Address, offset, Item.Position) then return false end
+            end
+            return true
+        end
+    end
+    if #Gui >= 5 then
+        Checks.GuiVisible = function(offset)
+            local shown = false
+            for _, Item in ipairs(Gui) do
+                local value = memory_read("byte", Item.Address + offset)
+                if value ~= 0 and value ~= 1 then return false end
+                if value == 1 then shown = true end
+            end
+            return shown
+        end
+    end
+    if #Buttons >= 1 then
+        Checks.GuiState = function(offset)
+            for _, Item in ipairs(Buttons) do
+                local value = memory_read("byte", Item.Address + offset)
+                if not value or value > 3 then return false end
+            end
+            return true
+        end
+    end
+    local root = UI.myPart("HumanoidRootPart")
+    local Me = UI.me()
+    local Parts = {}
+    if root and Me then
+        local rootAddress = tonumber(root.Address)
+        local Room = Workspace:FindFirstChild("CurrentRoom")
+        for _, List in ipairs({Me.Char:GetChildren(), Room and Room:GetDescendants() or {}}) do
+            for _, Item in ipairs(List) do
+                if Item ~= root and (Item.ClassName == "Part" or Item.ClassName == "MeshPart") then table.insert(Parts, {Address = tonumber(Item.Address), Part = Item.ClassName == "Part", Item = Item}) end
+                if #Parts >= 40 then break end
+            end
+        end
+        if light then task.wait() end
+        Checks.PartTransparency = function(offset)
+            if memory_read("float", rootAddress + offset) ~= 1 then return false end
+            local visible = false
+            for _, Item in ipairs(Parts) do
+                local value = memory_read("float", Item.Address + offset)
+                if not value or value < 0 or value > 1 then return false end
+                if value == 0 then visible = true end
+            end
+            return visible
+        end
+        Checks.PartShape = function(offset)
+            if memory_read("byte", rootAddress + offset) ~= 1 then return false end
+            for _, Item in ipairs(Parts) do
+                local value = Item.Part and memory_read("byte", Item.Address + offset)
+                if value and value > 4 then return false end
+            end
+            return true
+        end
+        Checks.Primitive = function(offset)
+            local primitive = memory_read("uintptr_t", rootAddress + offset)
+            return GOLDEN.heap(primitive) and GOLDEN.near(primitive + O.PrimitivePosition, root.Position)
+        end
+        Checks.PrimitivePosition = function(offset)
+            local primitive = memory_read("uintptr_t", rootAddress + O.Primitive)
+            return GOLDEN.heap(primitive) and GOLDEN.near(primitive + offset, root.Position)
+        end
+    end
+    local humanoid = UI.myPart("Humanoid")
+    if humanoid then
+        local address = tonumber(humanoid.Address)
+        local function walk(first, second)
+            local value = memory_read("float", address + first)
+            return value ~= nil and value > 0 and value <= 100 and value == memory_read("float", address + second)
+        end
+        Checks.MoveCheckA = function(offset) return walk(offset, O.MoveCheckB) end
+        Checks.MoveCheckB = function(offset) return walk(O.MoveCheckA, offset) end
+    end
+    local Prompts = GOLDEN.promptSamples(light)
+    if #Prompts >= 1 then
+        Checks.PromptDistance = function(offset)
+            for _, Prompt in ipairs(Prompts) do
+                local value = memory_read("float", Prompt.Address + offset)
+                if not value or value <= 0 or value > 500 then return false end
+            end
+            return true
+        end
+        Checks.PromptHold = function(offset)
+            if offset ~= O.PromptDistance - 8 then return false end
+            for _, Prompt in ipairs(Prompts) do
+                local value = memory_read("float", Prompt.Address + offset)
+                if not value or value < 0 or value > 60 then return false end
+            end
+            return true
+        end
+    end
+    local Camera = Workspace.CurrentCamera
+    if Camera then
+        Checks.Camera = function(offset) return GOLDEN.rotationAt(Camera.Address + offset, Camera.CFrame) end
+    end
+    Checks.Alive = function()
+        if root and root.Parent == nil then return false end
+        for _, List in ipairs({Values, Gui, Parts, Prompts}) do
+            for _, Entry in ipairs(List) do
+                if Entry.Item.Parent == nil then return false end
+            end
+        end
+        return true
+    end
+    for _, Service in ipairs(game:GetChildren()) do
+        if Service.ClassName == "UserInputService" then
+            local input = tonumber(Service.Address)
+            Checks.FocusMap = function(offset)
+                local head = memory_read("uintptr_t", input + offset)
+                if not GOLDEN.heap(head) or memory_read("byte", head + 0x19) ~= 1 then return false end
+                local node = memory_read("uintptr_t", head)
+                if node == head then return true end
+                return GOLDEN.heap(node) and memory_read("byte", node + 0x19) == 0 and memory_read("uintptr_t", node + 0x30) == 0
+            end
+        end
+    end
+    return Checks
+end
+
+function GOLDEN.findOffset(current, shift, from, to, step, works)
+    if shift ~= 0 and works(current + shift) then return current + shift end
+    if works(current) then return current end
+    for offset = from or 0, to or -1, step or 4 do
+        if works(offset) then return offset end
+    end
+end
+
+function GOLDEN.mapKeys(Keys, shift)
+    local O = GOLDEN.Offsets
+    local Checks = GOLDEN.instanceChecks()
+    for _, Entry in ipairs(Keys) do
+        local key = Entry[1]
+        local works = Checks[key]
+        if not works then return false, key .. " has nothing to compare" end
+        local ok, found = pcall(GOLDEN.findOffset, O[key], shift, Entry[2], Entry[3], Entry[4], works)
+        if not (ok and found) then return false, key .. " not found" end
+        O[key] = found
+    end
+    return true
+end
+
+function GOLDEN.mapValue()
+    local old = GOLDEN.Offsets.ValueField
+    local found, reason = GOLDEN.mapKeys({{"ValueField", 0x60, 0x140, 8}}, 0)
+    GOLDEN.Map.Shift = GOLDEN.Offsets.ValueField - old
+    return found, reason
+end
+
+function GOLDEN.mapGui()
+    local old = GOLDEN.Offsets.GuiPosition
+    local found, reason = GOLDEN.mapKeys({{"GuiPosition", 0x40, 0x400, 4}}, 0)
+    if not found then return found, reason end
+    return GOLDEN.mapKeys({{"GuiVisible"}, {"GuiState"}}, GOLDEN.Offsets.GuiPosition - old)
+end
+
+function GOLDEN.mapParts()
+    return GOLDEN.mapKeys({{"PartTransparency"}, {"PartShape"}}, GOLDEN.Map.Shift or 0)
+end
+
+function GOLDEN.mapPrompts()
+    return GOLDEN.mapKeys({{"PromptDistance"}, {"PromptHold"}}, GOLDEN.Map.Shift or 0)
+end
+
+function GOLDEN.mapFocus()
+    return GOLDEN.mapKeys({{"FocusMap", 0x200, 0x380, 8}}, GOLDEN.Map.Shift or 0)
+end
+
+GOLDEN.Theo = {Url = "https://offsets.imtheo.lol/offsets.json", Keys = {
+    {"ValueField", "Misc", "Value", "values"},
+    {"GuiPosition", "GuiBase2D", "AbsolutePosition", "gui position"},
+    {"GuiVisible", "GuiObject", "Visible", "gui visible"},
+    {"PartTransparency", "BasePart", "Transparency", "part transparency"},
+    {"PartShape", "BasePart", "Shape", "part shape"},
+    {"Primitive", "BasePart", "Primitive", "character body"},
+    {"PrimitivePosition", "Primitive", "Position", "body position"},
+    {"PromptDistance", "ProximityPrompt", "MaxActivationDistance", "prompt distance"},
+    {"PromptHold", "ProximityPrompt", "HoldDuration", "prompt hold"},
+    {"Camera", "Camera", "Rotation", "camera"},
+    {"MoveCheckA", "Humanoid", "Walkspeed", "walk speed"},
+    {"MoveCheckB", "Humanoid", "WalkspeedCheck", "walk speed check"},
+}}
+
+function GOLDEN.theoEngine(Dump)
+    local O = GOLDEN.Offsets
+    local Engine = Dump.VisualEngine
+    local global = type(Engine) == "table" and tonumber(Engine.Pointer)
+    if not global then return nil end
+    pcall(RENDER.setClear, false)
+    local ok, found = pcall(function()
+        local base = getbase()
+        local engine = memory_read("uintptr_t", base + global)
+        if not GOLDEN.heap(engine) or not GOLDEN.engineScreen(engine) then return false end
+        local holder, color = GOLDEN.engineHolder(engine, O.EngineHolder)
+        if not color then return false end
+        O.EngineGlobal, O.EngineVtable, O.EngineHolder, O.EngineColor = global, memory_read("uintptr_t", engine) - base, holder, color
+        return true
+    end)
+    return ok and found
+end
+
+function GOLDEN.theo()
+    if not VantaUI.MemoryAccess() then VantaUI:Notify("Memory offsets", "Memory access is off.", 4) return end
+    if GOLDEN.Busy or SWIMMER.Busy or GOLDEN.Map.TweenBusy then VantaUI:Notify("Memory offsets", "Busy, try again in a few seconds.", 4) return end
+    if type(httpget) ~= "function" then VantaUI:Notify("Memory offsets", "This Matcha can't download files.", 4) return end
+    if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
+    GOLDEN.Busy = true
+    VantaUI:Notify("Memory offsets", "Downloading imtheo's offsets.", 4)
+    task.spawn(function()
+        local ok, body = pcall(httpget, GOLDEN.Theo.Url .. "?v=" .. tostring(os.time()))
+        local okJson, Data = pcall(function() return HttpService:JSONDecode(body) end)
+        local Dump = ok and okJson and type(Data) == "table" and type(Data.Offsets) == "table" and Data.Offsets
+        if not Dump then
+            GOLDEN.Busy = false
+            GOLDEN.setStatus("Failed", "could not download imtheo's offsets")
+            VantaUI:Notify("Memory offsets", "Could not download imtheo's offsets. The site may be down or blocked.", 6)
+            return
+        end
+        local O = GOLDEN.Offsets
+        local Before = GOLDEN.snapshot()
+        for _, Entry in ipairs(GOLDEN.Theo.Keys) do
+            local Group = Dump[Entry[2]]
+            local value = type(Group) == "table" and tonumber(Group[Entry[3]])
+            if value and value > 0 then O[Entry[1]] = value end
+        end
+        local Checks = GOLDEN.instanceChecks()
+        local used, Rejected = 0, {}
+        for _, Entry in ipairs(GOLDEN.Theo.Keys) do
+            local key = Entry[1]
+            local works = Checks[key]
+            local okCheck, good = pcall(function() return works and works(O[key]) end)
+            if okCheck and good then
+                if O[key] ~= Before[key] then used = used + 1 end
+            else
+                O[key] = Before[key]
+                table.insert(Rejected, Entry[4])
+            end
+        end
+        if GOLDEN.theoEngine(Dump) == false then table.insert(Rejected, "black background") end
+        GOLDEN.applyEngine()
+        GOLDEN.saveMap(true, true)
+        GOLDEN.Busy = false
+        GOLDEN.setStatus(#Rejected == 0 and "Success" or "Failed", "not confirmed: " .. table.concat(Rejected, ", "))
+        local version = type(Data["Roblox Version"]) == "string" and Data["Roblox Version"] or "unknown version"
+        local result = #Rejected == 0 and "Every offset confirmed in game." or ("Not confirmed, kept the old ones: " .. table.concat(Rejected, ", ") .. ".")
+        VantaUI:Notify("Memory offsets", "imtheo (" .. version .. "): " .. used .. " offsets changed. " .. result, 9)
+    end)
+end
+
+function GOLDEN.findOffsets()
+    if not VantaUI.MemoryAccess() then VantaUI:Notify("Memory offsets", "Memory access is off.", 4) return end
+    if GOLDEN.Busy or SWIMMER.Busy or GOLDEN.Map.TweenBusy then VantaUI:Notify("Memory offsets", "Busy, try again in a few seconds.", 4) return end
+    if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
+    GOLDEN.Busy = true
+    VantaUI:Notify("Memory offsets", "Finding the offsets, Roblox may freeze for a few seconds.", 4)
+    task.spawn(function()
+        local Failures = GOLDEN.mapEngineAll(GOLDEN.CoreMaps)
+        GOLDEN.saveMap(true, true)
+        GOLDEN.Busy = false
+        GOLDEN.setStatus(#Failures == 0 and "Success" or "Failed", table.concat(Failures, "; "))
+        VantaUI:Notify("Memory offsets", #Failures == 0 and "Every offset found." or ("Not found: " .. table.concat(Failures, ", ") .. "."), 9)
+    end)
+end
+
 GOLDEN.EngineMaps = {
+    {Name = "values", Map = GOLDEN.mapValue},
+    {Name = "gui", Map = GOLDEN.mapGui},
+    {Name = "parts", Map = GOLDEN.mapParts},
+    {Name = "prompts", Map = GOLDEN.mapPrompts},
+    {Name = "typing check", Map = GOLDEN.mapFocus},
     {Name = "character body", Map = GOLDEN.mapBody},
     {Name = "walking", Map = GOLDEN.mapWalk},
     {Name = "quest text", Map = GOLDEN.mapText},
@@ -2642,9 +3003,20 @@ GOLDEN.EngineMaps = {
     {Name = "black background", Map = GOLDEN.mapEngine},
 }
 
-function GOLDEN.mapEngineAll()
+GOLDEN.CoreMaps = {
+    {Name = "values", Map = GOLDEN.mapValue},
+    {Name = "gui", Map = GOLDEN.mapGui},
+    {Name = "parts", Map = GOLDEN.mapParts},
+    {Name = "prompts", Map = GOLDEN.mapPrompts},
+    {Name = "typing check", Map = GOLDEN.mapFocus},
+    {Name = "quest text", Map = GOLDEN.mapText},
+    {Name = "3D switch", Map = GOLDEN.mapRender},
+    {Name = "black background", Map = GOLDEN.mapEngine},
+}
+
+function GOLDEN.mapEngineAll(Maps)
     local Failures = {}
-    for _, Entry in ipairs(GOLDEN.EngineMaps) do
+    for _, Entry in ipairs(Maps or GOLDEN.EngineMaps) do
         local ok, found, reason = pcall(Entry.Map)
         if not (ok and found) then table.insert(Failures, Entry.Name .. ": " .. tostring(ok and reason or found)) end
     end
@@ -3086,7 +3458,7 @@ function GOLDEN.warnRemap()
     if GOLDEN.RemapDialog ~= nil or not GOLDEN.needsRemap() then return end
     local Dialog, Body = UI.dialog("Remap Required", "Dandy's World", "ROBLOX UPDATED", Vector2.new(460, 210), GOLDEN.closeRemapDialog)
     GOLDEN.RemapDialog = Dialog
-    Body:AddParagraph({Content = "Remapping is required! Go to Memory, press a button \"Remap the memory offsets\"."})
+    Body:AddParagraph({Content = "Remapping is required! Go to Memory, press a button \"Full remap (experimental features)\"."})
     Body:AddButton({Title = "Remap now", Primary = true, Callback = function()
         GOLDEN.closeRemapDialog()
         GOLDEN.remap()
@@ -3200,9 +3572,74 @@ GOLDEN.Status.List = {
     {Name = "Write Position using memory", Check = function() return GOLDEN.bodyStatus("farmMemoryPosition") end},
     {Name = "Turn the character instead of the camera", Check = function() return GOLDEN.bodyStatus("farmTurnBody") end},
     {Name = "Walk using memory", Check = GOLDEN.walkStatus},
-    {Name = "Disable 3D Rendering", Check = GOLDEN.renderStatus},
-    {Name = "Auto Mastery quest text", Check = GOLDEN.textStatus},
 }
+
+GOLDEN.Core = {At = 0, Every = 15, Rebuild = 0, Building = false, Text = nil, List = {
+    {Name = "Values", Keys = {"ValueField"}},
+    {Name = "GUI", Keys = {"GuiPosition", "GuiVisible", "GuiState"}},
+    {Name = "Parts", Keys = {"PartTransparency", "PartShape"}},
+    {Name = "Prompts", Keys = {"PromptDistance", "PromptHold"}},
+    {Name = "Typing check", Keys = {"FocusMap"}},
+    {Name = "Quest text", Check = GOLDEN.textStatus},
+    {Name = "Disable 3D", Check = GOLDEN.renderStatus},
+}}
+
+function GOLDEN.updateCore(now)
+    local Core = GOLDEN.Core
+    if not (Core.Label and Core.Label.SetContent) or now < Core.At or GOLDEN.Busy then return end
+    Core.At = now + Core.Every
+    local text, color
+    if not VantaUI.MemoryAccess() then
+        text, color = "Memory access is off.", GOLDEN.Status.Colors.Broken
+    else
+        local O = GOLDEN.Offsets
+        local Checks = Core.Checks
+        local okAlive, alive = pcall(function() return Checks and Checks.Alive() end)
+        if not (okAlive and alive) or now >= Core.Rebuild then
+            if Core.Building then return end
+            Core.Building = true
+            task.spawn(function()
+                local ok, Built = pcall(GOLDEN.instanceChecks, true)
+                Core.Checks, Core.Rebuild, Core.Building, Core.At = ok and Built or {Alive = function() return true end}, now + 120, false, 0
+            end)
+            return
+        end
+        local Groups = {}
+        for _, Entry in ipairs(Core.List) do
+            local state = "Working"
+            if Entry.Check then
+                local ok, result = pcall(Entry.Check)
+                state = ok and result or "Not working"
+                if state == "Working (remapped)" then state = "Working" end
+            else
+                for _, key in ipairs(Entry.Keys) do
+                    local works = Checks[key]
+                    if not works then
+                        state = "Waiting"
+                    else
+                        local ok, good = pcall(works, O[key])
+                        if not (ok and good) then state = "Not working" break end
+                    end
+                end
+            end
+            if state ~= "Off" then
+                Groups[state] = Groups[state] or {}
+                table.insert(Groups[state], Entry.Name)
+            end
+        end
+        local Lines = {}
+        for _, state in ipairs({"Not working", "Partly working", "Waiting", "Working"}) do
+            if Groups[state] then table.insert(Lines, state .. ": " .. table.concat(Groups[state], ", ")) end
+        end
+        local Colors = GOLDEN.Status.Colors
+        text = table.concat(Lines, "\n")
+        color = Groups["Not working"] and Colors.Broken or Groups["Partly working"] and Colors.Partly or Groups.Waiting and Colors.Waiting or Colors.Working
+    end
+    if Core.Text == text then return end
+    Core.Text = text
+    Core.Label:SetContent(text)
+    if Core.Label.SetColor then Core.Label:SetColor(color) end
+end
 
 function GOLDEN.updateStatus(now)
     local Status = GOLDEN.Status
@@ -3244,6 +3681,7 @@ function GOLDEN.prepare(now)
     local Map = GOLDEN.Map
     GOLDEN.warnRemap()
     GOLDEN.updateStatus(now)
+    GOLDEN.updateCore(now)
     if now >= Map.StatusAt then
         Map.StatusAt = now + 30
         GOLDEN.showStatus()
@@ -3294,7 +3732,7 @@ function GOLDEN.prepare(now)
             GOLDEN.setStatus("Failed", "Golden and Barnaby offsets: " .. reason)
         end
         if not luau and not missing and Map.Tries >= 3 then
-            VantaUI:Notify("Memory offsets", "Could not find the memory offsets, so Always hit Golden and Better Barnaby stay off. Press Remap the memory offsets to try again.", 8)
+            VantaUI:Notify("Memory offsets", "Could not find the memory offsets, so Always hit Golden and Better Barnaby stay off. Press Full remap (experimental features) to try again.", 8)
         end
         if not SETTINGS.alwaysGolden then GOLDEN.Cache = nil end
         GOLDEN.Busy = false
@@ -14473,14 +14911,21 @@ local function buildMenu()
     ExperimentalAutomation:AddParagraph({Title = "", Content = "Does not use inputs. Allows you to minimize Roblox."})
 
     local Offsets = MemoryTab:AddSection("Offsets", "Left")
-    Offsets:AddButton({Title = "Remap the memory offsets", Callback = GOLDEN.remap})
+    Offsets:AddButton({Title = "Full remap (experimental features)", Callback = GOLDEN.remap})
     GOLDEN.Map.Label = Offsets:AddParagraph({Title = "", Content = "Status: Unknown"})
+    Offsets:AddButton({Title = "Quick remap (core features)", Callback = GOLDEN.findOffsets})
+    Offsets:AddButton({Title = "Get core offsets from imtheo's dump", Callback = GOLDEN.theo})
+    Offsets:AddParagraph({Title = "", Content = "Quick Remap is recommended. Use imtheo's dump if you have problems with Quick remap!"})
     toggle(Offsets, "dw_auto_remap", "Remap automatically on join", "autoRemap")
     if not GOLDEN.Map.Loaded then GOLDEN.loadMap() end
     GOLDEN.showStatus()
     Offsets:AddParagraph({Title = "", Content = "Finds the memory offsets again after a Roblox update. Press it when the status says Requires a remap."})
 
-    local StatusSection = MemoryTab:AddSection("Status", "Right")
+    local CoreStatus = MemoryTab:AddSection("Status (Core)", "Left")
+    GOLDEN.Core.Label = CoreStatus:AddParagraph({Title = "", Content = "Checking."})
+    GOLDEN.Core.At = 0
+
+    local StatusSection = MemoryTab:AddSection("Status (Experimental features)", "Right")
     for index, Entry in ipairs(GOLDEN.Status.List) do
         GOLDEN.Status.Rows[index] = {Element = StatusSection:AddParagraph({Title = Entry.Name, Content = "Waiting\nChecking."}), Text = nil}
     end
