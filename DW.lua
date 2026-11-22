@@ -486,7 +486,7 @@ GOLDEN.Counts = {Invoke = 8, Circle = 16, Treadmill = 12}
 GOLDEN.Aim = {Gold = nil, WasStart = false, Armed = false, At = 0}
 GOLDEN.TreadWait = 0
 GOLDEN.TreadPause = 0.8
-GOLDEN.Engine = {Primitive = 0x178, PrimitivePosition = 0xD4, Body = 0x140, BodyLink = 0x68, BodyPosition = 0x98, BodyRotation = 0x74, MoveCheckA = 0x1C0, MoveCheckB = 0x39C, MoveA = 0x130, MoveB = 0x36C, LabelText = 0xA30, RenderSwitch = 0x190, RenderCheck = 0x1D8, EngineGlobal = 0x8896798, EngineVtable = 0x70AFAD8, EngineHolder = 0xBE8, EngineColor = 0x264, Camera = 0xC8, ValueField = 0xA0, GuiPosition = 0xF4, GuiVisible = 0x595, GuiState = 0x560, PartTransparency = 0x118, PartShape = 0x1A0, PromptDistance = 0x110, PromptHold = 0x108, FocusMap = 0x298}
+GOLDEN.Engine = {Primitive = 0x178, PrimitivePosition = 0xD4, Body = 0x140, BodyLink = 0x68, BodyPosition = 0x98, BodyRotation = 0x74, MoveCheckA = 0x1C8, MoveCheckB = 0x39C, MoveA = 0x134, MoveB = 0x36C, LabelText = 0xA30, RenderSwitch = 0x1D8, RenderCheck = 0x220, EngineGlobal = 0x8896798, EngineVtable = 0x70AFAD8, EngineHolder = 0xBE8, EngineColor = 0x264, Camera = 0xC0, ValueField = 0xA0, GuiPosition = 0xF4, GuiVisible = 0x595, GuiState = 0x560, PartTransparency = 0x118, PartShape = 0x1A0, PromptDistance = 0x110, PromptHold = 0x108, FocusMap = 0x278}
 for key, value in pairs(GOLDEN.Engine) do GOLDEN.Offsets[key] = value end
 GOLDEN.Status = {Rows = {}, At = 0, Every = 2}
 GOLDEN.Status.Colors = {Waiting = Color3.fromRGB(175, 225, 180), Working = Color3.fromRGB(80, 200, 110), Remapped = Color3.fromRGB(45, 200, 235), Partly = Color3.fromRGB(204, 170, 62), Broken = Color3.fromRGB(230, 80, 80)}
@@ -2812,9 +2812,10 @@ end
 function GOLDEN.guiSamples()
     local Gui, Placed, Buttons = {}, {}, {}
     local Root = UI.playerGui()
-    for _, Item in ipairs(Root and Root:GetDescendants() or {}) do
+    for index, Item in ipairs(Root and Root:GetDescendants() or {}) do
         local class = Item.ClassName
-        if class == "Frame" or class == "TextLabel" or class == "TextButton" or class == "ImageLabel" or class == "ImageButton" then
+        local button = class == "TextButton" or class == "ImageButton"
+        if #Gui < 60 and (button or class == "Frame" or class == "TextLabel" or class == "ImageLabel") then
             local Entry = {Address = tonumber(Item.Address), Item = Item}
             local ok, position = pcall(function() return Item.AbsolutePosition end)
             if ok and position and (position.X ~= 0 or position.Y ~= 0) then
@@ -2822,9 +2823,11 @@ function GOLDEN.guiSamples()
                 table.insert(Placed, Entry)
             end
             table.insert(Gui, Entry)
-            if class == "TextButton" or class == "ImageButton" then table.insert(Buttons, Entry) end
-            if #Gui >= 60 then break end
+            if button then table.insert(Buttons, Entry) end
+        elseif button and #Buttons < 3 then
+            table.insert(Buttons, {Address = tonumber(Item.Address), Item = Item})
         end
+        if #Gui >= 60 and #Buttons >= 3 or index >= 3000 then break end
     end
     return Gui, Placed, Buttons
 end
@@ -2848,8 +2851,10 @@ function GOLDEN.instanceChecks(light)
         Checks.ValueField = function(offset)
             local Seen, count = {}, 0
             for _, Item in ipairs(Values) do
-                if memory_read("double", Item.Address + offset) ~= Item.Value then return false end
-                if not Seen[Item.Value] then Seen[Item.Value], count = true, count + 1 end
+                local ok, value = pcall(function() return Item.Item.Value end)
+                if not ok or type(value) ~= "number" then value = Item.Value end
+                if memory_read("double", Item.Address + offset) ~= value then return false end
+                if not Seen[value] then Seen[value], count = true, count + 1 end
             end
             return count >= 2
         end
@@ -2936,6 +2941,13 @@ function GOLDEN.instanceChecks(light)
         Checks.MoveCheckB = function(offset) return walk(O.MoveCheckA, offset) end
     end
     local Prompts = GOLDEN.promptSamples(light)
+    if light then
+        local idle = true
+        for _, Prompt in ipairs(Prompts) do
+            if memory_read("float", Prompt.Address + O.PromptDistance) ~= 0 then idle = false break end
+        end
+        if idle then Prompts = {} end
+    end
     if #Prompts >= 1 then
         Checks.PromptDistance = function(offset)
             local reach = false
