@@ -250,6 +250,8 @@ local SETTINGS = {
     farmSafeCover = true,
     farmMachinePriority = false,
     farmMachineOrder = "Box,Treadmill,Circle,Barnaby",
+    farmMachinePreference = true,
+    farmMachinePreferenceOrder = "Barnaby,Circle,Box,Treadmill",
     farmMemoryPosition = false,
     farmForceElevatorTeleport = false,
     farmTurnBody = false,
@@ -775,6 +777,8 @@ local FARM = {
         MovedByGameMax = 1500,
         WorldLimitXZ = 5000,
         WorldLimitY = 500,
+        OriginGuard = 100,
+        StallMemoryOff = 1.5,
         ElevatorShutHold = 8,
         GroundUp = 3,
         GroundDown = 30,
@@ -833,7 +837,7 @@ local FARM = {
         CoverMappingBundle = "DW/autofarmMappings.json",
         CoverMappingUrl = "https://raw.githubusercontent.com/VantaHacker/VantaH-Matcha/refs/heads/main/autofarmMappings.json",
         CoverMappingFormat = 2,
-        CoverMappingMinVersion = 3,
+        CoverMappingMinVersion = 6,
         CoverMappingRetry = 60,
         CoverBakeChunk = 40,
         CoverBakeTryEvery = 0.2,
@@ -1012,7 +1016,7 @@ local FARM = {
         research = nil,
         BUY_ORDER = { "Valve", "ExtraHeart", "HealthKit", "Bandage", "JumperCable" },
         BUY_SETTING = { Valve = "farmExtractionItems", ExtraHeart = "farmHealItems", HealthKit = "farmHealItems", Bandage = "farmHealItems", JumperCable = "farmExtractionItems" },
-        PRICES = { Valve = 150, ExtraHeart = 100, HealthKit = 100, Bandage = 60, JumperCable = 65 },
+        PRICES = { Valve = 150, ExtraHeart = 200, HealthKit = 100, Bandage = 60, JumperCable = 65 },
         BUY_ARRIVE = 4,
         bought = {},
         buyTapes = 0,
@@ -8197,7 +8201,18 @@ function FARM.velocityAddress(root)
     local now = tick()
     local ok, key = pcall(function() return root.Address end)
     if not ok or not key then return nil end
-    if R.VelocityRoot == key and now < R.VelocityCheckAt then return R.VelocityAt end
+    if FARM.memoryWriteBlocked() then return nil end
+    if R.VelocityRoot == key and now < R.VelocityCheckAt then
+        if R.VelocityAt and PLACE_MODE == "main" then
+            local okPrimitive, primitive = pcall(memory_read, "uintptr_t", key + R.PrimitiveOffset)
+            if not okPrimitive or not primitive or primitive + R.VelocityOffset ~= R.VelocityAt then
+                FARM.memoryStrike("velocity address moved")
+                R.VelocityAt = nil
+                return nil
+            end
+        end
+        return R.VelocityAt
+    end
     R.VelocityRoot, R.VelocityCheckAt = key, now + R.VelocityCheckEvery
     local found, address = pcall(function()
         local primitive = memory_read("uintptr_t", key + R.PrimitiveOffset)
@@ -8217,8 +8232,23 @@ function FARM.velocityAddress(root)
     return result
 end
 
-function FARM.bodyVelocity(root, velocity)
+function FARM.memoryWriteBlocked()
+    local R = FARM.RUN
+    return PLACE_MODE == "main" and (R.MemoryStrike ~= nil or tick() < (R.MemoryOffUntil or 0))
+end
+
+function FARM.safeBodyAddress(root)
+    if FARM.memoryWriteBlocked() then return nil end
     local address = FARM.bodyAddress(root)
+    if not address or PLACE_MODE ~= "main" then return address end
+    local valid, why = FARM.bodyStillValid(root, address)
+    if valid then return address end
+    FARM.memoryStrike("address check before a write failed (" .. tostring(why) .. ")")
+    return nil
+end
+
+function FARM.bodyVelocity(root, velocity)
+    local address = FARM.safeBodyAddress(root)
     if not address then return end
     address = address + FARM.RUN.BodyVelocityOffset
     pcall(function()
@@ -8278,6 +8308,7 @@ function FARM.bodyAddress(root)
         return base
     end)
     local result = found and address or nil
+    if R.BodyAt and not result then FARM.memoryStrike("memory layout check failed (" .. (found and why or tostring(address)) .. ")") end
     if (result ~= nil) ~= (R.BodyAt ~= nil) or R.BodyNoted == nil then
         R.BodyNoted = true
         FARM.debugNote(result and "position write: memory" or "position write: property (memory layout check failed: " .. (found and why or tostring(address)) .. ")")
@@ -8286,26 +8317,33 @@ function FARM.bodyAddress(root)
     return result
 end
 
+function FARM.realPosition(root)
+    local ok, property = pcall(function() return root.Position end)
+    if ok and FARM.inWorld(property) then return property end
+    return FARM.rootPosition(root)
+end
+
 function FARM.setRootPosition(root, position)
     local R = FARM.RUN
     if FARM.blockedWrite(position, "farm") then return end
     local now = tick()
     local Land = R.Land
     if not Land or now - Land.At > 1 then
-        R.Land = {At = now, Real = FARM.rootPosition(root), Want = position}
+        R.Land = {At = now, Real = FARM.realPosition(root), Want = position}
     elseif now - Land.At >= R.LandEvery then
-        local real = FARM.rootPosition(root)
+        local real = FARM.realPosition(root)
         local wanted, moved, gap = FARM.flatDistance(position, Land.Want), FARM.flatDistance(real, Land.Real), FARM.flatDistance(real, position)
         local missed = (wanted > 2 and moved < wanted * 0.3) or (wanted <= 0.5 and gap > R.LandGap)
         if missed and R.BodyAt and now >= (R.MemoryOffUntil or 0) then
             R.MemoryOffUntil = now + R.LandOff
             R.BodyCheckAt, R.VelocityCheckAt = 0, 0
             FARM.debugNote(string.format("position write did not land in phase %s: wanted to move %.1f studs, moved %.1f, now %.1f from the target, normal position write for %d s", tostring(R.phase), wanted, moved, gap, R.LandOff))
+            FARM.memoryStrike(string.format("a write did not land in phase %s", tostring(R.phase)))
         end
         R.Land = {At = now, Real = real, Want = position}
     end
     if FARM.memoryMove() and root.Parent and tick() >= (R.MemoryOffUntil or 0) then
-        local address = FARM.bodyAddress(root)
+        local address = FARM.safeBodyAddress(root)
         if address then
             local ok = pcall(function()
                 memory_write("float", address, position.X)
@@ -8338,7 +8376,34 @@ function FARM.sealPosition(root, position)
 end
 
 function FARM.memoryMove()
-    return SETTINGS.farmMemoryPosition and not FARM.RUN.GalaFloor
+    return SETTINGS.farmMemoryPosition and not FARM.RUN.GalaFloor and not FARM.RUN.MemoryStrike
+end
+
+function FARM.memoryStrike(reason)
+    local R = FARM.RUN
+    if R.MemoryStrike or PLACE_MODE ~= "main" then return end
+    R.MemoryStrike = reason
+    R.BodyAt, R.Path = nil, nil
+    FARM.debugNote("memory position writes OFF for the rest of this floor: " .. reason)
+end
+
+function FARM.bodyStillValid(root, address)
+    local R = FARM.RUN
+    local ok, valid, why = pcall(function()
+        local primitive = memory_read("uintptr_t", root.Address + R.PrimitiveOffset)
+        if not primitive or primitive < 0x10000 then return false, "no primitive" end
+        local body = memory_read("uintptr_t", primitive + R.BodyOffset)
+        if not body or body < 0x10000 or body + R.BodyPositionOffset ~= address then return false, "body moved" end
+        if memory_read("uintptr_t", body + 8) ~= primitive + R.BodyLinkOffset then return false, "body is not linked to this part" end
+        local p = root.Position
+        local x, y, z = memory_read("float", address), memory_read("float", address + 4), memory_read("float", address + 8)
+        if math.abs(x - p.X) > 3 or math.abs(y - p.Y) > 3 or math.abs(z - p.Z) > 3 then
+            return false, string.format("body at (%.1f, %.1f, %.1f) but the part reads (%.1f, %.1f, %.1f)", x, y, z, p.X, p.Y, p.Z)
+        end
+        return true
+    end)
+    if not ok then return false, tostring(valid) end
+    return valid, why
 end
 
 function FARM.inWorld(position)
@@ -8346,6 +8411,8 @@ function FARM.inWorld(position)
     if typeof(position) ~= "Vector3" then return false end
     local x, y, z = position.X, position.Y, position.Z
     if x ~= x or y ~= y or z ~= z then return false end
+    if x == 0 or y == 0 or z == 0 then return false end
+    if PLACE_MODE == "main" and x * x + z * z < R.OriginGuard * R.OriginGuard then return false end
     return math.abs(x) <= R.WorldLimitXZ and math.abs(z) <= R.WorldLimitXZ and math.abs(y) <= R.WorldLimitY
 end
 
@@ -8355,7 +8422,7 @@ function FARM.blockedWrite(position, kind)
     local now = tick()
     if now - (R.BlockedWriteAt or 0) > 2 then
         R.BlockedWriteAt = now
-        FARM.debugNote(string.format("BLOCKED %s position write to (%s, %s, %s), outside +-%d XZ / +-%d Y", kind, tostring(position and position.X), tostring(position and position.Y), tostring(position and position.Z), R.WorldLimitXZ, R.WorldLimitY))
+        FARM.debugNote(string.format("BLOCKED %s position write to (%s, %s, %s), outside +-%d XZ / +-%d Y or within %d of 0,0", kind, tostring(position and position.X), tostring(position and position.Y), tostring(position and position.Z), R.WorldLimitXZ, R.WorldLimitY, R.OriginGuard))
     end
     return true
 end
@@ -8368,7 +8435,7 @@ function FARM.rootPosition(root)
         local ok, x, y, z = pcall(function()
             return memory_read("float", address), memory_read("float", address + 4), memory_read("float", address + 8)
         end)
-        if ok and type(x) == "number" and x == x and y == y and z == z and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5 and not (x == 0 and y == 0 and z == 0) then
+        if ok and type(x) == "number" and x == x and y == y and z == z and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5 and x ~= 0 and y ~= 0 and z ~= 0 then
             local read = Vector3.new(x, y, z)
             if PLACE_MODE ~= "main" or FARM.inWorld(read) then
                 R.LastGoodPosition = read
@@ -8380,11 +8447,11 @@ function FARM.rootPosition(root)
                 FARM.debugNote(string.format("own position read (%.1f, %.1f, %.1f) is outside the world, ignoring it", x, y, z))
             end
         end
-        if ok and x == 0 and y == 0 and z == 0 then
+        if ok and (x == 0 or y == 0 or z == 0) then
             R.BodyCheckAt = 0
             if now - (R.ZeroNotedAt or 0) > 5 then
                 R.ZeroNotedAt = now
-                FARM.debugNote("own position read from memory was (0, 0, 0), using the property and checking the body again")
+                FARM.debugNote(string.format("own position read from memory had a 0 (%s, %s, %s), using the property and checking the body again", tostring(x), tostring(y), tostring(z)))
             end
         end
     end
@@ -8392,6 +8459,16 @@ function FARM.rootPosition(root)
     if PLACE_MODE == "main" and R.LastGoodPosition and not FARM.inWorld(property) then
         return R.LastGoodPosition
     end
+    if typeof(property) == "Vector3" and (property.X == 0 or property.Y == 0 or property.Z == 0) then
+        R.BodyCheckAt = 0
+        if now - (R.ZeroPropertyNotedAt or 0) > 5 then
+            R.ZeroPropertyNotedAt = now
+            FARM.debugNote(string.format("own position property read had a 0 (%.1f, %.1f, %.1f), using the last good position", property.X, property.Y, property.Z))
+        end
+        if R.LastGoodPosition then return R.LastGoodPosition end
+        return property
+    end
+    if PLACE_MODE == "main" and FARM.inWorld(property) then R.LastGoodPosition = property end
     return property
 end
 
@@ -8466,7 +8543,7 @@ end
 
 function FARM.runTurnBody(root, goal)
     local R = FARM.RUN
-    local address = FARM.bodyAddress(root)
+    local address = FARM.safeBodyAddress(root)
     if not address then return false end
     local flat = Vector3.new(goal.X - root.Position.X, 0, goal.Z - root.Position.Z)
     if flat.Magnitude < 0.01 then return true end
@@ -8607,6 +8684,7 @@ function FARM.floorNote(Room)
     local R = FARM.RUN
     if decor and not R.GalaFloor then R.SpeedTrim = math.min(R.SpeedTrim, 1) end
     R.GalaFloor = decor
+    R.MemoryStrike = nil
     FARM.debugNote(string.format("FLOOR %s map %s | gala floor %s (decor folder), event flag %s, mode %s, position writes %s", tostring(FARM.currentFloor()), tostring(Room and Room.Name), decor and "yes" or "no", active and "on" or "off", tostring(mode), FARM.memoryMove() and "memory" or "normal"))
 end
 
@@ -8964,8 +9042,10 @@ function FARM.runStoreTarget(root, character)
                         local okCost, cost = false, nil
                         if not Store.Dandy then okCost, cost = pcall(UI.read, model:FindFirstChild("Cost")) end
                         local offer = { model = model, prompt = prompt, kind = "buy", name = model.Name, spot = FARM.runSpotKey(position), cost = (okCost and type(cost) == "number" and cost > 0) and cost or nil }
-                        offers[model.Name] = offer
-                        if Store.Dandy then dandyOffers[model.Name] = offer end
+                        if Store.Dandy or offer.cost then
+                            offers[model.Name] = offer
+                            if Store.Dandy then dandyOffers[model.Name] = offer end
+                        end
                     end
                 end
             end
@@ -9454,6 +9534,33 @@ end
 function FARM.runMachineRank(machine, Ranks)
     if not Ranks then return 0 end
     return Ranks[FARM.runMachineKind(machine)] or #FARM.MachineOrder + 1
+end
+
+function FARM.runMachinePrefs()
+    if SETTINGS.farmMachinePriority or not SETTINGS.farmMachinePreference then return nil end
+    local order = SETTINGS.farmMachinePreferenceOrder
+    if FARM.Prefs and FARM.Prefs.Order == order then return FARM.Prefs.List end
+    local List, count = {}, 0
+    for kind in string.gmatch(order, "[^,]+") do
+        count += 1
+        List[kind] = count
+    end
+    FARM.Prefs = {Order = order, List = List}
+    return List
+end
+
+function FARM.runPreferSlot(best, root, now)
+    local Prefs = FARM.runMachinePrefs()
+    if not (best and Prefs) then return best end
+    local unranked = #FARM.MachineOrder + 1
+    local pick, pickRank = best, Prefs[FARM.runMachineKind(best)] or unranked
+    for _, machine in ipairs(FARM.runMachines()) do
+        if machine ~= best and machine.model == best.model and not FARM.runDone(machine) and not FARM.runConnie(machine) and not FARM.runTaken(machine) and not FARM.runBlotMachine(machine, root, now) then
+            local rank = Prefs[FARM.runMachineKind(machine)] or unranked
+            if rank < pickRank then pick, pickRank = machine, rank end
+        end
+    end
+    return pick
 end
 
 function FARM.runStaminaSprint(now, root)
@@ -10499,6 +10606,7 @@ function FARM.runDive(root, now, status)
     R.hideGoalAt = 0
     R.Cover, R.CoverSpot, R.HopLabel = nil, nil, nil
     R.CoverAt = 0
+    R.DiveStat = {Start = now, From = root.Position, Machine = (R.current and (R.phase == "working" or R.phase == "aim" or FARM.runEngagedBy(R.current) == LocalPlayer.Name)) and R.current or nil, Snaps = 0, Pulled = 0}
     R.phase = "dive"
     R.at = now
     FARM.setStatus(status)
@@ -10957,7 +11065,7 @@ function FARM.propBreakerNear(p)
     return best
 end
 
-FARM.SAFE_PROPS = {"IchorVat"}
+FARM.SAFE_PROPS = {"IchorVat", "Group_FermentationTank", "FermentationTank"}
 
 function FARM.coverSafeProp(Entry)
     if Entry.SafeProp ~= nil then return Entry.SafeProp end
@@ -11074,6 +11182,7 @@ function FARM.coverReset()
     local R = FARM.RUN
     R.CoverParts = {}
     R.CoverCells = {}
+    R.LeadCells = {}
     R.CoverLevels = {}
     R.CoverFamilies = {}
     R.CoverHeights = nil
@@ -11350,6 +11459,7 @@ function FARM.coverBakeGroup(Task)
     for i = from, to do
         local Pair = Group.Entries[i]
         local cf, size, shape = world(Pair[1])
+        FARM.leadObstacle(cf, size)
         local Entry = FARM.coverEntryData(cf, size, shape, Root.Name)
         if Entry then
             Entry.Index = i
@@ -11489,6 +11599,7 @@ function FARM.runCoverCache(Room)
         R.CoverMap = key
         R.CoverParts = {}
         R.CoverCells = {}
+        R.LeadCells = {}
         R.CoverLevels = {}
         R.CoverFamilies = {}
         R.CoverHeights = nil
@@ -11547,7 +11658,9 @@ function FARM.runCoverCache(Room)
             end
         else
             pcall(function()
-                if Item.ClassName ~= "Part" or not Item.CanCollide or R.CoverSkipNames[Item.Name] then return end
+                local class = Item.ClassName
+                if (class == "Part" or class == "MeshPart" or class == "UnionOperation") and Item.CanCollide and not R.CoverSkipNames[Item.Name] then FARM.leadObstacle(Item.CFrame, Item.Size) end
+                if class ~= "Part" or not Item.CanCollide or R.CoverSkipNames[Item.Name] then return end
                 local Entry = FARM.coverEntry(Item)
                 if not Entry then return end
                 table.insert(R.CoverParts, Entry)
@@ -12637,6 +12750,10 @@ end
 function FARM.runTravelTo(root, position, y)
     local R = FARM.RUN
     local Debug = FARM.Debug
+    if PLACE_MODE == "main" and FARM.blockedWrite(position, "travel goal") then
+        R.goalPos = nil
+        return
+    end
     if Debug.Enabled and not (R.goalPos and FARM.flatDistance(R.goalPos, position) < 1) and tick() >= Debug.GoalAt then
         Debug.GoalAt = tick() + 0.5
         local p = root.Position
@@ -13119,8 +13236,36 @@ function FARM.runReady(now)
     return true
 end
 
+function FARM.runAuraGuard(now, root, character)
+    local R = FARM.RUN
+    local phase = R.phase
+    if phase == "dive" or phase == "hide" or phase == "flee" or phase == "sacrifice" or phase == "waitFloor" or phase == "idle" then return false end
+    if FARM.runSafeInElevator(character) then return false end
+    local aura = SETTINGS.farmAvoidAura or R.AvoidMargin
+    local p = root.Position
+    for _, Threat in ipairs(FARM.frameThreats(root, now)) do
+        local distance = FARM.flatDistance(p, Threat.Position)
+        if Threat.Name ~= "Hazard" and distance < Threat.Kill + aura then
+            FARM.debugNote(string.format("aura guard: %s at %.1f studs is inside its kill %.1f + aura %.1f during phase %s, diving", tostring(Threat.Name), distance, Threat.Kill, aura, tostring(phase)))
+            FARM.runRmb(false)
+            if R.current and FARM.runEngagedBy(R.current) == LocalPlayer.Name then
+                R.leaveAt = 0
+                FARM.runLeaveMachine(now)
+            end
+            R.collect, R.research = nil, nil
+            FARM.runDive(root, now, tostring(Threat.Name) .. " touched the avoid aura, diving")
+            return true
+        end
+    end
+    return false
+end
+
 function FARM.stepToward(now, root, camera, goal, face)
     local R = FARM.RUN
+    if PLACE_MODE == "main" and FARM.blockedWrite(goal, "step goal") then
+        FARM.runHoldW(false)
+        return true
+    end
     FARM.runCollide(false)
     FARM.runFreeze(root)
     local p = FARM.runPathPosition(root)
@@ -13147,7 +13292,249 @@ function FARM.stepToward(now, root, camera, goal, face)
     return false
 end
 
-FARM.CAGE = {Every = 0.5, ScanAt = 0, State = nil, Site = nil, Lure = nil, Skip = {}, Notice = 22, NoticeWait = 15, SeeWait = 4.5, SkipFor = 20, LostWait = 3, Near = 6, CloseHold = 3, Far = 26, FarHold = 6, Bait = 13, Guard = 4, ThreatGuard = 8, LethalGuard = 14, ThreatRoom = 8, Open = nil}
+FARM.CAGE = {Every = 0.5, ScanAt = 0, State = nil, Site = nil, Lure = nil, Skip = {}, Notice = 22, NoticeWait = 15, SeeWait = 4.5, SkipFor = 20, LostWait = 3, Near = 6, CloseHold = 3, Far = 26, FarHold = 6, FollowWait = 3, StaleFor = 2.5, Bait = 13, Guard = 4, ThreatGuard = 20, LethalGuard = 20, ThreatRoom = 8, Open = nil}
+
+FARM.LEAD = {Step = 9, Lift = 0.5, Margin = 1, Every = 0.25, SightBonus = 12, Grid = 6, Tabu = 5, TabuKeep = 40, RouteGrid = 4, RouteMax = 6000, RouteGreed = 1, RouteChunk = 400, Ahead = 12, Regoal = 6, Turns = {0, 25, -25, 50, -50, 75, -75, 105, -105, 140, -140, 180}}
+
+function FARM.leadVisit(Visited, position)
+    local L = FARM.LEAD
+    local key = math.floor(position.X / L.Grid) .. ":" .. math.floor(position.Z / L.Grid)
+    if Visited[key] then return end
+    Visited[key] = true
+    table.insert(Visited, key)
+    if #Visited > L.TabuKeep then Visited[table.remove(Visited, 1)] = nil end
+end
+
+function FARM.leadHits(Entry, a, b, margin)
+    local ax, ay, az = a.X - Entry.Ox, a.Y - Entry.Oy, a.Z - Entry.Oz
+    local bx, by, bz = b.X - Entry.Ox, b.Y - Entry.Oy, b.Z - Entry.Oz
+    local first, last = 0, 1
+    local function slab(ux, uy, uz, half)
+        local extent = half + (math.abs(uy) < 0.7 and margin or 0)
+        local from = ax * ux + ay * uy + az * uz
+        local delta = bx * ux + by * uy + bz * uz - from
+        if math.abs(delta) < 1e-6 then return math.abs(from) <= extent end
+        local enter, leave = (-extent - from) / delta, (extent - from) / delta
+        if enter > leave then enter, leave = leave, enter end
+        if enter > first then first = enter end
+        if leave < last then last = leave end
+        return first <= last
+    end
+    return slab(Entry.Xx, Entry.Xy, Entry.Xz, Entry.Hx) and slab(Entry.Yx, Entry.Yy, Entry.Yz, Entry.Hy) and slab(Entry.Zx, Entry.Zy, Entry.Zz, Entry.Hz)
+end
+
+function FARM.leadObstacle(cf, size)
+    local R = FARM.RUN
+    local Cells = R.LeadCells
+    if not Cells then return end
+    local limit = R.CoverMaxSize
+    if not (size.X <= limit and size.Y <= limit and size.Z <= limit) then return end
+    local origin, right, up, look = cf.Position, cf.RightVector, cf.UpVector, cf.LookVector
+    local Entry = {
+        Ox = origin.X, Oy = origin.Y, Oz = origin.Z,
+        Xx = right.X, Xy = right.Y, Xz = right.Z,
+        Yx = up.X, Yy = up.Y, Yz = up.Z,
+        Zx = -look.X, Zy = -look.Y, Zz = -look.Z,
+        Hx = size.X / 2, Hy = size.Y / 2, Hz = size.Z / 2,
+    }
+    local cell = R.CoverCell
+    local reach = math.sqrt(Entry.Hx * Entry.Hx + Entry.Hz * Entry.Hz + Entry.Hy * Entry.Hy)
+    for cx = math.floor((Entry.Ox - reach) / cell), math.floor((Entry.Ox + reach) / cell) do
+        for cz = math.floor((Entry.Oz - reach) / cell), math.floor((Entry.Oz + reach) / cell) do
+            local key = cx .. ":" .. cz
+            local List = Cells[key]
+            if not List then
+                List = {}
+                Cells[key] = List
+            end
+            table.insert(List, Entry)
+        end
+    end
+end
+
+function FARM.leadBlocked(a, b, margin)
+    local R = FARM.RUN
+    local Cells, cell = R.LeadCells or R.CoverCells, R.CoverCell
+    if not Cells then return nil end
+    local dx, dz = b.X - a.X, b.Z - a.Z
+    local steps = math.max(1, math.ceil(math.sqrt(dx * dx + dz * dz) / (cell * 0.5)))
+    local Seen = {}
+    for i = 0, steps do
+        local t = i / steps
+        local key = math.floor((a.X + dx * t) / cell) .. ":" .. math.floor((a.Z + dz * t) / cell)
+        if not Seen[key] then
+            Seen[key] = true
+            for _, Entry in ipairs(Cells[key] or {}) do
+                if not Seen[Entry] then
+                    Seen[Entry] = true
+                    if FARM.leadHits(Entry, a, b, margin) then return Entry end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function FARM.leadFree(x, y, z, margin)
+    local R = FARM.RUN
+    local Cells = R.LeadCells or R.CoverCells
+    for _, Entry in ipairs(Cells[math.floor(x / R.CoverCell) .. ":" .. math.floor(z / R.CoverCell)] or {}) do
+        local dx, dy, dz = x - Entry.Ox, y - Entry.Oy, z - Entry.Oz
+        if math.abs(dx * Entry.Xx + dy * Entry.Xy + dz * Entry.Xz) <= Entry.Hx + (math.abs(Entry.Xy) < 0.7 and margin or 0)
+            and math.abs(dx * Entry.Yx + dy * Entry.Yy + dz * Entry.Yz) <= Entry.Hy + (math.abs(Entry.Yy) < 0.7 and margin or 0)
+            and math.abs(dx * Entry.Zx + dy * Entry.Zy + dz * Entry.Zz) <= Entry.Hz + (math.abs(Entry.Zy) < 0.7 and margin or 0) then
+            return false
+        end
+    end
+    return true
+end
+
+function FARM.leadRoute(from, goal)
+    local L, R = FARM.LEAD, FARM.RUN
+    if not (R.LeadCells or R.CoverCells) then return nil end
+    local size, y = L.RouteGrid, from.Y + L.Lift
+    local sx, sz = math.floor(from.X / size + 0.5), math.floor(from.Z / size + 0.5)
+    local gx, gz = math.floor(goal.X / size + 0.5), math.floor(goal.Z / size + 0.5)
+    local Free, Cost, Parent, Heap = {}, {}, {}, {}
+    local function key(x, z) return x * 100000 + z end
+    local function free(x, z)
+        local k = key(x, z)
+        local value = Free[k]
+        if value == nil then
+            value = FARM.leadFree(x * size, y, z * size, L.Margin)
+            Free[k] = value
+        end
+        return value
+    end
+    local function push(item)
+        table.insert(Heap, item)
+        local i = #Heap
+        while i > 1 do
+            local up = i // 2
+            if Heap[up][1] <= Heap[i][1] then break end
+            Heap[up], Heap[i] = Heap[i], Heap[up]
+            i = up
+        end
+    end
+    local function pop()
+        local top = Heap[1]
+        local last = table.remove(Heap)
+        if #Heap > 0 then
+            Heap[1] = last
+            local i = 1
+            while true do
+                local left, right, small = i * 2, i * 2 + 1, i
+                if Heap[left] and Heap[left][1] < Heap[small][1] then small = left end
+                if Heap[right] and Heap[right][1] < Heap[small][1] then small = right end
+                if small == i then break end
+                Heap[small], Heap[i] = Heap[i], Heap[small]
+                i = small
+            end
+        end
+        return top
+    end
+    local start = key(sx, sz)
+    Cost[start] = 0
+    push({math.sqrt((gx - sx) ^ 2 + (gz - sz) ^ 2), sx, sz})
+    local expanded, found = 0, nil
+    while #Heap > 0 and expanded < L.RouteMax do
+        local item = pop()
+        local x, z = item[2], item[3]
+        local here = key(x, z)
+        if x == gx and z == gz then found = here break end
+        expanded += 1
+        if expanded % L.RouteChunk == 0 and coroutine.isyieldable() then task.wait() end
+        for dx = -1, 1 do
+            for dz = -1, 1 do
+                if dx ~= 0 or dz ~= 0 then
+                    local nx, nz = x + dx, z + dz
+                    if free(nx, nz) and (dx == 0 or dz == 0 or (free(x + dx, z) and free(x, z + dz))) then
+                        local nk = key(nx, nz)
+                        local cost = Cost[here] + ((dx ~= 0 and dz ~= 0) and 1.414 or 1)
+                        if not Cost[nk] or cost < Cost[nk] then
+                            Cost[nk], Parent[nk] = cost, here
+                            push({cost + L.RouteGreed * math.sqrt((gx - nx) ^ 2 + (gz - nz) ^ 2), nx, nz})
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not found then return nil, expanded end
+    local Route = {}
+    local k = found
+    while k do
+        local x = k // 100000
+        local z = k - x * 100000
+        if z > 50000 then x, z = x + 1, z - 100000 end
+        table.insert(Route, 1, Vector3.new(x * size, from.Y, z * size))
+        k = Parent[k]
+    end
+    Route[#Route] = goal
+    return Route, expanded
+end
+
+function FARM.leadAhead(p, Route, index)
+    local L = FARM.LEAD
+    local lift = Vector3.new(0, L.Lift, 0)
+    local best = index
+    for i = index, #Route do
+        if FARM.flatDistance(p, Route[i]) > L.Ahead then break end
+        if not FARM.leadBlocked(p + lift, Route[i] + lift, L.Margin) then best = i end
+    end
+    for i = index, #Route do
+        if FARM.flatDistance(p, Route[i]) < L.RouteGrid then index = i end
+    end
+    return Route[best], math.max(index, 1)
+end
+
+function FARM.leadFollow(Holder, field, p, lure, goal, now, routed)
+    local L = FARM.LEAD
+    local Lead = Holder[field]
+    if not Lead or FARM.flatDistance(Lead.Goal, goal) > L.Regoal then
+        Lead = {Goal = goal, Visited = {}, Index = 1, At = 0}
+        Holder[field] = Lead
+        if routed then
+            task.spawn(function()
+                local ok, Route = pcall(FARM.leadRoute, p, goal)
+                Lead.Route = ok and Route or false
+            end)
+        end
+    end
+    if not Lead.Point or now - Lead.At >= L.Every then
+        local sub = goal
+        if Lead.Route then sub, Lead.Index = FARM.leadAhead(p, Lead.Route, Lead.Index) end
+        FARM.leadVisit(Lead.Visited, p)
+        Lead.Point = FARM.leadGoal(p, lure, sub, Lead.Visited)
+        Lead.At = now
+    end
+    return Lead.Point
+end
+
+function FARM.leadGoal(p, lure, goal, Visited)
+    local L = FARM.LEAD
+    if not (FARM.RUN.LeadCells or FARM.RUN.CoverCells) then return goal, nil end
+    local flat = Vector3.new(goal.X - p.X, 0, goal.Z - p.Z)
+    local distance = flat.Magnitude
+    if distance < 1 then return goal, nil end
+    local lift = Vector3.new(0, L.Lift, 0)
+    local eye = lure + lift
+    local base = flat.Unit
+    local reach = math.min(L.Step, distance)
+    local best, bestScore, bestSight
+    for _, turn in ipairs(L.Turns) do
+        local angle = math.rad(turn)
+        local c, s = math.cos(angle), math.sin(angle)
+        local spot = Vector3.new(p.X + (base.X * c - base.Z * s) * reach, p.Y, p.Z + (base.X * s + base.Z * c) * reach)
+        if not FARM.leadBlocked(p + lift, spot + lift, L.Margin) then
+            local sight = not FARM.leadBlocked(eye, spot + lift, 0)
+            local score = distance - FARM.flatDistance(spot, goal) + (sight and L.SightBonus or 0)
+            if Visited and Visited[math.floor(spot.X / L.Grid) .. ":" .. math.floor(spot.Z / L.Grid)] then score = score - L.Tabu end
+            if not bestScore or score > bestScore then best, bestScore, bestSight = spot, score, sight end
+        end
+    end
+    return best or goal, bestSight
+end
 
 function FARM.cageText()
     local Gui = UI.playerGui()
@@ -13338,7 +13725,7 @@ function FARM.runCage(now, root, camera)
     local site = C.Site.Position
     local distance = FARM.flatDistance(p, Lure.Position)
     local goal
-    local seen = FARM.runSawYou(Lure.Model)
+    local seen = FARM.runSawYou(Lure.Model) and not (C.Lure.StaleUntil and now < C.Lure.StaleUntil)
     if seen then
         if not C.Lure.ChasedAt then FARM.debugNote(string.format("cage lure: %s sees you at %.0f studs, leading it", name, distance)) end
         C.Lure.ChasedAt, C.Lure.SeenAt = now, now
@@ -13360,16 +13747,31 @@ function FARM.runCage(now, root, camera)
         if distance < close or (C.Lure.Close and distance < close + C.CloseHold) then
             C.Lure.Close = true
             local away = Vector3.new(p.X - Lure.Position.X, 0, p.Z - Lure.Position.Z)
-            goal = p + (away.Magnitude > 0.1 and away.Unit or across) * 10
+            goal = FARM.leadFollow(C.Lure, "LeadAcross", p, Lure.Position, p + (away.Magnitude > 0.1 and away.Unit or across) * 10, now, false)
             FARM.setStatus("Leading " .. name .. " across the cage")
         else
             C.Lure.Close = nil
             if distance > C.Far or (C.Lure.Waiting and distance > C.Far - C.FarHold) then
+                if not C.Lure.Waiting or distance < C.Lure.WaitBest - 1 then C.Lure.WaitBest, C.Lure.WaitAt = distance, now end
                 C.Lure.Waiting = true
-                FARM.setStatus(string.format("Waiting for %s to catch up (%d)", name, math.floor(distance)))
+                if now - C.Lure.WaitAt > C.FollowWait then
+                    FARM.debugNote(string.format("cage lure: %s is not following (%.0f studs, closest %.0f in the last %.0f s), going back in front of it", name, distance, C.Lure.WaitBest, C.FollowWait))
+                    C.Lure.Waiting, C.Lure.WaitBest, C.Lure.WaitAt = nil, nil, nil
+                    C.Lure.ChasedAt, C.Lure.Since, C.Lure.Arrived, C.Lure.Face, C.Lure.FaceAt = nil, now, nil, nil, 0
+                    C.Lure.StaleUntil = now + C.StaleFor
+                    FARM.setStatus(string.format("%s stopped following, going back to it", name))
+                    return true
+                end
+                local lift = Vector3.new(0, FARM.LEAD.Lift, 0)
+                if FARM.leadBlocked(Lure.Position + lift, p + lift, 0) then
+                    goal = FARM.leadFollow(C.Lure, "LeadSee", p, Lure.Position, Lure.Position, now, true)
+                    FARM.setStatus(string.format("Getting back into %s's sight (%d)", name, math.floor(distance)))
+                else
+                    FARM.setStatus(string.format("Waiting for %s to catch up (%d)", name, math.floor(distance)))
+                end
             elseif FARM.flatDistance(p, bait) > 2 then
                 C.Lure.Waiting = nil
-                goal = bait
+                goal = FARM.leadFollow(C.Lure, "LeadBait", p, Lure.Position, bait, now, true)
                 FARM.setStatus("Leading " .. name .. " to the cage")
             else
                 C.Lure.Waiting = nil
@@ -13412,7 +13814,7 @@ function FARM.runCage(now, root, camera)
             end
         end
         if C.Lure and FARM.flatDistance(p, spot) > radius and not C.Lure.Arrived then
-            goal = spot
+            goal = FARM.leadFollow(C.Lure, "LeadFront", p, Lure.Position, spot, now, true)
             FARM.setStatus(string.format("Moving in front of %s so it sees you (%d)", name, math.floor(FARM.flatDistance(p, spot))))
         elseif C.Lure then
             C.Lure.Arrived = C.Lure.Arrived or now
@@ -13872,12 +14274,25 @@ function FARM.runElevatorOpeningWait(now, root, camera)
     local p = FARM.runPathPosition(root)
     local aura = SETTINGS.farmAvoidAura or R.AvoidMargin
     local Threats = FARM.runCoverThreats(root, true)
+    local close = false
     for _, Threat in ipairs(Threats) do
-        if FARM.flatDistance(p, Threat.Position) < Threat.Kill + aura + W.Guard then
-            W.Spot = nil
-            FARM.runDive(root, now, "Twisted near while the elevator opens, diving")
-            return true
-        end
+        if FARM.flatDistance(p, Threat.Position) < Threat.Kill + aura + W.Guard then close = Threat.Name end
+    end
+    local nearest, chasing, panic = FARM.runThreat(root, nil)
+    if close or chasing or (panic and now >= R.PanicGraceUntil) then
+        W.Spot = nil
+        FARM.debugNote(string.format("elevator opening: twisted threat (close=%s chasing=%s panic=%s nearest=%.1f), diving", tostring(close), tostring(chasing), tostring(panic), nearest or -1))
+        FARM.runDive(root, now, "Twisted near while the elevator opens, diving")
+        return true
+    end
+    if FARM.runHazardNear(root.Position, now, nil, false) then
+        W.Spot = nil
+        FARM.debugNote("elevator opening: hazard near (tendril, Rodger, pumpkin or ichor puddle), moving away")
+        R.current, R.collect, R.research = nil, nil, nil
+        R.fleeY = root.Position.Y
+        R.phase = "flee"
+        FARM.setStatus("Hazard near (tendril, Rodger, pumpkin or ichor puddle), moving away")
+        return true
     end
     if not W.Spot or now >= W.PickAt then
         W.PickAt = now + W.Repick
@@ -14174,6 +14589,130 @@ function FARM.runDessaDodge(now, root, camera)
         return false
     end
     FARM.setStatus("Dodging Twisted Dessa's lunge")
+    FARM.runLeaveMachine(now)
+    if Dodge.Goal then
+        FARM.stepToward(now, root, camera, Dodge.Goal)
+    else
+        FARM.runFreeze(root)
+        FARM.runHoldW(false)
+    end
+    return true
+end
+
+FARM.DESSA_THROW = {Dodge = nil, Cache = nil, CacheAt = 0, Every = 0.05, Radius = 5, Margin = 3, Clear = 6, Hold = 0.9, MaxTime = 4, ThreatGuard = 8, MaxFromDessa = 90}
+
+function FARM.attrVector(Object, name)
+    local ok, value = pcall(function() return Object:GetAttribute(name) end)
+    if not ok or value == nil then return nil end
+    if type(value) == "table" and value.x and value.z then return Vector3.new(value.x, value.y or 0, value.z) end
+    local okVector, vector = pcall(function() return Vector3.new(value.X, value.Y, value.Z) end)
+    return okVector and vector or nil
+end
+
+function FARM.dessaThrow(now)
+    local T = FARM.DESSA_THROW
+    if now - T.CacheAt < T.Every then return T.Cache end
+    T.CacheAt = now
+    T.Cache = nil
+    local Room = UI.map()
+    local Monsters = Room and Room:FindFirstChild("Monsters")
+    if not Monsters then return nil end
+    local Ring = Monsters:FindFirstChild("DessaThrowRing")
+    local Info = Workspace:FindFirstChild("Info")
+    local okMode, mode = pcall(function() return Info and Info:GetAttribute("TwistedDessaMode") end)
+    local throwing = okMode and mode == "Throwing"
+    if not Ring and not throwing then return nil end
+    local Model = Monsters:FindFirstChild("TwistedDessa")
+    local lock = Model and FARM.attrVector(Model, "DessaLockAt")
+    local okRing, ringCenter, ringSize = pcall(function() return Ring.Position, Ring.Size end)
+    if not (okRing and ringCenter) then ringCenter, ringSize = nil, nil end
+    local stale = lock and (not T.Dodge or (T.Dodge.LockAtStart and FARM.flatDistance(lock, T.Dodge.LockAtStart) < 0.5))
+    local center, source = lock, "lock"
+    if not lock or stale then center, source = ringCenter, "ring" end
+    local DessaRoot = Model and Model:FindFirstChild("HumanoidRootPart")
+    local okDessa, dessaAt = pcall(function() return DessaRoot.Position end)
+    if center and not (FARM.inWorld(center) and okDessa and FARM.inWorld(dessaAt) and FARM.flatDistance(center, dessaAt) <= T.MaxFromDessa) then
+        if now - (T.BadNotedAt or 0) > 2 then
+            T.BadNotedAt = now
+            FARM.debugNote(string.format("Dessa throw: ignoring target (%s) at (%.1f, %.1f, %.1f), not a real spot near her", source, center.X, center.Y, center.Z))
+        end
+        center = nil
+    end
+    if not center then
+        T.Cache = {Pending = true}
+        return T.Cache
+    end
+    local radius = T.Radius
+    if ringSize then radius = math.max(radius, math.max(ringSize.X, ringSize.Z) / 2) end
+    T.Cache = {Center = center, Radius = radius, Source = source, Lock = lock, Ring = Ring ~= nil}
+    return T.Cache
+end
+
+function FARM.runDessaThrowDodge(now, root, camera)
+    local R, T = FARM.RUN, FARM.DESSA_THROW
+    if not SETTINGS.farmDessaDodge or PLACE_MODE ~= "main" then
+        T.Dodge = nil
+        return false
+    end
+    local Throw = FARM.dessaThrow(now)
+    local p = FARM.runPathPosition(root)
+    if PLACE_MODE == "main" and not FARM.inWorld(p) then return false end
+    if Throw then
+        local Dodge = T.Dodge
+        if not Dodge then
+            local Room = UI.map()
+            local Monsters = Room and Room:FindFirstChild("Monsters")
+            local Model = Monsters and Monsters:FindFirstChild("TwistedDessa")
+            Dodge = {Start = now, Seen = now, LockAtStart = Model and FARM.attrVector(Model, "DessaLockAt")}
+            T.Dodge = Dodge
+            T.CacheAt = 0
+            Throw = FARM.dessaThrow(now) or Throw
+            if Throw.Pending then
+                FARM.debugNote("Dessa throw started, waiting for her target spot")
+            else
+                FARM.debugNote(string.format("Dessa throw: target (%s) %.1f studs from you, radius %.1f", Throw.Source, FARM.flatDistance(p, Throw.Center), Throw.Radius))
+            end
+        end
+        Dodge.Seen = now
+    end
+    if Throw and not Throw.Pending then
+        local Dodge = T.Dodge
+        local distance = FARM.flatDistance(p, Throw.Center)
+        local moved = not Dodge.Center or FARM.flatDistance(Dodge.Center, Throw.Center) > 2
+        if distance < Throw.Radius + T.Margin and (moved or not Dodge.Goal) then
+            if not Dodge.Active then
+                Dodge.Active = true
+                R.leaveAt = 0
+                R.current, R.collect, R.research = nil, nil, nil
+                if R.phase == "dive" or R.phase == "hide" then R.Cover, R.CoverSpot, R.HopLabel = nil, nil, nil end
+                R.phase = "pick"
+            end
+            Dodge.Center = Throw.Center
+            Dodge.Goal = FARM.runDiodaGoal(R, p, Throw.Center, Throw.Radius + T.Clear, FARM.frameThreats(root, now))
+            FARM.debugNote(string.format("Dessa throw lands on you (%s, %.1f studs from its middle), running to %.1f from it", Throw.Source, distance, FARM.flatDistance(Dodge.Goal, Throw.Center)))
+        elseif moved then
+            Dodge.Center = Throw.Center
+        end
+    end
+    local Dodge = T.Dodge
+    if not Dodge then return false end
+    if now - Dodge.Seen > T.Hold or now - Dodge.Start > T.MaxTime then
+        if Dodge.Active then FARM.debugNote(string.format("Dessa throw dodge done after %.2f s", now - Dodge.Start)) end
+        T.Dodge = nil
+        FARM.runHoldW(false)
+        return false
+    end
+    if not Dodge.Active then return false end
+    local radius = (Throw and Throw.Radius) or T.Radius
+    local clear = not Dodge.Center or FARM.flatDistance(p, Dodge.Center) >= radius + T.Margin
+    local Threat = clear and FARM.dodgeThreatClose(root, now, p, T.ThreatGuard)
+    if Threat then
+        FARM.debugNote(string.format("Dessa throw dodge: out of the landing spot and %s is %.1f studs away, handing over to normal avoidance", Threat.Name, FARM.flatDistance(p, Threat.Position)))
+        T.Dodge = nil
+        FARM.runHoldW(false)
+        return false
+    end
+    FARM.setStatus("Dodging Twisted Dessa's throw")
     FARM.runLeaveMachine(now)
     if Dodge.Goal then
         FARM.stepToward(now, root, camera, Dodge.Goal)
@@ -14546,6 +15085,8 @@ function FARM.runUpdate(now)
     if FARM.runPanicTeleport(now, root, character) then return end
     if FARM.runDiodaDodge(now, root, camera) then return end
     if FARM.runDessaDodge(now, root, camera) then return end
+    if FARM.runDessaThrowDodge(now, root, camera) then return end
+    if FARM.runAuraGuard(now, root, character) then return end
     if FARM.runExperimentExit(now, root) then return end
     if FARM.runElevatorOpeningWait(now, root, camera) then return end
     if FARM.runCage(now, root, camera) then return end
@@ -14598,15 +15139,17 @@ function FARM.runUpdate(now)
         else
             R.research = nil
             R.hideIgnore = nil
-            FARM.runSprintOff()
-            if chasing and FARM.kiteHunter(root) then
-                if FARM.kiteHold(root, now) then return end
-                if not FARM.runFindCover(root, FARM.runCoverThreats(root), nil, R.CoverReach) and FARM.runKite(root, now, character) then return end
+            local kiting = chasing and FARM.kiteHunter(root) and FARM.kiteHold(root, now)
+            if not kiting then
+                FARM.runSprintOff()
+                if chasing and FARM.kiteHunter(root) then
+                    if not FARM.runFindCover(root, FARM.runCoverThreats(root), nil, R.CoverReach) and FARM.runKite(root, now, character) then return end
+                end
+                FARM.debugNote(string.format("dive trigger: chasing=%s panic=%s seen=%s nearest=%.1f grace=%.1f%s", tostring(chasing), tostring(panic), tostring(seen), nearest or -1, R.PanicGraceUntil - now, chasing and " (" .. tostring(R.ChaseWhy) .. ")" or ""))
+                FARM.runDive(root, now, toElevator and "Twisted near, diving to the elevator" or "Twisted near, diving")
+                R.elevatorDive = toElevator or nil
+                return
             end
-            FARM.debugNote(string.format("dive trigger: chasing=%s panic=%s seen=%s nearest=%.1f grace=%.1f%s", tostring(chasing), tostring(panic), tostring(seen), nearest or -1, R.PanicGraceUntil - now, chasing and " (" .. tostring(R.ChaseWhy) .. ")" or ""))
-            FARM.runDive(root, now, toElevator and "Twisted near, diving to the elevator" or "Twisted near, diving")
-            R.elevatorDive = toElevator or nil
-            return
         end
     end
 
@@ -14686,7 +15229,34 @@ function FARM.runUpdate(now)
     if R.phase == "dive" then
         FARM.runCollide(false)
         FARM.runFreeze(root)
+        local DiveStat = R.DiveStat
+        if DiveStat then
+            if DiveStat.Machine and not DiveStat.Released then
+                if FARM.runEngagedBy(DiveStat.Machine) == LocalPlayer.Name then
+                    FARM.runLeaveMachine(now)
+                else
+                    DiveStat.Released = now - DiveStat.Start
+                end
+            end
+            if DiveStat.Wrote then
+                local real = FARM.realPosition(root)
+                local pulled = FARM.flatDistance(real, DiveStat.Wrote)
+                if pulled > 2 then
+                    DiveStat.Snaps = DiveStat.Snaps + 1
+                    DiveStat.Pulled = DiveStat.Pulled + pulled
+                end
+                DiveStat.Wrote = nil
+            end
+        end
         local p = FARM.runPathPosition(root)
+        local real = FARM.realPosition(root)
+        if FARM.flatDistance(p, real) > R.PathDrift then
+            if DiveStat and not DiveStat.Behind then
+                DiveStat.Behind = true
+                FARM.debugNote(string.format("dive: real position (%.1f, %.1f, %.1f) is %.1f studs behind the written path, continuing from the real position", real.X, real.Y, real.Z, FARM.flatDistance(p, real)))
+            end
+            p = real
+        end
         if not R.Cover and now >= R.CoverAt then
             R.CoverAt = now + R.CoverRescan
             R.Cover, R.CoverSpot = FARM.runFindCover(root, FARM.runCoverThreats(root), nil, R.CoverReach, 0)
@@ -14717,10 +15287,23 @@ function FARM.runUpdate(now)
                 end
             end
             if not direction then
+                local okRay, under = pcall(function()
+                    return workspace:Raycast(p, Vector3.new(0, -(R.hipOffset + 3), 0))
+                end)
+                if not (okRay and under) then
+                    direction, standY = away, p.Y
+                    if now >= (R.BlindBackAt or 0) then
+                        R.BlindBackAt = now + 5
+                        FARM.debugNote("no cover in reach and raycasts see no floor at all, backing away at the current height")
+                    end
+                end
+            end
+            if not direction then
                 FARM.runHoldW(false)
                 FARM.setStatus("No cover in reach and no floor to back away on, staying put")
                 return
             end
+            direction = FARM.runSteer(root, direction, now)
             FARM.runHoldW(true)
             FARM.runLook(camera, root, p + direction * 10)
             local target = Vector3.new(p.X + direction.X * step, standY, p.Z + direction.Z * step)
@@ -14734,6 +15317,12 @@ function FARM.runUpdate(now)
         if flat.Magnitude <= R.CoverArrive then
             FARM.runHoldW(false)
             FARM.setRootPosition(root, target)
+            if DiveStat then
+                local spent = math.max(now - DiveStat.Start, 0.001)
+                local covered = FARM.flatDistance(DiveStat.From, target)
+                FARM.debugNote(string.format("dive done: %.1f studs in %.2f s (%.1f studs/s, target %.1f), from machine %s, released %s, pulled back %d times (%.1f studs total)", covered, spent, covered / spent, FARM.travelSpeed(now), DiveStat.Machine and "yes" or "no", DiveStat.Released and string.format("after %.2f s", DiveStat.Released) or (DiveStat.Machine and "never" or "-"), DiveStat.Snaps, DiveStat.Pulled))
+                R.DiveStat = nil
+            end
             R.phase = "hide"
             R.HideStart = now
             R.WatcherAt = 0
@@ -14749,7 +15338,9 @@ function FARM.runUpdate(now)
         local step = math.min(FARM.stepLength(now), flat.Magnitude)
         local direction = FARM.runSteer(root, flat.Unit, now, target)
         local y = p.Y + math.clamp(target.Y - p.Y, -step, step)
-        FARM.setRootPosition(root, Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step))
+        local written = Vector3.new(p.X + direction.X * step, y, p.Z + direction.Z * step)
+        FARM.setRootPosition(root, written)
+        if DiveStat then DiveStat.Wrote = written end
         FARM.setStatus(R.HopLabel and ("Sneaking through cover to " .. R.HopLabel) or "Twisted near, going into cover")
         return
     end
@@ -15182,6 +15773,7 @@ function FARM.runUpdate(now)
             return
         end
 
+        best = FARM.runPreferSlot(best, root, now)
         R.current = best
         FARM.runTravelTo(root, best.stand.Position, best.stand.Position.Y + R.STAND_Y)
         R.phase = "tween"
@@ -15705,7 +16297,7 @@ function FARM.runUpdate(now)
                 if now - target.wrongSince < 3 then
                     FARM.runFace(camera, root, position)
                     if flat > 1.5 then
-                        local direction = Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Unit
+                        local direction = FARM.runSteer(root, Vector3.new(position.X - root.Position.X, 0, position.Z - root.Position.Z).Unit, now, position)
                         local step = math.min(flat - 1.5, FARM.stepLength(now))
                         FARM.setRootPosition(root, root.Position + direction * step)
                     end
@@ -15726,6 +16318,20 @@ function FARM.runUpdate(now)
         end
 
         if now >= R.at then
+            if target.kind == "buy" then
+                local okCost, cost = pcall(UI.read, target.model:FindFirstChild("Cost"))
+                local price = (okCost and type(cost) == "number" and cost > 0) and math.ceil(cost - 0.001) or target.price
+                local tapes = FARM.runTapes()
+                if price and tapes < price then
+                    FARM.debugNote(string.format("not buying %s: costs %d tapes, have %d", target.name, price, tapes))
+                    R.bought[target.name] = true
+                    R.skip[target.spot] = true
+                    R.collect = nil
+                    R.phase = "pick"
+                    FARM.runRmb(false)
+                    return
+                end
+            end
             if R.collectTries >= R.COLLECT_TRIES then
                 R.skip[target.spot] = true
                 R.collect = nil
@@ -17268,6 +17874,14 @@ local function buildMenu()
     Priority:OnChanged(function(value)
         PriorityOrder:SetHidden(not value)
     end)
+    local Preference = toggle(Machines, "dw_farm_machine_preference", "Machines Preference", "farmMachinePreference")
+    local PreferenceList = {}
+    for kind in string.gmatch(SETTINGS.farmMachinePreferenceOrder, "[^,]+") do table.insert(PreferenceList, kind) end
+    UI.Binds.dw_farm_machine_preference_order = {Key = "farmMachinePreferenceOrder", Map = function(value) return table.concat(value, ",") end}
+    local PreferenceOrder = Machines:AddDropdown({Id = "dw_farm_machine_preference_order", Title = "Preference Order", Groups = {{Name = "Preference", Values = FARM.MachineOrder}}, Default = PreferenceList, Reorder = true})
+    Preference:OnChanged(function(value)
+        PreferenceOrder:SetHidden(not value)
+    end)
     toggle(Machines, "dw_farm_treadmill_run", "Run on Treadmill Machines", "farmTreadmillRun")
     slider(Machines, "dw_farm_treadmill_stop", "Stop Running at", "farmTreadmillStopAt", 0, 270, 0, " stamina")
 
@@ -17729,6 +18343,8 @@ renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
     local frameStart = os.clock()
     if Profile.FrameEnd and frameStart - Profile.FrameEnd > Profile.Gap then
         FARM.debugNote(string.format("FREEZE %.0f ms between frames", (frameStart - Profile.FrameEnd) * 1000))
+        FARM.RUN.MemoryOffUntil = math.max(FARM.RUN.MemoryOffUntil or 0, tick() + FARM.RUN.StallMemoryOff)
+        FARM.RUN.BodyCheckAt = 0
     end
     local Sections = Profile.Enabled and {} or nil
     local Trace = FARM.Trace
