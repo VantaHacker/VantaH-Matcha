@@ -10366,6 +10366,13 @@ function FARM.runIsInside(instance, folder)
     return ok and result == true
 end
 
+function FARM.hitPart(hit)
+    local Part = hit and hit.Instance
+    if not Part then return nil end
+    if FARM.instanceLive and FARM.liveCheckReady and FARM.liveCheckReady() and not FARM.instanceLive({Node = Part}, "Node") then return nil end
+    return Part
+end
+
 function FARM.rayFirst(from, to, Ignore, gap)
     local point = from
     for _ = 1, FARM.RUN.RAY_HOPS do
@@ -10374,12 +10381,13 @@ function FARM.rayFirst(from, to, Ignore, gap)
             return nil
         end
         local hit = workspace:Raycast(point, offset)
-        if not hit or not hit.Instance then
+        local Part = FARM.hitPart(hit)
+        if not Part then
             return nil
         end
         local ignored = false
         for _, Folder in pairs(Ignore) do
-            if FARM.runIsInside(hit.Instance, Folder) then
+            if FARM.runIsInside(Part, Folder) then
                 ignored = true
                 break
             end
@@ -10855,13 +10863,14 @@ function FARM.runGroundY(x, y, z, reach)
             if length <= 0.5 then return end
             FARM.crumb("ground ray")
             local hit = workspace:Raycast(from, Vector3.new(0, -length, 0))
-            if not hit or not hit.Instance then return end
+            local Part = FARM.hitPart(hit)
+            if not Part then return end
             FARM.crumb("ground hit read")
-            local solid = hit.Instance.CanCollide == true
+            local solid = Part.CanCollide == true
             FARM.crumb("ground hit solid " .. tostring(solid))
             if solid then
                 for _, Folder in pairs(Ignore) do
-                    if FARM.runIsInside(hit.Instance, Folder) then
+                    if FARM.runIsInside(Part, Folder) then
                         solid = false
                         break
                     end
@@ -19446,7 +19455,7 @@ local function buildMenu()
 
     local ExperimentalGameplay = ExperimentalTab:AddSection("Gameplay", "Right")
     toggle(ExperimentalGameplay, "dw_infinite_stamina", "Infinite Stamina", "infiniteStamina", Color3.fromRGB(45, 200, 235))
-    ExperimentalGameplay:AddParagraph({Title = "", Content = "Sprint without using any stamina (Note that this does not work for treadmills)."})
+    ExperimentalGameplay:AddParagraph({Title = "", Content = "Sprint without using any stamina (Note that this does not work for treadmills). Not compatible with autofarm."})
 
     local Offsets = MemoryTab:AddSection("Offsets", "Left")
     Offsets:AddButton({Title = "Full remap (experimental features)", Callback = GOLDEN.remap})
